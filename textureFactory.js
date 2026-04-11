@@ -1,13 +1,32 @@
 // js/textureFactory.js — Generates all textures used in the scene.
-// Procedural textures are drawn onto HTML canvases and wrapped as
-// THREE.CanvasTexture. The satellite ground texture is fetched from
-// Esri World Imagery tiles (free, no API key required).
 
 import * as THREE from 'three';
 
+// ── CSS colour name → hex (subset covering common OSM values) ─
+const CSS_COLOURS = {
+  white: '#f5f5f0', ivory: '#fffff0', cream: '#fffdd0',
+  beige: '#e8dcc8', tan: '#c8a882', khaki: '#c8b870',
+  yellow: '#e8d060', gold: '#d4a830', orange: '#d07030',
+  red: '#c03020', crimson: '#9a1020', brown: '#7a4828',
+  maroon: '#5a2018', pink: '#e890a0', salmon: '#d87860',
+  coral: '#d06048',
+  green: '#507840', olive: '#607830', teal: '#307068',
+  cyan: '#408898', aqua: '#408898',
+  blue: '#3860a0', navy: '#1a2860', indigo: '#384090',
+  violet: '#6848a0', purple: '#583878', magenta: '#903878',
+  grey: '#888888', gray: '#888888', silver: '#c0c0c0',
+  black: '#222222',
+};
+
+function resolveColour(raw) {
+  if (!raw) return null;
+  const s = raw.trim().toLowerCase();
+  if (s.startsWith('#')) return s;
+  return CSS_COLOURS[s] || null;
+}
+
 // ── Toon gradient lookup texture ─────────────────────────────
-// Shared across all MeshToonMaterial instances. A 1D gradient that
-// defines the cel-shading step curve: dark → mid → bright.
+// Brighter mid and highlight bands so buildings read clearly.
 export function makeToonGradient() {
   const w      = 256;
   const canvas = document.createElement('canvas');
@@ -15,13 +34,12 @@ export function makeToonGradient() {
   canvas.height = 1;
   const ctx = canvas.getContext('2d');
   const grd = ctx.createLinearGradient(0, 0, w, 0);
-  // Anime-style: sharp shadow band, soft mid, bright highlight
-  grd.addColorStop(0.00, '#111118');
-  grd.addColorStop(0.30, '#1a1a2e');
-  grd.addColorStop(0.31, '#2e3050');  // hard step — shadow to mid
-  grd.addColorStop(0.65, '#4a5080');
-  grd.addColorStop(0.66, '#8090c0');  // hard step — mid to lit
-  grd.addColorStop(1.00, '#c8d4ff');
+  grd.addColorStop(0.00, '#2a2a3a');   // shadow
+  grd.addColorStop(0.28, '#3a3a50');
+  grd.addColorStop(0.29, '#606888');   // hard step to mid-tone
+  grd.addColorStop(0.60, '#8090b8');
+  grd.addColorStop(0.61, '#c0cce8');   // hard step to lit face
+  grd.addColorStop(1.00, '#e8eeff');   // highlight
   ctx.fillStyle = grd;
   ctx.fillRect(0, 0, w, 1);
   const tex = new THREE.CanvasTexture(canvas);
@@ -31,51 +49,48 @@ export function makeToonGradient() {
 }
 
 // ── Building wall texture ─────────────────────────────────────
-// A tileable window-grid pattern.  windowColor, frameColor, and
-// wallColor can be varied per building type.
+// Draws a window grid over a base wall colour.
 export function makeBuildingWallTexture(options = {}) {
   const {
-    wallColor   = '#1a1f35',
-    frameColor  = '#2a3060',
-    windowColor = '#a8c8ff',
-    windowW     = 18,   // px
-    windowH     = 24,   // px
-    gapX        = 10,   // horizontal gap between windows
-    gapY        = 14,   // vertical gap between windows
+    wallColor   = '#c8c0b0',
+    frameColor  = '#a09080',
+    windowColor = '#b8d4e8',
+    windowW     = 18,
+    windowH     = 24,
+    gapX        = 10,
+    gapY        = 14,
     cols        = 4,
     rows        = 4,
   } = options;
 
-  const cellW  = windowW + gapX;
-  const cellH  = windowH + gapY;
-  const cw     = cellW  * cols;
-  const ch     = cellH  * rows;
+  const cellW = windowW + gapX;
+  const cellH = windowH + gapY;
+  const cw    = cellW * cols;
+  const ch    = cellH * rows;
 
   const canvas = document.createElement('canvas');
   canvas.width  = cw;
   canvas.height = ch;
   const ctx = canvas.getContext('2d');
 
-  // Wall base
   ctx.fillStyle = wallColor;
   ctx.fillRect(0, 0, cw, ch);
 
-  // Window frames then glass
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const x = c * cellW + gapX / 2;
       const y = r * cellH + gapY / 2;
-      // Frame (slightly larger)
+
       ctx.fillStyle = frameColor;
       ctx.fillRect(x - 1, y - 1, windowW + 2, windowH + 2);
-      // Glass
+
       ctx.fillStyle = windowColor;
       ctx.fillRect(x, y, windowW, windowH);
-      // Subtle interior sheen
+
       const shine = ctx.createLinearGradient(x, y, x + windowW, y + windowH);
-      shine.addColorStop(0,    'rgba(255,255,255,0.18)');
-      shine.addColorStop(0.45, 'rgba(255,255,255,0.04)');
-      shine.addColorStop(1,    'rgba(0,20,60,0.25)');
+      shine.addColorStop(0,    'rgba(255,255,255,0.30)');
+      shine.addColorStop(0.4,  'rgba(255,255,255,0.08)');
+      shine.addColorStop(1,    'rgba(0,30,80,0.20)');
       ctx.fillStyle = shine;
       ctx.fillRect(x, y, windowW, windowH);
     }
@@ -88,7 +103,7 @@ export function makeBuildingWallTexture(options = {}) {
 }
 
 // ── Building roof texture ─────────────────────────────────────
-export function makeBuildingRoofTexture(color = '#1e2840') {
+export function makeBuildingRoofTexture(color = '#808890') {
   const s      = 128;
   const canvas = document.createElement('canvas');
   canvas.width  = s;
@@ -98,8 +113,7 @@ export function makeBuildingRoofTexture(color = '#1e2840') {
   ctx.fillStyle = color;
   ctx.fillRect(0, 0, s, s);
 
-  // Subtle grid of HVAC / rooftop detail lines
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.strokeStyle = 'rgba(0,0,0,0.10)';
   ctx.lineWidth   = 1;
   for (let i = 0; i < s; i += 16) {
     ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, s); ctx.stroke();
@@ -120,21 +134,17 @@ export function makeRoadTexture() {
   canvas.height = ch;
   const ctx = canvas.getContext('2d');
 
-  // Asphalt base
-  ctx.fillStyle = '#18191f';
+  ctx.fillStyle = '#404048';
   ctx.fillRect(0, 0, cw, ch);
 
-  // Subtle noise grain
   for (let i = 0; i < 400; i++) {
     const gx = Math.random() * cw;
     const gy = Math.random() * ch;
-    const gs = Math.random() * 1.5 + 0.5;
     ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.04})`;
-    ctx.fillRect(gx, gy, gs, gs);
+    ctx.fillRect(gx, gy, Math.random() * 1.5 + 0.5, Math.random() * 1.5 + 0.5);
   }
 
-  // Centre dashed line
-  ctx.strokeStyle = 'rgba(255,230,80,0.55)';
+  ctx.strokeStyle = 'rgba(255,230,80,0.7)';
   ctx.lineWidth   = 2;
   ctx.setLineDash([20, 20]);
   ctx.beginPath();
@@ -150,7 +160,6 @@ export function makeRoadTexture() {
 }
 
 // ── Water texture ─────────────────────────────────────────────
-// A tileable ripple pattern. Scrolled over time in scene.js.
 export function makeWaterTexture() {
   const s      = 256;
   const canvas = document.createElement('canvas');
@@ -158,27 +167,21 @@ export function makeWaterTexture() {
   canvas.height = s;
   const ctx = canvas.getContext('2d');
 
-  ctx.fillStyle = '#0a3060';
+  ctx.fillStyle = '#1a5080';
   ctx.fillRect(0, 0, s, s);
 
-  // Concentric-ripple-like lines using sine stripes
-  for (let y = 0; y < s; y += 1) {
-    const t = y / s;
-    const wave = Math.sin(t * Math.PI * 8) * 0.5 + 0.5;
-    const alpha = wave * 0.18 + 0.04;
-    ctx.fillStyle = `rgba(120,200,255,${alpha.toFixed(3)})`;
+  for (let y = 0; y < s; y++) {
+    const wave  = Math.sin((y / s) * Math.PI * 8) * 0.5 + 0.5;
+    const alpha = wave * 0.22 + 0.05;
+    ctx.fillStyle = `rgba(140,210,255,${alpha.toFixed(3)})`;
     ctx.fillRect(0, y, s, 1);
   }
 
-  // Highlight streaks
-  ctx.strokeStyle = 'rgba(180,230,255,0.12)';
+  ctx.strokeStyle = 'rgba(200,240,255,0.18)';
   ctx.lineWidth   = 1;
   for (let i = 0; i < 12; i++) {
     const x = (i / 12) * s + 8;
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x - 20, s);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x - 20, s); ctx.stroke();
   }
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -187,7 +190,7 @@ export function makeWaterTexture() {
   return tex;
 }
 
-// ── Park / grass texture ──────────────────────────────────────
+// ── Park texture ──────────────────────────────────────────────
 export function makeParkTexture() {
   const s      = 128;
   const canvas = document.createElement('canvas');
@@ -195,16 +198,15 @@ export function makeParkTexture() {
   canvas.height = s;
   const ctx = canvas.getContext('2d');
 
-  ctx.fillStyle = '#1a3320';
+  ctx.fillStyle = '#4a7a40';
   ctx.fillRect(0, 0, s, s);
 
-  // Irregular grass-stroke marks
-  ctx.strokeStyle = 'rgba(60,140,60,0.25)';
+  ctx.strokeStyle = 'rgba(80,160,60,0.35)';
   ctx.lineWidth   = 1;
   for (let i = 0; i < 80; i++) {
-    const x  = Math.random() * s;
-    const y  = Math.random() * s;
-    const len = Math.random() * 8 + 4;
+    const x     = Math.random() * s;
+    const y     = Math.random() * s;
+    const len   = Math.random() * 8 + 4;
     const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.6;
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -219,55 +221,42 @@ export function makeParkTexture() {
 }
 
 // ── Satellite ground tile ─────────────────────────────────────
-// Fetches the Esri World Imagery tile(s) covering the given area,
-// composites them onto a canvas, and returns a THREE.CanvasTexture.
-//
-// Esri tile URL format: /tile/{z}/{y}/{x}  (note y before x)
-// We pick the zoom level that gives good coverage for the radius,
-// then fetch a 2×2 block of tiles centred on the location to avoid
-// seam edges at the boundary.
-
 export async function fetchSatelliteTexture(lat, lng, radiusMeters) {
-  const zoom   = _zoomForRadius(radiusMeters);
-  const { tx, ty } = _latLngToTile(lat, lng, zoom);
-
-  // Fetch a 3×3 grid of tiles centred on the target tile so the
-  // full area is covered even when the centre sits near a tile edge.
-  const size   = 256; // Esri tile pixel size
-  const grid   = 3;   // tiles per side
-  const offset = Math.floor(grid / 2);
-  const canvas = document.createElement('canvas');
-  canvas.width  = size * grid;
-  canvas.height = size * grid;
-  const ctx    = canvas.getContext('2d');
+  const zoom         = _zoomForRadius(radiusMeters);
+  const { tx, ty }   = _latLngToTile(lat, lng, zoom);
+  const size         = 256;
+  const grid         = 3;
+  const offset       = Math.floor(grid / 2);
+  const canvas       = document.createElement('canvas');
+  canvas.width        = size * grid;
+  canvas.height       = size * grid;
+  const ctx          = canvas.getContext('2d');
 
   const fetches = [];
   for (let dy = 0; dy < grid; dy++) {
     for (let dx = 0; dx < grid; dx++) {
-      const tileX = tx + dx - offset;
-      const tileY = ty + dy - offset;
       fetches.push(
-        _fetchTileImage(zoom, tileX, tileY).then(img => ({ img, dx, dy }))
+        _fetchTileImage(zoom, tx + dx - offset, ty + dy - offset)
+          .then(img => ({ img, dx, dy }))
       );
     }
   }
 
   const results = await Promise.allSettled(fetches);
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      const { img, dx, dy } = result.value;
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      const { img, dx, dy } = r.value;
       ctx.drawImage(img, dx * size, dy * size, size, size);
     }
   }
 
-  // Slight anime-style colour grade: desaturate a touch, cool the shadows
+  // Subtle cool grade for anime look
   ctx.globalCompositeOperation = 'multiply';
-  ctx.fillStyle = 'rgba(180,200,255,0.12)';
+  ctx.fillStyle = 'rgba(190,210,255,0.10)';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.globalCompositeOperation = 'source-over';
 
-  const tex = new THREE.CanvasTexture(canvas);
-  return tex;
+  return new THREE.CanvasTexture(canvas);
 }
 
 function _fetchTileImage(z, x, y) {
@@ -276,12 +265,11 @@ function _fetchTileImage(z, x, y) {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload  = () => resolve(img);
-    img.onerror = () => reject(new Error(`Tile load failed: ${url}`));
+    img.onerror = () => reject(new Error(`Tile failed: ${url}`));
     img.src = url;
   });
 }
 
-// Mercator lat/lng → tile XY at a given zoom level
 function _latLngToTile(lat, lng, zoom) {
   const n  = Math.pow(2, zoom);
   const tx = Math.floor((lng + 180) / 360 * n);
@@ -291,26 +279,91 @@ function _latLngToTile(lat, lng, zoom) {
   return { tx, ty };
 }
 
-// Pick a zoom level that gives roughly 4–6 tiles of coverage for the radius
-function _zoomForRadius(radiusMeters) {
-  // At equator: tile width in metres at zoom z ≈ 40075016 / 2^z
-  // We want the tile to be roughly radiusMeters wide, so solve for z.
-  const z = Math.round(Math.log2(40075016 / (radiusMeters * 2)));
+function _zoomForRadius(r) {
+  const z = Math.round(Math.log2(40075016 / (r * 2)));
   return Math.max(12, Math.min(18, z));
 }
 
-// ── Building colour palette by type ──────────────────────────
-// Returns { wallColor, frameColor, windowColor, roofColor }
+// ── Building colour/material resolution ──────────────────────
+// Priority: OSM explicit colour tag → OSM material tag → building type default.
+// Returns { wallColor, frameColor, windowColor, roofColor } as hex strings.
 export function buildingPalette(tags) {
+  // 1. Try explicit OSM colour tags
+  const explicitWall = resolveColour(tags['building:colour'] || tags['building:color']);
+  const explicitRoof = resolveColour(tags['roof:colour']     || tags['roof:color']);
+
+  if (explicitWall) {
+    // Derive complementary colours from the explicit wall colour
+    const wall   = explicitWall;
+    const frame  = _darken(wall, 0.75);
+    const window = _tintBlue(wall);
+    const roof   = explicitRoof || _darken(wall, 0.65);
+    return { wallColor: wall, frameColor: frame, windowColor: window, roofColor: roof };
+  }
+
+  // 2. Try OSM material tag
+  const mat = (tags['building:material'] || '').toLowerCase();
+  if (mat) {
+    const matColours = {
+      brick:         { wallColor: '#c8906a', frameColor: '#a06040', windowColor: '#b8d0e0', roofColor: '#805040' },
+      stone:         { wallColor: '#b0a890', frameColor: '#887860', windowColor: '#b8ccd8', roofColor: '#706858' },
+      concrete:      { wallColor: '#b0b0b0', frameColor: '#909090', windowColor: '#c0d0dc', roofColor: '#808080' },
+      glass:         { wallColor: '#90b8d0', frameColor: '#6090b0', windowColor: '#d0e8f0', roofColor: '#507090' },
+      metal:         { wallColor: '#a0a8b0', frameColor: '#7880a0', windowColor: '#c0d4e0', roofColor: '#606878' },
+      wood:          { wallColor: '#a07848', frameColor: '#7a5830', windowColor: '#c8b888', roofColor: '#604828' },
+      plaster:       { wallColor: '#d8cdb0', frameColor: '#b0a080', windowColor: '#b8d0de', roofColor: '#908060' },
+      render:        { wallColor: '#d0c8b0', frameColor: '#a89870', windowColor: '#b8d0de', roofColor: '#887860' },
+      sandstone:     { wallColor: '#d0b878', frameColor: '#a89050', windowColor: '#c0d0d8', roofColor: '#806040' },
+      limestone:     { wallColor: '#d8d0b0', frameColor: '#b0a070', windowColor: '#c0d0d8', roofColor: '#908058' },
+    };
+    for (const [key, pal] of Object.entries(matColours)) {
+      if (mat.includes(key)) return pal;
+    }
+  }
+
+  // 3. Fall back to building type
   const t = tags.building || 'yes';
-  const palettes = {
-    house:       { wallColor: '#2a2535', frameColor: '#3a3050', windowColor: '#ffd090', roofColor: '#1a1520' },
-    apartments:  { wallColor: '#1e2840', frameColor: '#2a3860', windowColor: '#a0c0ff', roofColor: '#141e30' },
-    office:      { wallColor: '#152030', frameColor: '#1e3050', windowColor: '#80c0e0', roofColor: '#101820' },
-    skyscraper:  { wallColor: '#101820', frameColor: '#182840', windowColor: '#60b0d0', roofColor: '#080f18' },
-    industrial:  { wallColor: '#252020', frameColor: '#352a2a', windowColor: '#c0a070', roofColor: '#1a1515' },
-    cathedral:   { wallColor: '#2a2820', frameColor: '#3a3828', windowColor: '#e0c080', roofColor: '#1a1810' },
-    church:      { wallColor: '#2a2820', frameColor: '#3a3828', windowColor: '#e0c080', roofColor: '#1a1810' },
+  const typeColours = {
+    house:        { wallColor: '#d4c0a0', frameColor: '#a08060', windowColor: '#c0d8e8', roofColor: '#7a4828' },
+    detached:     { wallColor: '#d0bca0', frameColor: '#9c7c58', windowColor: '#c0d8e8', roofColor: '#784828' },
+    semidetached: { wallColor: '#ccb89c', frameColor: '#987858', windowColor: '#c0d8e8', roofColor: '#765028' },
+    terrace:      { wallColor: '#c8b498', frameColor: '#947458', windowColor: '#b8d4e4', roofColor: '#744828' },
+    apartments:   { wallColor: '#b8c0c8', frameColor: '#8898a8', windowColor: '#b0d0e8', roofColor: '#606870' },
+    residential:  { wallColor: '#c8bca8', frameColor: '#988070', windowColor: '#b8d0e4', roofColor: '#706050' },
+    office:       { wallColor: '#9ab0c0', frameColor: '#6888a0', windowColor: '#c0dce8', roofColor: '#506070' },
+    commercial:   { wallColor: '#c0b8a0', frameColor: '#907860', windowColor: '#c8d8e0', roofColor: '#686050' },
+    retail:       { wallColor: '#c8b898', frameColor: '#a08060', windowColor: '#d0d8e0', roofColor: '#706048' },
+    skyscraper:   { wallColor: '#8090a8', frameColor: '#506080', windowColor: '#c0dce8', roofColor: '#384858' },
+    industrial:   { wallColor: '#a0a098', frameColor: '#707068', windowColor: '#b0c0c8', roofColor: '#585850' },
+    warehouse:    { wallColor: '#9c9888', frameColor: '#6c6858', windowColor: '#b0bcc4', roofColor: '#545040' },
+    church:       { wallColor: '#d8d0b8', frameColor: '#a89870', windowColor: '#d0c080', roofColor: '#706040' },
+    cathedral:    { wallColor: '#d4cdb0', frameColor: '#a09468', windowColor: '#d0c080', roofColor: '#686040' },
+    school:       { wallColor: '#d0c090', frameColor: '#a09060', windowColor: '#b8d0e0', roofColor: '#707040' },
+    hospital:     { wallColor: '#e0dcd4', frameColor: '#b0aca0', windowColor: '#b8d0e4', roofColor: '#808078' },
+    hotel:        { wallColor: '#c8b890', frameColor: '#987848', windowColor: '#c0d0e0', roofColor: '#705838' },
+    university:   { wallColor: '#c8b878', frameColor: '#988040', windowColor: '#b8d0e0', roofColor: '#706040' },
   };
-  return palettes[t] ?? { wallColor: '#1a2035', frameColor: '#2a3060', windowColor: '#a8c8ff', roofColor: '#1e2840' };
+
+  return typeColours[t] ?? {
+    wallColor:   '#c0bdb0',
+    frameColor:  '#908880',
+    windowColor: '#b8d0e0',
+    roofColor:   '#707068',
+  };
+}
+
+// ── Colour helpers ─────────────────────────────────────────────
+// Darken a hex colour by a factor (0–1).
+function _darken(hex, factor) {
+  const c = new THREE.Color(hex);
+  c.multiplyScalar(factor);
+  return '#' + c.getHexString();
+}
+
+// Tint a colour towards a neutral window blue-grey.
+function _tintBlue(hex) {
+  const c = new THREE.Color(hex);
+  const b = new THREE.Color('#b8d4e8');
+  c.lerp(b, 0.6);
+  return '#' + c.getHexString();
 }
