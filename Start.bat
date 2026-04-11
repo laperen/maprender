@@ -1,1 +1,1 @@
-start "" D:\Software\VSCodium-win32-x64-1.82.2.23257\VSCodium.exe "D:\Projects\Web\ClaudeAI_generated\MapRender"
+start "" D:\Software\VSCodium-win32-x64-1.82.2.23257\VSCodium.exe "D:\Projects\Web\Repositories\maprender"

@@ -8,14 +8,15 @@ export class MapFetcher {
   }
 
   // ── Geocoding ────────────────────────────────────────────────
-  /*async geocode(placeName) {
+  async geocode(placeName) {
     const url = `${this.nominatimUrl}?q=${encodeURIComponent(placeName)}&format=json&limit=1`;
     const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } });
     if (!res.ok) throw new Error('Geocoding failed');
     const data = await res.json();
     if (!data.length) throw new Error(`Place not found: "${placeName}"`);
     return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), display: data[0].display_name };
-  }*/
+  }
+  /*
   async geocode(placeName) {
     const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(placeName)}&limit=1&lang=en`;
     const res  = await fetch(url);
@@ -27,6 +28,7 @@ export class MapFetcher {
     const display = [props.name, props.city, props.country].filter(Boolean).join(', ');
     return { lat, lng, display };
   }
+  */
 
   // ── Overpass fetch ───────────────────────────────────────────
   /**
