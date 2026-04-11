@@ -49,8 +49,8 @@ export class WorldBuilder {
     return { buildings, roads, water, parks, triangleCount: tris };
   }
 
-  // ── Signed area of a 2D polygon in XZ space ──────────────────
-  // Returns positive if vertices are CCW, negative if CW.
+  // ── Signed area of polygon in XZ space ───────────────────────
+  // Positive = CCW, negative = CW (using the shoelace formula).
   _signedArea(verts) {
     let area = 0;
     const n  = verts.length;
@@ -62,26 +62,30 @@ export class WorldBuilder {
     return area / 2;
   }
 
+  // ── Ensure vertices are CCW in XZ space ──────────────────────
+  // All geometry code below assumes CCW input, so we normalise once here.
+  // Reversing the array flips CW → CCW without changing the shape.
+  _ensureCCW(verts) {
+    return this._signedArea(verts) < 0 ? verts.slice().reverse() : verts;
+  }
+
   // ── Building extrusion ────────────────────────────────────────
   _buildingMesh(way, heightScale) {
     const coords = way.coords;
     if (coords.length < 3) return null;
 
-    const h     = way.height * heightScale;
-    const verts = coords.slice(0, -1); // drop closing duplicate vertex
+    const h = way.height * heightScale;
+
+    // Drop closing duplicate vertex, then normalise to CCW.
+    // Everything below this point can assume CCW winding.
+    const verts = this._ensureCCW(coords.slice(0, -1));
     if (verts.length < 3) return null;
 
-    // Triangulate the footprint with earcut
+    // Triangulate the CCW footprint with earcut.
+    // earcut returns CCW triangles in its own 2D input space [x, z].
     const flat    = verts.flatMap(c => [c.x, c.z]);
     const indices = earcut(flat);
     if (!indices || !indices.length) return null;
-
-    // Determine polygon winding from signed area.
-    // OSM data can be either CW or CCW — we normalise here so wall
-    // normals always point outward regardless of source winding.
-    // CCW (positive area) → outward normal rotates edge direction by +90°
-    // CW  (negative area) → outward normal rotates edge direction by -90°
-    const isCCW = this._signedArea(verts) > 0;
 
     const n      = verts.length;
     const pos    = [];
@@ -89,6 +93,10 @@ export class WorldBuilder {
     const idxArr = [];
 
     // ── Side walls ──────────────────────────────────────────────
+    // For a CCW polygon in XZ, iterating edges A→B gives an outward
+    // normal of (dz/len, 0, -dx/len) where dx=bx-ax, dz=bz-az.
+    // Triangle winding (base, base+2, base+1) and (base, base+3, base+2)
+    // produces outward-facing front faces under Three.js default (CCW = front).
     for (let i = 0; i < n; i++) {
       const j    = (i + 1) % n;
       const ax   = verts[i].x, az = verts[i].z;
@@ -102,54 +110,34 @@ export class WorldBuilder {
         ax, h, az,   // 3 top-A
       );
 
-      // Outward normal: perpendicular to the edge in XZ, direction
-      // depends on whether the polygon winds CCW or CW.
       const dx  = bx - ax, dz = bz - az;
       const len = Math.sqrt(dx * dx + dz * dz) || 1;
-      // CCW polygon: outward is (dz/len, -dx/len)
-      // CW  polygon: outward is (-dz/len, dx/len)
-      const nx  = isCCW ?  dz / len : -dz / len;
-      const nz  = isCCW ? -dx / len :  dx / len;
+      const nx  =  dz / len;   // outward X for CCW polygon
+      const nz  = -dx / len;   // outward Z for CCW polygon
       for (let k = 0; k < 4; k++) nrm.push(nx, 0, nz);
 
-      // Triangle winding must also match polygon orientation so that
-      // Three.js front-face culling agrees with the normal direction.
-      if (isCCW) {
-        idxArr.push(
-          base,     base + 2, base + 1,   // CCW winding → normal points out
-          base,     base + 3, base + 2,
-        );
-      } else {
-        idxArr.push(
-          base,     base + 1, base + 2,   // CW winding → flip triangles
-          base,     base + 2, base + 3,
-        );
-      }
+      idxArr.push(
+        base,     base + 2, base + 1,
+        base,     base + 3, base + 2,
+      );
     }
 
-    // ── Top face ────────────────────────────────────────────────
+    // ── Top (roof) face ─────────────────────────────────────────
+    // earcut is called with [x, z] pairs and returns CCW triangles in
+    // that 2D space. In Three.js XZ with Y-up, a CCW triangle in (x,z)
+    // has its normal pointing in the -Y direction (into the ground).
+    // We therefore reverse each triangle's winding to flip the normal
+    // to +Y (upward), which is what we want for the roof.
     const topBase = pos.length / 3;
     for (const v of verts) pos.push(v.x, h, v.z);
     for (let k = 0; k < n; k++) nrm.push(0, 1, 0);
 
-    // earcut returns indices that are CCW in standard 2D (Y-up).
-    // Our top face is in XZ (Y-up = out of the ground), so:
-    // CCW earcut winding → normal points up   ✓ keep as-is
-    // CW  earcut winding → normal points down ✗ flip
     for (let k = 0; k < indices.length; k += 3) {
-      if (isCCW) {
-        idxArr.push(
-          topBase + indices[k + 2],
-          topBase + indices[k + 1],
-          topBase + indices[k],
-        );
-      } else {
-        idxArr.push(
-          topBase + indices[k],
-          topBase + indices[k + 1],
-          topBase + indices[k + 2],
-        );
-      }
+      idxArr.push(
+        topBase + indices[k],
+        topBase + indices[k + 2],
+        topBase + indices[k + 1],
+      );
     }
 
     const geom = new THREE.BufferGeometry();
@@ -207,8 +195,10 @@ export class WorldBuilder {
 
   // ── Flat polygon (water / park) ───────────────────────────────
   _flatPolygon(way, baseMat, yOffset = 0) {
-    const verts = way.coords.slice(0, -1);
+    // Same normalise-to-CCW approach, same earcut winding flip for +Y normal.
+    const verts = this._ensureCCW(way.coords.slice(0, -1));
     if (verts.length < 3) return null;
+
     const flat    = verts.flatMap(v => [v.x, v.z]);
     const indices = earcut(flat);
     if (!indices.length) return null;
@@ -217,15 +207,10 @@ export class WorldBuilder {
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
 
-    // Use same winding detection so flat polygons also face upward
-    const isCCW   = this._signedArea(verts) > 0;
+    // Flip winding so normals face upward (same reason as roof above)
     const flipped = [];
     for (let i = 0; i < indices.length; i += 3) {
-      if (isCCW) {
-        flipped.push(indices[i + 2], indices[i + 1], indices[i]);
-      } else {
-        flipped.push(indices[i], indices[i + 1], indices[i + 2]);
-      }
+      flipped.push(indices[i], indices[i + 2], indices[i + 1]);
     }
     geom.setIndex(flipped);
     geom.computeVertexNormals();
