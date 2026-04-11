@@ -6,20 +6,17 @@ export class UIController {
     this.builder = builder;
     this.minimap = minimap;
 
-    // Current state
     this.lat         = 35.6812;
     this.lng         = 139.7671;
     this.radius      = 500;
-    this.heightScale = 1;   // 1.0 = real-world metres; slider goes 0.5–5×
+    this.heightScale = 1;
     this.renderMode  = 'solid';
   }
 
   init() {
     this._bindElements();
     this._bindEvents();
-    // Sync slider display to initial value
     this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
-    // Initial minimap update
     this.minimap.update(this.lng, this.lat, this.radius);
   }
 
@@ -45,11 +42,9 @@ export class UIController {
   }
 
   _bindEvents() {
-    // Search / geocode
     this.$searchBtn.addEventListener('click', () => this._geocode());
     this.$locationInput.addEventListener('keydown', e => { if (e.key === 'Enter') this._geocode(); });
 
-    // Coord inputs
     this.$latInput.addEventListener('change', () => {
       this.lat = parseFloat(this.$latInput.value) || this.lat;
       this._updateMinimap();
@@ -59,21 +54,17 @@ export class UIController {
       this._updateMinimap();
     });
 
-    // Radius slider
     this.$radiusSlider.addEventListener('input', () => {
       this.radius = parseInt(this.$radiusSlider.value);
       this.$radiusVal.textContent = `${this.radius}m`;
       this._updateMinimap();
     });
 
-    // Height slider — range is 0.5–5.0 in 0.5 steps, stored on slider as 1–10
-    // so we divide by 2 to get the real multiplier.
     this.$heightSlider.addEventListener('input', () => {
       this.heightScale = parseInt(this.$heightSlider.value) / 2;
       this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
     });
 
-    // Render mode buttons
     this.$modeBtns.forEach(btn => {
       btn.addEventListener('click', () => {
         this.$modeBtns.forEach(b => b.classList.remove('active'));
@@ -83,10 +74,8 @@ export class UIController {
       });
     });
 
-    // Generate
     this.$generateBtn.addEventListener('click', () => this._generate());
 
-    // Tooltip on hover over canvas
     this.$canvas.addEventListener('mousemove', e => this._onMouseMove(e));
     this.$canvas.addEventListener('mouseleave', () => { this.$tooltip.classList.add('hidden'); });
   }
@@ -114,29 +103,43 @@ export class UIController {
     this.$generateBtn.disabled = true;
     this.$stats.classList.add('hidden');
 
-    // ── Clear immediately so no overlap if Generate is clicked again ──
+    // Clear immediately to prevent overlap if clicked again before fetch resolves
     this.scene.clearWorld();
     this._setStatus('Fetching map data…', 'active loading');
 
     try {
-      // Retry Overpass up to 3 times on 504 Gateway Timeout
       const ways = await this._fetchWithRetry(this.lat, this.lng, this.radius);
       if (!ways.length) throw new Error('No map features found in this area.');
 
       this._setStatus(`Building 3D world from ${ways.length} features…`, 'active loading');
-      await this._nextFrame(); // allow UI repaint
+      await this._nextFrame();
 
-      const result = this.builder.build(ways, this.heightScale);
+      // Pass lat/lng/radius so builder can fetch the satellite ground tile
+      const result = await this.builder.build(
+        ways,
+        this.heightScale,
+        this.lat,
+        this.lng,
+        this.radius,
+      );
+
       this.scene.setRenderMode(this.renderMode);
       this.scene.flyTo(0, 0, this.radius);
 
-      // Update stats
       this.$statBuildings.textContent = `${result.buildings} buildings`;
       this.$statRoads.textContent     = `${result.roads} road segments`;
       this.$statTris.textContent      = `${Math.round(result.triangleCount).toLocaleString()} triangles`;
       this.$stats.classList.remove('hidden');
 
-      this._setStatus('3D world generated. Drag to orbit, scroll to zoom.', '');
+      this._setStatus('3D world generated. Satellite imagery loading…', '');
+
+      // Update status once satellite tile is likely done (fire-and-forget timing)
+      setTimeout(() => {
+        if (this.$status.textContent.includes('Satellite')) {
+          this._setStatus('3D world generated. Drag to orbit, scroll to zoom.', '');
+        }
+      }, 6000);
+
     } catch (err) {
       this._setStatus(`Error: ${err.message}`, 'error');
       console.error(err);
@@ -145,7 +148,7 @@ export class UIController {
     }
   }
 
-  // ── Overpass fetch with retry on 504 ────────────────────────
+  // ── Overpass retry across mirrors ────────────────────────────
   async _fetchWithRetry(lat, lng, radius, maxAttempts = 3) {
     const MIRRORS = [
       'https://overpass-api.de/api/interpreter',
@@ -166,18 +169,18 @@ export class UIController {
         return await this.fetcher.fetchArea(lat, lng, radius, mirror);
       } catch (err) {
         lastError = err;
-        // Only retry on timeout/server errors; fail fast on others
-        if (!err.message.includes('504') && !err.message.includes('429') && !err.message.includes('Overpass error')) {
+        if (!err.message.includes('504') &&
+            !err.message.includes('429') &&
+            !err.message.includes('Overpass error')) {
           throw err;
         }
-        // Brief pause before retry
         await this._sleep(1500 * (attempt + 1));
       }
     }
     throw lastError;
   }
 
-  // ── Tooltip on hover ─────────────────────────────────────────
+  // ── Tooltip ──────────────────────────────────────────────────
   _onMouseMove(e) {
     const hit = this.scene.pick(e.clientX, e.clientY);
     if (hit && hit.object.userData.kind) {
@@ -208,11 +211,6 @@ export class UIController {
     this.minimap.update(this.lng, this.lat, this.radius, this.$styleSelect.value);
   }
 
-  _nextFrame() {
-    return new Promise(r => requestAnimationFrame(r));
-  }
-
-  _sleep(ms) {
-    return new Promise(r => setTimeout(r, ms));
-  }
+  _nextFrame() { return new Promise(r => requestAnimationFrame(r)); }
+  _sleep(ms)   { return new Promise(r => setTimeout(r, ms)); }
 }

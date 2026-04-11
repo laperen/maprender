@@ -4,9 +4,11 @@ import { OrbitControlsImpl } from './orbitControls.js';
 
 export class SceneManager {
   constructor(container) {
-    this.container = container;
-    this.renderMode = 'solid'; // solid | wireframe | xray
-    this._objects   = [];       // tracked mesh groups
+    this.container  = container;
+    this.renderMode = 'solid';
+    this._objects   = [];
+    this._clock     = new THREE.Clock();
+    this._groundMesh = null;
   }
 
   // ── Initialise Three.js ─────────────────────────────────────
@@ -20,21 +22,22 @@ export class SceneManager {
     this.renderer.setSize(w, h);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
-    this.renderer.toneMapping       = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.2;
+    // Toon shading looks better without heavy tone mapping
+    this.renderer.toneMapping        = THREE.NoToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
     this.container.appendChild(this.renderer.domElement);
 
     // Scene
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x08090c);
-    this.scene.fog = new THREE.FogExp2(0x08090c, 0.0008);
+    this.scene.background = new THREE.Color(0x8aa8c8); // soft anime sky blue
+    this.scene.fog = new THREE.Fog(0x8aa8c8, 800, 4000);
 
     // Camera
     this.camera = new THREE.PerspectiveCamera(55, w / h, 1, 20000);
     this.camera.position.set(0, 600, 1200);
     this.camera.lookAt(0, 0, 0);
 
-    // Orbit controls (vanilla — no React)
+    // Orbit controls
     this.controls = new OrbitControlsImpl(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.07;
@@ -42,21 +45,18 @@ export class SceneManager {
     this.controls.minDistance   = 50;
     this.controls.maxDistance   = 8000;
 
-    // Lights
+    // Lights (toon-friendly — fewer, stronger, more directional)
     this._addLights();
 
-    // Grid helper (ground reference)
-    const grid = new THREE.GridHelper(4000, 80, 0x1e2130, 0x1e2130);
-    grid.position.y = -0.5;
-    this.scene.add(grid);
-
-    // Ground plane
-    const groundGeo  = new THREE.PlaneGeometry(8000, 8000);
-    const groundMat  = new THREE.MeshStandardMaterial({ color: 0x0a0d14, roughness: 1 });
-    const groundMesh = new THREE.Mesh(groundGeo, groundMat);
-    groundMesh.rotation.x = -Math.PI / 2;
-    groundMesh.receiveShadow = true;
-    this.scene.add(groundMesh);
+    // Ground plane — large enough to catch shadows beyond the OSM area.
+    // Material is plain until the satellite texture loads via setGroundTexture().
+    const groundGeo  = new THREE.PlaneGeometry(6000, 6000);
+    const groundMat  = new THREE.MeshLambertMaterial({ color: 0x3a4a30 });
+    this._groundMesh = new THREE.Mesh(groundGeo, groundMat);
+    this._groundMesh.rotation.x    = -Math.PI / 2;
+    this._groundMesh.receiveShadow  = true;
+    this._groundMesh.userData.isGround = true;
+    this.scene.add(this._groundMesh);
 
     // Raycaster for tooltip
     this.raycaster  = new THREE.Raycaster();
@@ -67,30 +67,34 @@ export class SceneManager {
   }
 
   _addLights() {
-    // Ambient
-    const ambient = new THREE.AmbientLight(0x3040a0, 0.4);
-    this.scene.add(ambient);
+    // Toon shading needs clean directional light with minimal fill so the
+    // gradient map steps are visible. Too much ambient washes out the effect.
 
-    // Sun (directional)
-    const sun = new THREE.DirectionalLight(0xfff0d0, 1.6);
-    sun.position.set(800, 1200, 600);
+    // Main sun — warm daylight angle
+    const sun = new THREE.DirectionalLight(0xfff5e0, 2.0);
+    sun.position.set(600, 1000, 400);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.near = 10;
-    sun.shadow.camera.far  = 5000;
-    sun.shadow.camera.left = sun.shadow.camera.bottom = -1500;
-    sun.shadow.camera.right = sun.shadow.camera.top  =  1500;
+    sun.shadow.camera.near   = 10;
+    sun.shadow.camera.far    = 5000;
+    sun.shadow.camera.left   = -1500;
+    sun.shadow.camera.right  =  1500;
+    sun.shadow.camera.top    =  1500;
+    sun.shadow.camera.bottom = -1500;
     sun.shadow.bias = -0.0003;
     this.scene.add(sun);
+    this.sun = sun; // expose for future day/night cycle
 
-    // Accent fill (cool blue)
-    const fill = new THREE.DirectionalLight(0x4080ff, 0.5);
-    fill.position.set(-400, 200, -600);
-    this.scene.add(fill);
+    // Soft sky ambient — anime scenes have a coloured ambient from the sky
+    const ambient = new THREE.AmbientLight(0x6080c0, 0.5);
+    this.scene.add(ambient);
+    this.ambientLight = ambient;
 
-    // Ground bounce
-    const bounce = new THREE.HemisphereLight(0x1a2040, 0x080a10, 0.6);
-    this.scene.add(bounce);
+    // Cool rim/fill from opposite side — gives the characteristic anime
+    // blue-shadow look on building faces away from the sun
+    const rim = new THREE.DirectionalLight(0x4060a0, 0.6);
+    rim.position.set(-400, 300, -500);
+    this.scene.add(rim);
   }
 
   // ── Render loop ─────────────────────────────────────────────
@@ -99,9 +103,50 @@ export class SceneManager {
     const animate = () => {
       requestAnimationFrame(animate);
       this.controls.update();
+
+      // Animate water UV offset for gentle flow effect
+      const t = this._clock.getElapsedTime();
+      this._objects.forEach(group => {
+        group.traverse(child => {
+          if (child.isMesh && child.userData.isWater) {
+            const mat = child.material;
+            if (mat && mat.map) {
+              mat.map.offset.set(t * 0.012, t * 0.006);
+              mat.map.needsUpdate = true;
+            }
+          }
+        });
+      });
+
       this.renderer.render(this.scene, this.camera);
     };
     animate();
+  }
+
+  // ── Satellite ground texture ─────────────────────────────────
+  // Called by WorldBuilder once the tile fetch resolves.
+  // Scales the texture so one unit = one metre on the ground plane.
+  setGroundTexture(tex, radiusMeters) {
+    if (!this._groundMesh) return;
+
+    // The ground plane is 6000×6000 units.
+    // The satellite composite covers 3 tiles wide. At the chosen zoom the
+    // tile covers roughly 2×radiusMeters in world space, so the 3-tile
+    // composite covers ~6×radiusMeters. We scale the UV repeat so the
+    // texture exactly fills the 6000-unit plane.
+    const planeSize   = 6000;
+    const coverageM   = radiusMeters * 6;
+    const repeat      = planeSize / coverageM;
+
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.repeat.set(repeat, repeat);
+    tex.center.set(0.5, 0.5);
+    tex.needsUpdate = true;
+
+    this._groundMesh.material.map     = tex;
+    this._groundMesh.material.color.set(0xffffff); // let texture show through
+    this._groundMesh.material.needsUpdate = true;
   }
 
   // ── Object management ────────────────────────────────────────
@@ -120,6 +165,16 @@ export class SceneManager {
     }
     this._objects   = [];
     this._pickables = [];
+
+    // Reset ground to plain colour while next satellite tile loads
+    if (this._groundMesh) {
+      if (this._groundMesh.material.map) {
+        this._groundMesh.material.map.dispose();
+        this._groundMesh.material.map = null;
+      }
+      this._groundMesh.material.color.set(0x3a4a30);
+      this._groundMesh.material.needsUpdate = true;
+    }
   }
 
   addObject(obj, pickable = false) {
@@ -133,22 +188,28 @@ export class SceneManager {
     this.renderMode = mode;
     this._objects.forEach(group => {
       group.traverse(child => {
-        if (!child.isMesh) return;
-        if (child.userData.isGround) return;
+        if (!child.isMesh)               return;
+        if (child.userData.isGround)     return;
 
-        if (mode === 'wireframe') {
-          child.material.wireframe = true;
-          child.material.opacity   = 1;
-          child.material.transparent = false;
-        } else if (mode === 'xray') {
-          child.material.wireframe    = false;
-          child.material.transparent  = true;
-          child.material.opacity      = 0.35;
-        } else {
-          child.material.wireframe    = false;
-          child.material.transparent  = false;
-          child.material.opacity      = 1;
-        }
+        const mats = Array.isArray(child.material)
+          ? child.material
+          : [child.material];
+
+        mats.forEach(mat => {
+          if (mode === 'wireframe') {
+            mat.wireframe   = true;
+            mat.transparent = false;
+            mat.opacity     = 1;
+          } else if (mode === 'xray') {
+            mat.wireframe   = false;
+            mat.transparent = true;
+            mat.opacity     = 0.35;
+          } else {
+            mat.wireframe   = false;
+            mat.transparent = child.userData.isWater;
+            mat.opacity     = child.userData.isWater ? 0.88 : 1;
+          }
+        });
       });
     });
   }
