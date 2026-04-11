@@ -33,7 +33,7 @@ export class MapFetcher {
     const endpoint = overpassUrl || this.overpassUrl;
     const r        = radiusMeters;
     const query    = `
-[out:json][timeout:30];
+[out:json][timeout:25];
 (
   way["building"](around:${r},${lat},${lng});
   way["highway"](around:${r},${lat},${lng});
