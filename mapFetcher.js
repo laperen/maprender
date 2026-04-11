@@ -1,6 +1,5 @@
 // js/mapFetcher.js — Fetches OSM vector data via Overpass API
 // Geocoding via Photon (CORS-friendly, OSM-backed).
-// Direct browser fetch — no proxy needed on GitHub Pages.
 
 export class MapFetcher {
   constructor() {
@@ -24,11 +23,16 @@ export class MapFetcher {
   // ── Overpass fetch ───────────────────────────────────────────
   /**
    * Fetch buildings, roads, water, parks within `radiusMeters` of (lat, lng).
-   * Returns parsed way objects.
+   * @param {number} lat
+   * @param {number} lng
+   * @param {number} radiusMeters
+   * @param {string} [overpassUrl] — optional mirror URL, falls back to default
+   * @returns {Array} parsed way objects
    */
-  async fetchArea(lat, lng, radiusMeters = 500) {
-    const r     = radiusMeters;
-    const query = `
+  async fetchArea(lat, lng, radiusMeters = 500, overpassUrl) {
+    const endpoint = overpassUrl || this.overpassUrl;
+    const r        = radiusMeters;
+    const query    = `
 [out:json][timeout:30];
 (
   way["building"](around:${r},${lat},${lng});
@@ -43,7 +47,7 @@ out body;
 out skel qt;
     `.trim();
 
-    const res = await fetch(this.overpassUrl, {
+    const res = await fetch(endpoint, {
       method:  'POST',
       body:    `data=${encodeURIComponent(query)}`,
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -56,7 +60,7 @@ out skel qt;
 
   // ── Parse OSM JSON → structured data ────────────────────────
   _parse(json, centerLat, centerLng) {
-    const nodes = new Map(); // id → {lat, lng}
+    const nodes = new Map();
     const ways  = [];
 
     for (const el of json.elements) {
@@ -81,7 +85,7 @@ out skel qt;
         id:     el.id,
         kind,
         tags:   el.tags,
-        coords,                                  // [{x, z}] in metres relative to center
+        coords,
         height: this._estimateHeight(el.tags),
         closed: el.nodes[0] === el.nodes[el.nodes.length - 1],
       });
@@ -92,11 +96,11 @@ out skel qt;
 
   // ── Mercator flat projection (metres from centre) ─────────────
   _project(lat, lng, cLat, cLng) {
-    const R    = 6378137; // Earth radius metres
+    const R    = 6378137;
     const dLat = (lat - cLat) * Math.PI / 180;
     const dLng = (lng - cLng) * Math.PI / 180;
     const x    = dLng * R * Math.cos(cLat * Math.PI / 180);
-    const z    = -dLat * R; // negative so north is +z visually
+    const z    = -dLat * R;
     return { x, z };
   }
 

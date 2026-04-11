@@ -59,9 +59,13 @@
         <input type="range" id="radius-slider" min="200" max="2000" step="100" value="500" />
       </div>
 
+      <!--
+        Height slider: internal value 1–10, divided by 2 in ui.js to give
+        0.5×–5.0× multiplier. Default 2 = 1.0× (true real-world scale).
+      -->
       <div class="control-group">
         <label for="height-slider">Building Height Scale <span id="height-val">1.0×</span></label>
-        <input type="range" id="height-slider" min="1" max="50" step="1" value="10" />
+        <input type="range" id="height-slider" min="1" max="10" step="1" value="2" />
       </div>
 
       <div class="control-group">

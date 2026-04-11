@@ -4,11 +4,11 @@ import { earcut }  from './earcut.js';
 
 // ── Material palette ─────────────────────────────────────────
 const MAT = {
-  building: new THREE.MeshStandardMaterial({ color: 0x1a2035, roughness: 0.7, metalness: 0.3 }),
+  building:    new THREE.MeshStandardMaterial({ color: 0x1a2035, roughness: 0.7, metalness: 0.3 }),
   buildingTop: new THREE.MeshStandardMaterial({ color: 0x2a3555, roughness: 0.5, metalness: 0.4 }),
-  road:     new THREE.MeshStandardMaterial({ color: 0x151820, roughness: 1.0 }),
-  water:    new THREE.MeshStandardMaterial({ color: 0x0a3060, roughness: 0.1, metalness: 0.5, transparent: true, opacity: 0.85 }),
-  park:     new THREE.MeshStandardMaterial({ color: 0x0d2210, roughness: 1.0 }),
+  road:        new THREE.MeshStandardMaterial({ color: 0x151820, roughness: 1.0 }),
+  water:       new THREE.MeshStandardMaterial({ color: 0x0a3060, roughness: 0.1, metalness: 0.5, transparent: true, opacity: 0.85 }),
+  park:        new THREE.MeshStandardMaterial({ color: 0x0d2210, roughness: 1.0 }),
 };
 
 export class WorldBuilder {
@@ -19,11 +19,13 @@ export class WorldBuilder {
   /**
    * Takes the structured ways array from MapFetcher and builds 3D geometry.
    * @param {Array}  ways         — array of way objects
-   * @param {number} heightScale  — multiplier applied to building heights
+   * @param {number} heightScale  — multiplier applied to building heights (1.0 = real-world metres)
    * @returns {{ buildings, roads, water, parks, triangleCount }}
    */
-  build(ways, heightScale = 10) {
-    this.scene.clearWorld();
+  build(ways, heightScale = 1) {
+    // NOTE: clearWorld() is now called in ui.js immediately on Generate click,
+    // before the async fetch, so we do not call it here. This prevents the
+    // overlap bug caused by two fetches racing and both clearing+rebuilding.
 
     let buildings = 0, roads = 0, water = 0, parks = 0, tris = 0;
     const buildingGroup = new THREE.Group();
@@ -48,7 +50,7 @@ export class WorldBuilder {
     }
 
     this.scene.addObject(buildingGroup, true); // buildings are pickable
-    return { buildings, roads: roads, water, parks, triangleCount: tris };
+    return { buildings, roads, water, parks, triangleCount: tris };
   }
 
   // ── Building extrusion ────────────────────────────────────────
@@ -56,8 +58,9 @@ export class WorldBuilder {
     const coords = way.coords;
     if (coords.length < 3) return null;
 
+    // way.height is in real-world metres. heightScale is a user multiplier.
     const h     = way.height * heightScale;
-    const verts = coords.slice(0, -1); // drop closing vertex
+    const verts = coords.slice(0, -1); // drop the closing duplicate vertex
     if (verts.length < 3) return null;
 
     // Triangulate the footprint with earcut
@@ -65,48 +68,63 @@ export class WorldBuilder {
     const indices = earcut(flat);
     if (!indices || !indices.length) return null;
 
-    const geom = new THREE.BufferGeometry();
-
-    // Positions: bottom ring + top ring + top face
-    const n     = verts.length;
-    const pos   = [];
-    const nrm   = [];
+    const n      = verts.length;
+    const pos    = [];
+    const nrm    = [];
     const idxArr = [];
 
-    // Side walls
+    // ── Side walls ──────────────────────────────────────────────
+    // Each wall is a quad: bottom-A, bottom-B, top-B, top-A.
+    // Triangles use reversed winding vs the original so normals
+    // point outward rather than inward.
     for (let i = 0; i < n; i++) {
-      const j   = (i + 1) % n;
-      const ax  = verts[i].x, az = verts[i].z;
-      const bx  = verts[j].x, bz = verts[j].z;
+      const j    = (i + 1) % n;
+      const ax   = verts[i].x, az = verts[i].z;
+      const bx   = verts[j].x, bz = verts[j].z;
       const base = pos.length / 3;
 
-      // 4 vertices per wall quad
-      pos.push(ax, 0, az,  bx, 0, bz,  bx, h, bz,  ax, h, az);
+      pos.push(
+        ax, 0, az,   // 0 bottom-A
+        bx, 0, bz,   // 1 bottom-B
+        bx, h, bz,   // 2 top-B
+        ax, h, az,   // 3 top-A
+      );
 
-      // Normal
-      const dx = bx - ax, dz = bz - az;
-      const len = Math.sqrt(dx*dx + dz*dz) || 1;
-      const nx = -dz/len, nz = dx/len;
+      // Outward normal: rotate edge direction 90° in XZ plane
+      const dx  = bx - ax, dz = bz - az;
+      const len = Math.sqrt(dx * dx + dz * dz) || 1;
+      const nx  = dz / len, nz = -dx / len;
       for (let k = 0; k < 4; k++) nrm.push(nx, 0, nz);
 
-      idxArr.push(base, base+1, base+2,  base, base+2, base+3);
+      // Corrected winding — outward-facing triangles
+      idxArr.push(
+        base,     base + 2, base + 1,
+        base,     base + 3, base + 2,
+      );
     }
 
-    // Top face
+    // ── Top face ────────────────────────────────────────────────
     const topBase = pos.length / 3;
     for (const v of verts) pos.push(v.x, h, v.z);
     for (let k = 0; k < n; k++) nrm.push(0, 1, 0);
+
+    // earcut gives CCW winding in 2D XY; our top face lives in XZ with Y up,
+    // so flip each triangle to keep the normal pointing upward.
     for (let k = 0; k < indices.length; k += 3) {
-      idxArr.push(topBase + indices[k], topBase + indices[k+1], topBase + indices[k+2]);
+      idxArr.push(
+        topBase + indices[k],
+        topBase + indices[k + 2],
+        topBase + indices[k + 1],
+      );
     }
 
+    const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geom.setAttribute('normal',   new THREE.Float32BufferAttribute(nrm, 3));
     geom.setIndex(idxArr);
 
-    const mat  = MAT.building.clone();
-    // Vary colour slightly per building
-    const hue  = (way.id % 40) / 40;
+    const mat = MAT.building.clone();
+    const hue = (way.id % 40) / 40;
     mat.color.setHSL(0.6 + hue * 0.1, 0.3, 0.12 + hue * 0.08);
 
     const mesh = new THREE.Mesh(geom, mat);
@@ -130,7 +148,7 @@ export class WorldBuilder {
       const next = coords[i + 1] || coords[i];
       const dx   = next.x - prev.x;
       const dz   = next.z - prev.z;
-      const len  = Math.sqrt(dx*dx + dz*dz) || 1;
+      const len  = Math.sqrt(dx * dx + dz * dz) || 1;
       const nx   = -dz / len, nz = dx / len;
       pos.push(
         coords[i].x + nx * hw, 0.1, coords[i].z + nz * hw,
@@ -138,7 +156,8 @@ export class WorldBuilder {
       );
       if (i > 0) {
         const b = (i - 1) * 2;
-        idx.push(b, b+1, b+2,  b+1, b+3, b+2);
+        // Corrected winding for upward-facing road surface
+        idx.push(b, b + 2, b + 1,   b + 1, b + 2, b + 3);
       }
     }
 
@@ -147,8 +166,7 @@ export class WorldBuilder {
     geom.setIndex(idx);
     geom.computeVertexNormals();
 
-    const mat  = MAT.road.clone();
-    const mesh = new THREE.Mesh(geom, mat);
+    const mesh = new THREE.Mesh(geom, MAT.road.clone());
     mesh.receiveShadow = true;
     mesh.userData      = { kind: 'road', tags: way.tags };
     return mesh;
@@ -165,11 +183,16 @@ export class WorldBuilder {
     const pos = verts.flatMap(v => [v.x, yOffset, v.z]);
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geom.setIndex(indices);
+
+    // Flip winding so normals face upward
+    const flipped = [];
+    for (let i = 0; i < indices.length; i += 3) {
+      flipped.push(indices[i], indices[i + 2], indices[i + 1]);
+    }
+    geom.setIndex(flipped);
     geom.computeVertexNormals();
 
-    const mat  = baseMat.clone();
-    return new THREE.Mesh(geom, mat);
+    return new THREE.Mesh(geom, baseMat.clone());
   }
 
   // ── Road width by OSM highway tag ────────────────────────────
@@ -177,7 +200,7 @@ export class WorldBuilder {
     const w = {
       motorway: 8, trunk: 6, primary: 5, secondary: 4,
       tertiary: 3, residential: 2.5, service: 1.5,
-      footway: 1,  path: 0.8, cycleway: 1.2,
+      footway: 1, path: 0.8, cycleway: 1.2,
     };
     return w[highway] ?? 2;
   }

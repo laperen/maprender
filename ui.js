@@ -10,13 +10,15 @@ export class UIController {
     this.lat         = 35.6812;
     this.lng         = 139.7671;
     this.radius      = 500;
-    this.heightScale = 10;
+    this.heightScale = 1;   // 1.0 = real-world metres; slider goes 0.5–5×
     this.renderMode  = 'solid';
   }
 
   init() {
     this._bindElements();
     this._bindEvents();
+    // Sync slider display to initial value
+    this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
     // Initial minimap update
     this.minimap.update(this.lng, this.lat, this.radius);
   }
@@ -48,8 +50,14 @@ export class UIController {
     this.$locationInput.addEventListener('keydown', e => { if (e.key === 'Enter') this._geocode(); });
 
     // Coord inputs
-    this.$latInput.addEventListener('change', () => { this.lat = parseFloat(this.$latInput.value) || this.lat; this._updateMinimap(); });
-    this.$lngInput.addEventListener('change', () => { this.lng = parseFloat(this.$lngInput.value) || this.lng; this._updateMinimap(); });
+    this.$latInput.addEventListener('change', () => {
+      this.lat = parseFloat(this.$latInput.value) || this.lat;
+      this._updateMinimap();
+    });
+    this.$lngInput.addEventListener('change', () => {
+      this.lng = parseFloat(this.$lngInput.value) || this.lng;
+      this._updateMinimap();
+    });
 
     // Radius slider
     this.$radiusSlider.addEventListener('input', () => {
@@ -58,10 +66,11 @@ export class UIController {
       this._updateMinimap();
     });
 
-    // Height slider
+    // Height slider — range is 0.5–5.0 in 0.5 steps, stored on slider as 1–10
+    // so we divide by 2 to get the real multiplier.
     this.$heightSlider.addEventListener('input', () => {
-      this.heightScale = parseInt(this.$heightSlider.value);
-      this.$heightVal.textContent = `${this.heightScale}.0×`;
+      this.heightScale = parseInt(this.$heightSlider.value) / 2;
+      this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
     });
 
     // Render mode buttons
@@ -104,10 +113,14 @@ export class UIController {
   async _generate() {
     this.$generateBtn.disabled = true;
     this.$stats.classList.add('hidden');
+
+    // ── Clear immediately so no overlap if Generate is clicked again ──
+    this.scene.clearWorld();
     this._setStatus('Fetching map data…', 'active loading');
 
     try {
-      const ways = await this.fetcher.fetchArea(this.lat, this.lng, this.radius);
+      // Retry Overpass up to 3 times on 504 Gateway Timeout
+      const ways = await this._fetchWithRetry(this.lat, this.lng, this.radius);
       if (!ways.length) throw new Error('No map features found in this area.');
 
       this._setStatus(`Building 3D world from ${ways.length} features…`, 'active loading');
@@ -130,6 +143,38 @@ export class UIController {
     } finally {
       this.$generateBtn.disabled = false;
     }
+  }
+
+  // ── Overpass fetch with retry on 504 ────────────────────────
+  async _fetchWithRetry(lat, lng, radius, maxAttempts = 3) {
+    const MIRRORS = [
+      'https://overpass-api.de/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+    ];
+
+    let lastError;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const mirror = MIRRORS[attempt % MIRRORS.length];
+      try {
+        this._setStatus(
+          attempt === 0
+            ? 'Fetching map data…'
+            : `Retrying (attempt ${attempt + 1} of ${maxAttempts})…`,
+          'active loading'
+        );
+        return await this.fetcher.fetchArea(lat, lng, radius, mirror);
+      } catch (err) {
+        lastError = err;
+        // Only retry on timeout/server errors; fail fast on others
+        if (!err.message.includes('504') && !err.message.includes('429') && !err.message.includes('Overpass error')) {
+          throw err;
+        }
+        // Brief pause before retry
+        await this._sleep(1500 * (attempt + 1));
+      }
+    }
+    throw lastError;
   }
 
   // ── Tooltip on hover ─────────────────────────────────────────
@@ -155,8 +200,8 @@ export class UIController {
 
   // ── Helpers ──────────────────────────────────────────────────
   _setStatus(msg, cls) {
-    this.$status.textContent  = msg;
-    this.$status.className    = cls || '';
+    this.$status.textContent = msg;
+    this.$status.className   = cls || '';
   }
 
   _updateMinimap() {
@@ -165,5 +210,9 @@ export class UIController {
 
   _nextFrame() {
     return new Promise(r => requestAnimationFrame(r));
+  }
+
+  _sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
   }
 }
