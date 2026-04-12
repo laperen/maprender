@@ -43,7 +43,9 @@ export class UIController {
 
   _bindEvents() {
     this.$searchBtn.addEventListener('click', () => this._geocode());
-    this.$locationInput.addEventListener('keydown', e => { if (e.key === 'Enter') this._geocode(); });
+    this.$locationInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') this._geocode();
+    });
 
     this.$latInput.addEventListener('change', () => {
       this.lat = parseFloat(this.$latInput.value) || this.lat;
@@ -77,10 +79,11 @@ export class UIController {
     this.$generateBtn.addEventListener('click', () => this._generate());
 
     this.$canvas.addEventListener('mousemove', e => this._onMouseMove(e));
-    this.$canvas.addEventListener('mouseleave', () => { this.$tooltip.classList.add('hidden'); });
+    this.$canvas.addEventListener('mouseleave', () => {
+      this.$tooltip.classList.add('hidden');
+    });
   }
 
-  // ── Geocode ─────────────────────────────────────────────────
   async _geocode() {
     const q = this.$locationInput.value.trim();
     if (!q) return;
@@ -98,12 +101,10 @@ export class UIController {
     }
   }
 
-  // ── Generate 3D World ────────────────────────────────────────
   async _generate() {
     this.$generateBtn.disabled = true;
     this.$stats.classList.add('hidden');
 
-    // Clear immediately to prevent overlap if clicked again before fetch resolves
     this.scene.clearWorld();
     this._setStatus('Fetching map data…', 'active loading');
 
@@ -111,10 +112,9 @@ export class UIController {
       const ways = await this._fetchWithRetry(this.lat, this.lng, this.radius);
       if (!ways.length) throw new Error('No map features found in this area.');
 
-      this._setStatus(`Building 3D world from ${ways.length} features…`, 'active loading');
+      this._setStatus('Fetching elevation data and building world…', 'active loading');
       await this._nextFrame();
 
-      // Pass lat/lng/radius so builder can fetch the satellite ground tile
       const result = await this.builder.build(
         ways,
         this.heightScale,
@@ -131,12 +131,10 @@ export class UIController {
       this.$statTris.textContent      = `${Math.round(result.triangleCount).toLocaleString()} triangles`;
       this.$stats.classList.remove('hidden');
 
-      this._setStatus('3D world generated. Satellite imagery loading…', '');
-
-      // Update status once satellite tile is likely done (fire-and-forget timing)
+      this._setStatus('World ready. Satellite imagery loading…', '');
       setTimeout(() => {
         if (this.$status.textContent.includes('Satellite')) {
-          this._setStatus('3D world generated. Drag to orbit, scroll to zoom.', '');
+          this._setStatus('Drag to orbit · Scroll to zoom · Hover to inspect', '');
         }
       }, 6000);
 
@@ -148,14 +146,12 @@ export class UIController {
     }
   }
 
-  // ── Overpass retry across mirrors ────────────────────────────
   async _fetchWithRetry(lat, lng, radius, maxAttempts = 3) {
     const MIRRORS = [
       'https://overpass-api.de/api/interpreter',
       'https://overpass.kumi.systems/api/interpreter',
       'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
     ];
-
     let lastError;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const mirror = MIRRORS[attempt % MIRRORS.length];
@@ -171,16 +167,13 @@ export class UIController {
         lastError = err;
         if (!err.message.includes('504') &&
             !err.message.includes('429') &&
-            !err.message.includes('Overpass error')) {
-          throw err;
-        }
+            !err.message.includes('Overpass error')) throw err;
         await this._sleep(1500 * (attempt + 1));
       }
     }
     throw lastError;
   }
 
-  // ── Tooltip ──────────────────────────────────────────────────
   _onMouseMove(e) {
     const hit = this.scene.pick(e.clientX, e.clientY);
     if (hit && hit.object.userData.kind) {
@@ -192,16 +185,15 @@ export class UIController {
         if (d.height)        html += `<br>Height: ${d.height.toFixed(0)}m`;
         if (d.tags.highway)  html += `<br>Road: ${d.tags.highway}`;
       }
-      this.$tooltip.innerHTML = html;
-      this.$tooltip.style.left = `${e.clientX + 14}px`;
-      this.$tooltip.style.top  = `${e.clientY + 14}px`;
+      this.$tooltip.innerHTML     = html;
+      this.$tooltip.style.left    = `${e.clientX + 14}px`;
+      this.$tooltip.style.top     = `${e.clientY + 14}px`;
       this.$tooltip.classList.remove('hidden');
     } else {
       this.$tooltip.classList.add('hidden');
     }
   }
 
-  // ── Helpers ──────────────────────────────────────────────────
   _setStatus(msg, cls) {
     this.$status.textContent = msg;
     this.$status.className   = cls || '';
