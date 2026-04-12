@@ -13,8 +13,8 @@ const MIN_BUILDING_AREA = 5;  // m² — skip degenerate footprints
 
 // Subdivision intervals — maximum metres between sampled vertices.
 // Smaller = closer terrain conformance but more triangles.
-const ROAD_STEP = 8;   // metres between road ribbon cross-sections
-const POLY_STEP = 15;  // metres between polygon edge vertices
+const ROAD_STEP = 4;//8   // metres between road ribbon cross-sections
+const POLY_STEP = 8;//15  // metres between polygon edge vertices
 
 export class WorldBuilder {
   constructor(sceneManager) {
