@@ -66,7 +66,7 @@ export class WorldBuilder {
     // Roads and parks collect {a,b,c} XZ triangles.
     // Y is assigned entirely by the draping pass below.
     const rawRoadTris = [];
-    const rawParkTris = [];
+    //const rawParkTris = [];
 
     // Water uses flat-average approach, collected directly.
     const watPos = [], watIdx = [], watNrm = []; let watBase = 0;
@@ -98,10 +98,10 @@ export class WorldBuilder {
             water++;
           }
 
-        } else if (way.kind === 'park' && way.closed) {
+        }/* else if (way.kind === 'park' && way.closed) {
           const ts = this._polygonTriangles(way);
           if (ts) { ts.forEach(t => rawParkTris.push(t)); parks++; }
-        }
+        }*/
       } catch (_) {}
     }
 
@@ -139,6 +139,7 @@ export class WorldBuilder {
     }
 
     // ── Drape parks ───────────────────────────────────────────
+    /*
     if (rawParkTris.length) {
       const draped = this._drapeTriangles(
         rawParkTris, terrainMesh, bvh, elev, DRAPE_BIAS * 0.6
@@ -152,6 +153,7 @@ export class WorldBuilder {
       this.scene.addObject(mesh);
       tris += draped.idx.length / 3;
     }
+    */
 
     // ── Water ─────────────────────────────────────────────────
     if (watIdx.length) {
