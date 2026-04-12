@@ -21,7 +21,7 @@ const POLY_STEP  = 15;  // m — max segment length along polygon edges
 // How many metres above the terrain surface roads and parks sit.
 // Increase if flat elements clip through terrain.
 // Decrease if the gap above terrain looks too large.
-const DRAPE_BIAS = 0.4; // metres
+const DRAPE_BIAS = 1; // metres
 
 const RAY_ORIGIN_Y = 2000; // ray cast start height — above any terrain
 
