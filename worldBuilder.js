@@ -12,11 +12,18 @@ import {
 
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-const MIN_BUILDING_AREA = 5;   // m²
-const ROAD_STEP         = 8;   // m between road ribbon cross-sections
-const POLY_STEP         = 15;  // m between polygon edge vertices
-const DRAPE_BIAS        = 0.25; // m above terrain surface (prevents z-fighting)
-const RAY_ORIGIN_Y      = 2000; // m above zero — ray cast origin
+const MIN_BUILDING_AREA = 5;   // m² — skip degenerate footprints
+
+const ROAD_STEP  = 8;   // m — max segment length along road centreline
+const POLY_STEP  = 15;  // m — max segment length along polygon edges
+
+// ── DRAPE BIAS ────────────────────────────────────────────────
+// How many metres above the terrain surface roads and parks sit.
+// Increase if flat elements clip through terrain.
+// Decrease if the gap above terrain looks too large.
+const DRAPE_BIAS = 0.4; // metres
+
+const RAY_ORIGIN_Y = 2000; // ray cast start height — above any terrain
 
 export class WorldBuilder {
   constructor(sceneManager) {
@@ -52,14 +59,16 @@ export class WorldBuilder {
     const centreElev = rawElev(0, 0);
     const elev       = (x, z) => rawElev(x, z) - centreElev;
 
-    // ── Building footprints ───────────────────────────────────
+    // ── Building footprints for terrain flattening ────────────
     const buildingFootprints = [];
 
-    // ── Geometry accumulators ─────────────────────────────────
-    // Roads and parks are collected as raw triangle soups first.
-    // The draping pass converts them into draped geometry afterwards.
-    const rawRoadTris = []; // [{a,b,c}] each vertex is {x,z}
+    // ── Raw XZ triangle collectors ────────────────────────────
+    // Roads and parks collect {a,b,c} XZ triangles.
+    // Y is assigned entirely by the draping pass below.
+    const rawRoadTris = [];
     const rawParkTris = [];
+
+    // Water uses flat-average approach, collected directly.
     const watPos = [], watIdx = [], watNrm = []; let watBase = 0;
 
     const buildingGroup = new THREE.Group();
@@ -76,11 +85,11 @@ export class WorldBuilder {
           }
 
         } else if (way.kind === 'road') {
-          const tris = this._roadTriangles(way);
-          if (tris) { tris.forEach(t => rawRoadTris.push(t)); roads++; }
+          const ts = this._roadTriangles(way);
+          if (ts) { ts.forEach(t => rawRoadTris.push(t)); roads++; }
 
         } else if (way.kind === 'water' && way.closed) {
-          const r = this._conformPolyGeom(way, elev, 0.4);
+          const r = this._waterPolyGeom(way, elev);
           if (r) {
             r.pos.forEach(v => watPos.push(v));
             r.nrm.forEach(v => watNrm.push(v));
@@ -90,30 +99,24 @@ export class WorldBuilder {
           }
 
         } else if (way.kind === 'park' && way.closed) {
-          const tris = this._polygonTriangles(way);
-          if (tris) { tris.forEach(t => rawParkTris.push(t)); parks++; }
+          const ts = this._polygonTriangles(way);
+          if (ts) { ts.forEach(t => rawParkTris.push(t)); parks++; }
         }
       } catch (_) {}
     }
 
-    // ── Build terrain ─────────────────────────────────────────
+    // ── Build terrain mesh (must exist before BVH snap) ───────
     this.scene.buildElevationGround(elev, gridSize, radiusMeters, buildingFootprints);
 
     const terrainMesh = this.scene.getTerrainMesh();
     let   bvh         = null;
-    let   terrainPos  = null;
-    let   terrainIdx  = null;
 
     if (terrainMesh) {
       try {
         terrainMesh.geometry.boundsTree = new MeshBVH(terrainMesh.geometry);
-        bvh        = terrainMesh.geometry.boundsTree;
-        terrainPos = terrainMesh.geometry.attributes.position;
-        terrainIdx = terrainMesh.geometry.index
-          ? terrainMesh.geometry.index.array
-          : null;
+        bvh = terrainMesh.geometry.boundsTree;
       } catch (e) {
-        console.warn('BVH build failed, falling back to snap-only:', e);
+        console.warn('BVH build failed:', e);
       }
     }
 
@@ -122,37 +125,35 @@ export class WorldBuilder {
 
     // ── Drape roads ───────────────────────────────────────────
     if (rawRoadTris.length) {
-      const { pos, idx, nrm } = bvh && terrainPos
-        ? this._drapeTriangles(rawRoadTris, terrainMesh, bvh, terrainPos, terrainIdx, DRAPE_BIAS)
-        : this._fallbackTriangles(rawRoadTris, elev, DRAPE_BIAS);
-
+      const draped = this._drapeTriangles(
+        rawRoadTris, terrainMesh, bvh, elev, DRAPE_BIAS
+      );
       const mesh = new THREE.Mesh(
-        this._buildGeom(pos, idx, nrm),
+        this._buildGeom(draped.pos, draped.idx, draped.nrm),
         new THREE.MeshLambertMaterial({ color: 0x505058 })
       );
       mesh.receiveShadow = true;
       mesh.userData      = { kind: 'road' };
       this.scene.addObject(mesh);
-      tris += idx.length / 3;
+      tris += draped.idx.length / 3;
     }
 
     // ── Drape parks ───────────────────────────────────────────
     if (rawParkTris.length) {
-      const { pos, idx, nrm } = bvh && terrainPos
-        ? this._drapeTriangles(rawParkTris, terrainMesh, bvh, terrainPos, terrainIdx, DRAPE_BIAS * 0.8)
-        : this._fallbackTriangles(rawParkTris, elev, DRAPE_BIAS * 0.8);
-
+      const draped = this._drapeTriangles(
+        rawParkTris, terrainMesh, bvh, elev, DRAPE_BIAS * 0.6
+      );
       const mesh = new THREE.Mesh(
-        this._buildGeom(pos, idx, nrm),
+        this._buildGeom(draped.pos, draped.idx, draped.nrm),
         new THREE.MeshLambertMaterial({ color: 0x4a7a40 })
       );
       mesh.receiveShadow = true;
       mesh.userData      = { kind: 'park' };
       this.scene.addObject(mesh);
-      tris += idx.length / 3;
+      tris += draped.idx.length / 3;
     }
 
-    // ── Water (flat average, no draping) ─────────────────────
+    // ── Water ─────────────────────────────────────────────────
     if (watIdx.length) {
       const mesh = new THREE.Mesh(
         this._buildGeom(watPos, watIdx, watNrm),
@@ -175,126 +176,117 @@ export class WorldBuilder {
   // ═══════════════════════════════════════════════════════════════
 
   // ── _drapeTriangles ───────────────────────────────────────────
-  // Main draping pass. For each input XZ triangle:
-  //   1. Find all terrain triangles overlapping its XZ bounding box
-  //   2. For each input edge, compute XZ intersections with each
-  //      terrain edge and insert new vertices at those points
+  // For each input XZ triangle:
+  //   1. Query the BVH for terrain triangles overlapping its XZ bbox
+  //   2. Insert new vertices wherever input edges cross terrain edges
   //   3. Re-triangulate the resulting polygon with earcut
-  //   4. For every vertex (original + inserted), raycast downward
-  //      to snap Y exactly to the terrain surface + bias
-  _drapeTriangles(inputTris, terrainMesh, bvh, terrainPos, terrainIdx, bias) {
+  //   4. Raycast each output vertex downward to snap Y to terrain + bias
+  //
+  // Falls back to elev()-based snap if BVH is unavailable.
+  _drapeTriangles(inputTris, terrainMesh, bvh, elev, bias) {
     const outPos = [], outIdx = [], outNrm = [];
+
+    // Raycaster for snapping vertices to exact terrain surface
     const raycaster = new THREE.Raycaster();
     const rayDir    = new THREE.Vector3(0, -1, 0);
     const rayOrigin = new THREE.Vector3();
 
-    // Helper: snap a single {x,z} point to terrain Y
     const snapY = (x, z) => {
+      if (!terrainMesh) return elev(x, z) + bias;
       rayOrigin.set(x, RAY_ORIGIN_Y, z);
       raycaster.set(rayOrigin, rayDir);
       const hits = raycaster.intersectObject(terrainMesh, false);
-      return hits.length ? hits[0].point.y + bias : bias;
+      // Always add bias on top of the terrain hit to stay above surface
+      return hits.length > 0
+        ? hits[0].point.y + bias
+        : elev(x, z) + bias;
     };
 
-    // Reusable THREE objects for terrain triangle extraction
-    const _vA = new THREE.Vector3();
-    const _vB = new THREE.Vector3();
-    const _vC = new THREE.Vector3();
-    const _box = new THREE.Box3();
-
     for (const tri of inputTris) {
-      // Compute XZ bounding box of this input triangle
+      // XZ bounding box for BVH query
       const minX = Math.min(tri.a.x, tri.b.x, tri.c.x);
       const maxX = Math.max(tri.a.x, tri.b.x, tri.c.x);
       const minZ = Math.min(tri.a.z, tri.b.z, tri.c.z);
       const maxZ = Math.max(tri.a.z, tri.b.z, tri.c.z);
 
-      // Collect all XZ intersection points along each edge of the
-      // input triangle by testing against terrain triangle edges
-      // in the bounding box region.
-      const edgePoints = [
-        [{ ...tri.a }],  // points along edge A→B (including endpoints)
-        [{ ...tri.b }],  // points along edge B→C
-        [{ ...tri.c }],  // points along edge C→A
+      // ── Collect terrain edge XZ intersections ───────────────
+      // edgePoints[0] = points along A→B (including A, excluding B)
+      // edgePoints[1] = points along B→C (including B, excluding C)
+      // edgePoints[2] = points along C→A (including C, excluding A)
+      const corners  = [tri.a, tri.b, tri.c];
+      const edgePts  = [
+        [{ x: tri.a.x, z: tri.a.z }],
+        [{ x: tri.b.x, z: tri.b.z }],
+        [{ x: tri.c.x, z: tri.c.z }],
       ];
-      const edgeEnds = [tri.b, tri.c, tri.a];
+      const edgeNext = [tri.b, tri.c, tri.a];
 
-      // Query BVH for terrain triangles overlapping the XZ bbox
-      // Use a tall Y range to guarantee we capture all terrain tris
-      _box.set(
-        new THREE.Vector3(minX, -10000, minZ),
-        new THREE.Vector3(maxX,  10000, maxZ)
-      );
+      if (bvh) {
+        // Query box — tall Y range so we hit all terrain tris
+        const queryBox = new THREE.Box3(
+          new THREE.Vector3(minX, -10000, minZ),
+          new THREE.Vector3(maxX,  10000, maxZ)
+        );
 
-      const terrainTriIndices = [];
-      try {
-        bvh.shapecast({
-          intersectsBounds: (box) => box.intersectsBox(_box),
-          intersectsTriangle: (triInfo) => {
-            terrainTriIndices.push(triInfo.a, triInfo.b, triInfo.c);
-            return false; // continue traversal
-          },
-        });
-      } catch (_) {
-        // shapecast API may differ — skip intersection for this tri
-      }
+        try {
+          // three-mesh-bvh shapecast: intersectsTriangle receives a
+          // THREE.Triangle object with .a, .b, .c as Vector3 vertices.
+          bvh.shapecast({
+            intersectsBounds: (box) => box.intersectsBox(queryBox),
+            intersectsTriangle: (terrTri) => {
+              // terrTri.a/b/c are THREE.Vector3 with full XYZ
+              const tVerts = [terrTri.a, terrTri.b, terrTri.c];
 
-      // For each terrain triangle, test its 3 edges against each
-      // of the input triangle's 3 edges in XZ space
-      for (let ti = 0; ti < terrainTriIndices.length; ti += 3) {
-        const ia = terrainTriIndices[ti];
-        const ib = terrainTriIndices[ti + 1];
-        const ic = terrainTriIndices[ti + 2];
+              for (let ei = 0; ei < 3; ei++) {
+                const es = corners[ei];
+                const ee = edgeNext[ei];
 
-        const tA = { x: terrainPos.getX(ia), z: terrainPos.getZ(ia) };
-        const tB = { x: terrainPos.getX(ib), z: terrainPos.getZ(ib) };
-        const tC = { x: terrainPos.getX(ic), z: terrainPos.getZ(ic) };
+                for (let ti = 0; ti < 3; ti++) {
+                  const tv0 = tVerts[ti];
+                  const tv1 = tVerts[(ti + 1) % 3];
 
-        const terrainEdges = [[tA, tB], [tB, tC], [tC, tA]];
-
-        // Test each of the 3 input edges against each terrain edge
-        for (let ei = 0; ei < 3; ei++) {
-          const eStart = [tri.a, tri.b, tri.c][ei];
-          const eEnd   = edgeEnds[ei];
-
-          for (const [tE0, tE1] of terrainEdges) {
-            const pt = this._segSegIntersectXZ(
-              eStart.x, eStart.z, eEnd.x, eEnd.z,
-              tE0.x, tE0.z, tE1.x, tE1.z
-            );
-            if (pt) edgePoints[ei].push(pt);
-          }
+                  const pt = this._segSegIntersectXZ(
+                    es.x,  es.z,  ee.x,  ee.z,
+                    tv0.x, tv0.z, tv1.x, tv1.z
+                  );
+                  if (pt) edgePts[ei].push(pt);
+                }
+              }
+              return false; // keep traversing
+            },
+          });
+        } catch (e) {
+          // shapecast unavailable or errored — edgePts stay as corners only
         }
       }
 
-      // Sort each edge's points by distance from start and add endpoint
+      // Sort each edge's points by distance from corner and deduplicate
       for (let ei = 0; ei < 3; ei++) {
-        const eStart = [tri.a, tri.b, tri.c][ei];
-        const eEnd   = edgeEnds[ei];
-        edgePoints[ei].push({ ...eEnd });
+        const start = corners[ei];
 
-        // Sort by distance from edge start (XZ)
-        edgePoints[ei].sort((p, q) => {
-          const dp = (p.x - eStart.x)**2 + (p.z - eStart.z)**2;
-          const dq = (q.x - eStart.x)**2 + (q.z - eStart.z)**2;
+        // Add the endpoint (excluded from next edge's list)
+        edgePts[ei].push({ x: edgeNext[ei].x, z: edgeNext[ei].z });
+
+        edgePts[ei].sort((p, q) => {
+          const dp = (p.x - start.x) ** 2 + (p.z - start.z) ** 2;
+          const dq = (q.x - start.x) ** 2 + (q.z - start.z) ** 2;
           return dp - dq;
         });
 
-        // Deduplicate very close points (within 0.01m)
-        edgePoints[ei] = edgePoints[ei].filter((p, i, arr) => {
+        // Deduplicate within 1cm
+        edgePts[ei] = edgePts[ei].filter((p, i, arr) => {
           if (i === 0) return true;
           const prev = arr[i - 1];
-          return Math.sqrt((p.x - prev.x)**2 + (p.z - prev.z)**2) > 0.01;
+          return (p.x - prev.x) ** 2 + (p.z - prev.z) ** 2 > 0.0001;
         });
       }
 
-      // Build the full polygon ring from the three edges
-      // Each edge includes its start point and all inserted points,
-      // but not its end (which is the next edge's start).
+      // Build the polygon ring from the three edge point lists.
+      // Each list includes its start corner and all inserted points
+      // but NOT the endpoint (which is the next list's first point).
       const ring = [];
       for (let ei = 0; ei < 3; ei++) {
-        const pts = edgePoints[ei];
-        // Include all except the last point (= next edge's start)
+        const pts = edgePts[ei];
         for (let pi = 0; pi < pts.length - 1; pi++) {
           ring.push(pts[pi]);
         }
@@ -302,18 +294,17 @@ export class WorldBuilder {
 
       if (ring.length < 3) continue;
 
-      // Snap all ring points to terrain Y
+      // Snap every ring vertex to terrain Y + bias
       for (const p of ring) {
         p.y = snapY(p.x, p.z);
       }
 
-      // Triangulate the ring in XZ with earcut
+      // Triangulate the ring (XZ coords only for earcut)
       const flat    = ring.flatMap(p => [p.x, p.z]);
       const indices = earcut(flat);
       if (!indices || indices.length < 3) continue;
 
-      // Emit triangles — winding gives upward normals if ring is CCW.
-      // Check signed area to ensure correct winding.
+      // Determine winding direction and emit triangles
       const area = this._signedAreaXZ(ring);
       const base = outPos.length / 3;
 
@@ -322,18 +313,17 @@ export class WorldBuilder {
         outNrm.push(0, 1, 0);
       }
 
-      if (area >= 0) {
-        // CCW in XZ → normals point up with standard winding
-        for (let k = 0; k < indices.length; k += 3) {
+      // Flip winding if needed so normals face upward
+      for (let k = 0; k < indices.length; k += 3) {
+        if (area >= 0) {
+          // CCW ring → reverse winding for upward normal in XZ
           outIdx.push(
             base + indices[k],
             base + indices[k + 2],
             base + indices[k + 1],
           );
-        }
-      } else {
-        // CW → keep earcut winding as-is
-        for (let k = 0; k < indices.length; k += 3) {
+        } else {
+          // CW ring → keep winding
           outIdx.push(
             base + indices[k],
             base + indices[k + 1],
@@ -341,45 +331,22 @@ export class WorldBuilder {
           );
         }
       }
-    }
-
-    return { pos: outPos, idx: outIdx, nrm: outNrm };
-  }
-
-  // ── _fallbackTriangles ────────────────────────────────────────
-  // Used if BVH is unavailable. Simply snaps vertices using elev().
-  _fallbackTriangles(inputTris, elev, bias) {
-    const outPos = [], outIdx = [], outNrm = [];
-    let base = 0;
-
-    for (const tri of inputTris) {
-      for (const v of [tri.a, tri.b, tri.c]) {
-        outPos.push(v.x, elev(v.x, v.z) + bias, v.z);
-        outNrm.push(0, 1, 0);
-      }
-      outIdx.push(base, base + 2, base + 1);
-      base += 3;
     }
 
     return { pos: outPos, idx: outIdx, nrm: outNrm };
   }
 
   // ── _segSegIntersectXZ ────────────────────────────────────────
-  // Returns the XZ intersection point of segment (p1→p2) with
-  // segment (p3→p4), or null if they don't intersect within both
-  // segments. Strictly interior intersections only (t and u in
-  // (0,1) exclusive) to avoid duplicate endpoint vertices.
+  // Returns interior XZ intersection of two segments, or null.
+  // Strictly excludes endpoint intersections (eps guard).
   _segSegIntersectXZ(p1x, p1z, p2x, p2z, p3x, p3z, p4x, p4z) {
     const d1x = p2x - p1x, d1z = p2z - p1z;
     const d2x = p4x - p3x, d2z = p4z - p3z;
     const cross = d1x * d2z - d1z * d2x;
-
-    if (Math.abs(cross) < 1e-10) return null; // parallel
-
+    if (Math.abs(cross) < 1e-10) return null;
     const dx = p3x - p1x, dz = p3z - p1z;
     const t  = (dx * d2z - dz * d2x) / cross;
     const u  = (dx * d1z - dz * d1x) / cross;
-
     const eps = 1e-6;
     if (t > eps && t < 1 - eps && u > eps && u < 1 - eps) {
       return { x: p1x + t * d1x, z: p1z + t * d1z };
@@ -398,23 +365,17 @@ export class WorldBuilder {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // RAW TRIANGLE COLLECTION (no Y yet — draping assigns Y)
+  // RAW XZ TRIANGLE COLLECTORS
   // ═══════════════════════════════════════════════════════════════
 
-  // ── Road ribbon triangles in XZ ───────────────────────────────
-  // Returns [{a,b,c}] where each vertex is {x,z} only.
-  // Y values are assigned by the draping pass.
   _roadTriangles(way) {
     const coords = way.coords;
     if (coords.length < 2) return null;
-
     const hw         = this._roadHalfWidth(way.tags.highway);
     const centreline = this._subdividePolyline(coords, ROAD_STEP);
     if (centreline.length < 2) return null;
 
-    const left  = [];
-    const right = [];
-
+    const left = [], right = [];
     for (let i = 0; i < centreline.length; i++) {
       const prev = centreline[i - 1] || centreline[i];
       const next = centreline[i + 1] || centreline[i];
@@ -427,25 +388,20 @@ export class WorldBuilder {
 
     const tris = [];
     for (let i = 0; i < centreline.length - 1; i++) {
-      // Each road quad = 2 triangles
-      tris.push({ a: left[i],  b: left[i+1],  c: right[i]   });
-      tris.push({ a: right[i], b: left[i+1],  c: right[i+1] });
+      tris.push({ a: left[i],   b: left[i+1],  c: right[i]   });
+      tris.push({ a: right[i],  b: left[i+1],  c: right[i+1] });
     }
     return tris;
   }
 
-  // ── Park polygon triangles in XZ ──────────────────────────────
   _polygonTriangles(way) {
     const raw = this._ensureCCW(way.coords.slice(0, -1));
     if (raw.length < 3) return null;
-
-    const verts   = this._subdivideRing(raw, POLY_STEP);
+    const verts = this._subdivideRing(raw, POLY_STEP);
     if (verts.length < 3) return null;
-
     const flat    = verts.flatMap(v => [v.x, v.z]);
     const indices = earcut(flat);
     if (!indices?.length) return null;
-
     const tris = [];
     for (let k = 0; k < indices.length; k += 3) {
       tris.push({
@@ -490,8 +446,7 @@ export class WorldBuilder {
         break;
       }
       const pts = this._subdivideSegment(
-        coords[i].x, coords[i].z,
-        coords[i+1].x, coords[i+1].z, step
+        coords[i].x, coords[i].z, coords[i+1].x, coords[i+1].z, step
       );
       for (let k = 0; k < pts.length - 1; k++) result.push(pts[k]);
     }
@@ -523,8 +478,8 @@ export class WorldBuilder {
     return this._signedArea(verts) < 0 ? verts.slice().reverse() : verts;
   }
 
-  // ── Water polygon (flat average, no draping) ──────────────────
-  _conformPolyGeom(way, elev, yBias = 0.2) {
+  // ── Water (flat average, no draping) ─────────────────────────
+  _waterPolyGeom(way, elev) {
     const raw = this._ensureCCW(way.coords.slice(0, -1));
     if (raw.length < 3) return null;
     const verts = this._subdivideRing(raw, POLY_STEP);
@@ -532,7 +487,7 @@ export class WorldBuilder {
     const flat    = verts.flatMap(v => [v.x, v.z]);
     const indices = earcut(flat);
     if (!indices.length) return null;
-    const avgY = verts.reduce((s, v) => s + elev(v.x, v.z), 0) / verts.length + yBias;
+    const avgY = verts.reduce((s, v) => s + elev(v.x, v.z), 0) / verts.length + 0.4;
     const pos  = verts.flatMap(v => [v.x, avgY, v.z]);
     const nrm  = new Array(pos.length).fill(0);
     for (let i = 1; i < nrm.length; i += 3) nrm[i] = 1;
