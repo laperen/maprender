@@ -313,21 +313,25 @@ export class WorldBuilder {
         outNrm.push(0, 1, 0);
       }
 
-      // Flip winding if needed so normals face upward
+      // Flip winding if needed so normals face upward.
+      // In Three.js (right-handed, Y-up): a CCW ring in XZ already
+      // produces an upward normal with the default index order, so keep
+      // it as-is.  A CW ring (negative signed area) needs its winding
+      // reversed to make the normal point upward.
       for (let k = 0; k < indices.length; k += 3) {
         if (area >= 0) {
-          // CCW ring → reverse winding for upward normal in XZ
+          // CCW ring → keep winding (normal already faces up)
           outIdx.push(
             base + indices[k],
-            base + indices[k + 2],
             base + indices[k + 1],
+            base + indices[k + 2],
           );
         } else {
-          // CW ring → keep winding
+          // CW ring → reverse winding so normal faces up
           outIdx.push(
             base + indices[k],
-            base + indices[k + 1],
             base + indices[k + 2],
+            base + indices[k + 1],
           );
         }
       }
