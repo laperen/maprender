@@ -20,7 +20,6 @@ export class SceneManager {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
 
-    // Renderer
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(w, h);
@@ -30,17 +29,14 @@ export class SceneManager {
     this.renderer.toneMappingExposure = 1.0;
     this.container.appendChild(this.renderer.domElement);
 
-    // Scene
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x8ab0d0);
     this.scene.fog = new THREE.Fog(0x8ab0d0, 1000, 4000);
 
-    // Camera
     this.camera = new THREE.PerspectiveCamera(55, w / h, 1, 20000);
     this.camera.position.set(0, 600, 1200);
     this.camera.lookAt(0, 0, 0);
 
-    // Orbit controls
     this.controls = new OrbitControlsImpl(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.07;
@@ -48,7 +44,9 @@ export class SceneManager {
     this.controls.minDistance   = 50;
     this.controls.maxDistance   = 8000;
 
-    // Placeholder flat ground (replaced by elevation mesh after build)
+    this._addLights();
+
+    // Flat placeholder ground — replaced by buildElevationGround() after build
     const groundGeo  = new THREE.PlaneGeometry(6000, 6000);
     const groundMat  = new THREE.MeshLambertMaterial({ color: 0x4a7a40 });
     this._groundMesh = new THREE.Mesh(groundGeo, groundMat);
@@ -57,7 +55,6 @@ export class SceneManager {
     this._groundMesh.userData.isGround = true;
     this.scene.add(this._groundMesh);
 
-    this._addLights();
     this._createFPSCounter();
 
     this.raycaster  = new THREE.Raycaster();
@@ -71,11 +68,9 @@ export class SceneManager {
     const sun = new THREE.DirectionalLight(0xfff5e0, 2.2);
     sun.position.set(600, 1000, 400);
     sun.castShadow = true;
-    // 1024 instead of 2048 — ~4× cheaper shadow rendering
     sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.near   = 10;
     sun.shadow.camera.far    = 3000;
-    // Frustum sized to a typical 500m area — tighten after generate if needed
     sun.shadow.camera.left   = -800;
     sun.shadow.camera.right  =  800;
     sun.shadow.camera.top    =  800;
@@ -93,7 +88,6 @@ export class SceneManager {
     this.scene.add(rim);
   }
 
-  // ── Tighten shadow frustum to the actual area radius ─────────
   _fitShadowFrustum(radiusMeters) {
     const r = Math.min(radiusMeters * 1.2, 2000);
     this.sun.shadow.camera.left   = -r;
@@ -103,7 +97,6 @@ export class SceneManager {
     this.sun.shadow.camera.updateProjectionMatrix();
   }
 
-  // ── FPS counter ───────────────────────────────────────────────
   _createFPSCounter() {
     const el = document.createElement('div');
     el.id = 'fps-counter';
@@ -142,35 +135,43 @@ export class SceneManager {
     }
   }
 
-  // ── Elevation-displaced ground mesh ──────────────────────────
-  // Called by WorldBuilder after the elevation grid is fetched.
-  // Replaces the flat placeholder with a subdivided plane whose
-  // vertices are displaced by the elevation data.
-  buildElevationGround(elevGrid, gridSize, radiusMeters, centreElev) {
-    // Remove old ground
+  // ── Elevation ground mesh ─────────────────────────────────────
+  // Accepts the same elev(x,z) function that worldBuilder uses, so
+  // the ground mesh is displaced by exactly the same values as all
+  // other geometry. No index-to-grid mapping needed here at all.
+  //
+  // PlaneGeometry vertex layout after rotateX(-π/2):
+  //   x runs west (-extent/2) to east (+extent/2)  [left to right]
+  //   z runs north (-extent/2) to south (+extent/2) [top to bottom]
+  //
+  // Our elev() convention:
+  //   x: west = -radiusMeters, east = +radiusMeters  ✓ matches
+  //   z: north = -radiusMeters, south = +radiusMeters ✓ matches
+  //
+  // So we simply read x,z from each vertex position and call elev(x,z).
+  buildElevationGround(elevFn, gridSize, radiusMeters) {
     if (this._groundMesh) {
       this.scene.remove(this._groundMesh);
       this._groundMesh.geometry.dispose();
       this._groundMesh.material.dispose();
+      this._groundMesh = null;
     }
 
-    const segs    = gridSize - 1;
-    const extent  = radiusMeters * 2; // plane side length in metres
-    const geo     = new THREE.PlaneGeometry(extent, extent, segs, segs);
+    const segs   = gridSize - 1;
+    const extent = radiusMeters * 2;
+    const geo    = new THREE.PlaneGeometry(extent, extent, segs, segs);
     geo.rotateX(-Math.PI / 2);
 
-    if (elevGrid) {
-      const positions = geo.attributes.position;
-      for (let i = 0; i < positions.count; i++) {
-        const row = Math.floor(i / gridSize);
-        const col = i % gridSize;
-        const idx = row * gridSize + col;
-        const relElev = elevGrid[idx] - centreElev;
-        positions.setY(i, relElev);
-      }
-      positions.needsUpdate = true;
-      geo.computeVertexNormals();
+    // After rotation, position attribute holds correct (x, y=0, z) values.
+    // We replace y with elev(x, z) — same function used by buildings/roads.
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const z = pos.getZ(i);
+      pos.setY(i, elevFn(x, z));
     }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
 
     const mat  = new THREE.MeshLambertMaterial({ color: 0x4a7a40 });
     const mesh = new THREE.Mesh(geo, mat);
@@ -183,11 +184,12 @@ export class SceneManager {
   }
 
   // ── Satellite ground texture ──────────────────────────────────
-  setGroundTexture(tex, radiusMeters) {
+  // PlaneGeometry UVs already span [0,1] across the mesh so no
+  // repeat scaling is needed — the texture fills it exactly.
+  setGroundTexture(tex) {
     if (!this._groundMesh) return;
     tex.wrapS = THREE.ClampToEdgeWrapping;
     tex.wrapT = THREE.ClampToEdgeWrapping;
-    // PlaneGeometry UVs already span [0,1] — no repeat needed
     tex.needsUpdate = true;
     this._groundMesh.material.map   = tex;
     this._groundMesh.material.color.set(0xffffff);
@@ -222,7 +224,6 @@ export class SceneManager {
     this._objects   = [];
     this._pickables = [];
 
-    // Reset ground to plain colour
     if (this._groundMesh) {
       if (this._groundMesh.material.map) {
         this._groundMesh.material.map.dispose();

@@ -9,9 +9,7 @@ import {
   roofColour,
 } from './textureFactory.js';
 
-// Minimum footprint area (m²) — buildings smaller than this are skipped.
-// Avoids wasting draw calls on tiny sheds and map artefacts.
-const MIN_BUILDING_AREA = 20;
+const MIN_BUILDING_AREA = 20; // m² — skip tiny footprints
 
 export class WorldBuilder {
   constructor(sceneManager) {
@@ -19,46 +17,63 @@ export class WorldBuilder {
     this._toonGradient = makeToonGradient();
   }
 
-  // ── Main build entry point ────────────────────────────────────
   async build(ways, heightScale = 1, lat = 0, lng = 0, radiusMeters = 500) {
     let buildings = 0, roads = 0, water = 0, parks = 0, tris = 0;
 
-    // ── Fetch elevation grid ──────────────────────────────────
-    // 64×64 samples across the area — enough for visible terrain shape.
+    // ── Elevation grid ────────────────────────────────────────
+    const gridSize = 64;
     let elevGrid   = null;
-    let gridSize   = 64;
     try {
       elevGrid = await fetchElevationGrid(lat, lng, radiusMeters, gridSize);
-    } catch (_) {
-      // Elevation unavailable — flat terrain fallback
-    }
+    } catch (_) { /* flat fallback */ }
 
-    // Helper: sample elevation at a world-space (x, z) coordinate.
-    // x and z are in metres relative to the centre.
-    const getElev = (x, z) => {
+    // ── Canonical elevation sampler ───────────────────────────
+    // Convention (must match ground mesh vertex layout exactly):
+    //   col 0           → x = -radiusMeters  (west)
+    //   col gridSize-1  → x = +radiusMeters  (east)
+    //   row 0           → z = -radiusMeters  (north, because z = -dLat*R)
+    //   row gridSize-1  → z = +radiusMeters  (south)
+    //
+    // Uses bilinear interpolation to avoid nearest-neighbour spikes.
+    const rawElev = (x, z) => {
       if (!elevGrid) return 0;
       const halfR = radiusMeters;
-      // Map x ∈ [-halfR, halfR] → col ∈ [0, gridSize-1]
-      const col = Math.round((x + halfR) / (halfR * 2) * (gridSize - 1));
-      const row = Math.round((-z + halfR) / (halfR * 2) * (gridSize - 1));
-      const c   = Math.max(0, Math.min(gridSize - 1, col));
-      const r   = Math.max(0, Math.min(gridSize - 1, row));
-      return elevGrid[r * gridSize + c];
+      // Fractional grid coordinates
+      const fc = (x + halfR) / (halfR * 2) * (gridSize - 1);
+      const fr = (z + halfR) / (halfR * 2) * (gridSize - 1);
+
+      const c0 = Math.max(0, Math.min(gridSize - 2, Math.floor(fc)));
+      const r0 = Math.max(0, Math.min(gridSize - 2, Math.floor(fr)));
+      const c1 = c0 + 1;
+      const r1 = r0 + 1;
+
+      const tc = fc - c0; // interpolation weight along col axis
+      const tr = fr - r0; // interpolation weight along row axis
+
+      const v00 = elevGrid[r0 * gridSize + c0];
+      const v10 = elevGrid[r0 * gridSize + c1];
+      const v01 = elevGrid[r1 * gridSize + c0];
+      const v11 = elevGrid[r1 * gridSize + c1];
+
+      // Bilinear blend
+      return v00 * (1 - tc) * (1 - tr)
+           + v10 *      tc  * (1 - tr)
+           + v01 * (1 - tc) *      tr
+           + v11 *      tc  *      tr;
     };
 
-    // Find the centre elevation so all heights are relative to it
-    // (avoids the whole scene floating high above y=0).
-    const centreElev = getElev(0, 0);
-    const elev       = (x, z) => getElev(x, z) - centreElev;
+    const centreElev = rawElev(0, 0);
+    // All geometry Y values are relative to the centre elevation.
+    const elev = (x, z) => rawElev(x, z) - centreElev;
 
-    // ── Build displaced ground mesh ───────────────────────────
-    this.scene.buildElevationGround(elevGrid, gridSize, radiusMeters, centreElev);
+    // ── Build the displaced ground mesh ───────────────────────
+    // Pass elev (not rawElev) so ground Y is also centred at 0.
+    this.scene.buildElevationGround(elev, gridSize, radiusMeters);
 
-    // ── Collect geometry by type for merging ──────────────────
-    const roadPositions = [], roadIndices  = [], roadNormals = [];
-    const waterPositions = [], waterIndices = [], waterNormals = [];
-    const parkPositions  = [], parkIndices  = [], parkNormals  = [];
-    let roadBase = 0, waterBase = 0, parkBase = 0;
+    // ── Collect geometry ──────────────────────────────────────
+    const roadPos = [], roadIdx = [], roadNrm = []; let roadBase = 0;
+    const watPos  = [], watIdx  = [], watNrm  = []; let watBase  = 0;
+    const parkPos = [], parkIdx = [], parkNrm = []; let parkBase = 0;
 
     const buildingGroup = new THREE.Group();
     buildingGroup.name  = 'buildings';
@@ -67,107 +82,94 @@ export class WorldBuilder {
       try {
         if (way.kind === 'building' && way.closed) {
           const mesh = this._buildingMesh(way, heightScale, elev);
-          if (mesh) { buildingGroup.add(mesh); buildings++; tris += this._triCount(mesh); }
+          if (mesh) { buildingGroup.add(mesh); buildings++; }
 
         } else if (way.kind === 'road') {
-          const result = this._roadGeom(way, elev);
-          if (result) {
-            const { pos, idx, nrm } = result;
-            const base = roadBase;
-            for (const v of pos) roadPositions.push(v);
-            for (const n of nrm) roadNormals.push(n);
-            for (const i of idx) roadIndices.push(base + i);
-            roadBase += pos.length / 3;
+          const r = this._roadGeom(way, elev);
+          if (r) {
+            r.pos.forEach(v => roadPos.push(v));
+            r.nrm.forEach(v => roadNrm.push(v));
+            r.idx.forEach(i => roadIdx.push(roadBase + i));
+            roadBase += r.pos.length / 3;
             roads++;
           }
 
         } else if (way.kind === 'water' && way.closed) {
-          const result = this._flatPolyGeom(way, elev, 0.3);
-          if (result) {
-            const { pos, idx, nrm } = result;
-            const base = waterBase;
-            for (const v of pos) waterPositions.push(v);
-            for (const n of nrm) waterNormals.push(n);
-            for (const i of idx) waterIndices.push(base + i);
-            waterBase += pos.length / 3;
+          const r = this._flatPolyGeom(way, elev, 0.3);
+          if (r) {
+            r.pos.forEach(v => watPos.push(v));
+            r.nrm.forEach(v => watNrm.push(v));
+            r.idx.forEach(i => watIdx.push(watBase + i));
+            watBase += r.pos.length / 3;
             water++;
           }
 
         } else if (way.kind === 'park' && way.closed) {
-          const result = this._flatPolyGeom(way, elev, 0.5);
-          if (result) {
-            const { pos, idx, nrm } = result;
-            const base = parkBase;
-            for (const v of pos) parkPositions.push(v);
-            for (const n of nrm) parkNormals.push(n);
-            for (const i of idx) parkIndices.push(base + i);
-            parkBase += pos.length / 3;
+          const r = this._flatPolyGeom(way, elev, 0.5);
+          if (r) {
+            r.pos.forEach(v => parkPos.push(v));
+            r.nrm.forEach(v => parkNrm.push(v));
+            r.idx.forEach(i => parkIdx.push(parkBase + i));
+            parkBase += r.pos.length / 3;
             parks++;
           }
         }
       } catch (_) { /* skip bad geometry */ }
     }
 
-    // ── Add buildings ─────────────────────────────────────────
     this.scene.addObject(buildingGroup, true);
-    tris += Math.round(buildingGroup.children.reduce((s, m) => s + this._triCount(m), 0));
+    tris += buildingGroup.children.reduce((s, m) => s + this._triCount(m), 0);
 
-    // ── Merge and add roads ───────────────────────────────────
-    if (roadIndices.length) {
-      const geom = this._mergedGeom(roadPositions, roadIndices, roadNormals);
-      const mat  = new THREE.MeshLambertMaterial({ color: 0x505058 });
-      const mesh = new THREE.Mesh(geom, mat);
+    if (roadIdx.length) {
+      const mesh = new THREE.Mesh(
+        this._mergedGeom(roadPos, roadIdx, roadNrm),
+        new THREE.MeshLambertMaterial({ color: 0x505058 })
+      );
       mesh.receiveShadow = true;
       mesh.userData      = { kind: 'road' };
       this.scene.addObject(mesh);
-      tris += roadIndices.length / 3;
+      tris += roadIdx.length / 3;
     }
 
-    // ── Merge and add water ───────────────────────────────────
-    if (waterIndices.length) {
-      const geom = this._mergedGeom(waterPositions, waterIndices, waterNormals);
-      const mat  = new THREE.MeshLambertMaterial({
-        color: 0x2878b0, transparent: true, opacity: 0.85,
-      });
-      const mesh = new THREE.Mesh(geom, mat);
+    if (watIdx.length) {
+      const mesh = new THREE.Mesh(
+        this._mergedGeom(watPos, watIdx, watNrm),
+        new THREE.MeshLambertMaterial({ color: 0x2878b0, transparent: true, opacity: 0.85 })
+      );
       mesh.userData = { kind: 'water', isWater: true };
       this.scene.addObject(mesh);
-      tris += waterIndices.length / 3;
+      tris += watIdx.length / 3;
     }
 
-    // ── Merge and add parks ───────────────────────────────────
-    if (parkIndices.length) {
-      const geom = this._mergedGeom(parkPositions, parkIndices, parkNormals);
-      const mat  = new THREE.MeshLambertMaterial({ color: 0x4a7a40 });
-      const mesh = new THREE.Mesh(geom, mat);
+    if (parkIdx.length) {
+      const mesh = new THREE.Mesh(
+        this._mergedGeom(parkPos, parkIdx, parkNrm),
+        new THREE.MeshLambertMaterial({ color: 0x4a7a40 })
+      );
       mesh.receiveShadow = true;
       mesh.userData      = { kind: 'park' };
       this.scene.addObject(mesh);
-      tris += parkIndices.length / 3;
+      tris += parkIdx.length / 3;
     }
 
-    // ── Satellite ground texture (async, non-blocking) ────────
+    // Satellite ground texture — async, non-blocking
     fetchSatelliteTexture(lat, lng, radiusMeters)
-      .then(tex => this.scene.setGroundTexture(tex, radiusMeters))
+      .then(tex => this.scene.setGroundTexture(tex))
       .catch(() => {});
 
     return { buildings, roads, water, parks, triangleCount: Math.round(tris) };
   }
 
-  // ── Merge arrays into a single BufferGeometry ─────────────────
+  // ── Merged BufferGeometry ─────────────────────────────────────
   _mergedGeom(positions, indices, normals) {
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    if (normals.length) {
-      geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
-    } else {
-      geom.computeVertexNormals();
-    }
+    geom.setAttribute('normal',   new THREE.Float32BufferAttribute(normals,   3));
     geom.setIndex(indices);
     return geom;
   }
 
-  // ── Polygon winding ───────────────────────────────────────────
+  // ── Winding helpers ───────────────────────────────────────────
   _signedArea(verts) {
     let area = 0, n = verts.length;
     for (let i = 0; i < n; i++) {
@@ -181,31 +183,25 @@ export class WorldBuilder {
     return this._signedArea(verts) < 0 ? verts.slice().reverse() : verts;
   }
 
-  // ── Building mesh — flat toon colour, two groups ──────────────
+  // ── Building ──────────────────────────────────────────────────
   _buildingMesh(way, heightScale, elev) {
     const coords = way.coords;
     if (coords.length < 3) return null;
 
     const verts = this._ensureCCW(coords.slice(0, -1));
     if (verts.length < 3) return null;
-
-    // Polygon area budget check
-    const area = Math.abs(this._signedArea(verts));
-    if (area < MIN_BUILDING_AREA) return null;
+    if (Math.abs(this._signedArea(verts)) < MIN_BUILDING_AREA) return null;
 
     const flat    = verts.flatMap(c => [c.x, c.z]);
     const indices = earcut(flat);
-    if (!indices || !indices.length) return null;
+    if (!indices?.length) return null;
 
-    // Base elevation: average of footprint vertices
     const baseY = verts.reduce((s, v) => s + elev(v.x, v.z), 0) / verts.length;
     const h     = way.height * heightScale;
     const topY  = baseY + h;
+    const n     = verts.length;
+    const pos   = [], nrm = [], idxArr = [];
 
-    const n      = verts.length;
-    const pos    = [], nrm = [], idxArr = [];
-
-    // ── Walls ─────────────────────────────────────────────────
     for (let i = 0; i < n; i++) {
       const j    = (i + 1) % n;
       const ax   = verts[i].x, az = verts[i].z;
@@ -213,52 +209,56 @@ export class WorldBuilder {
       const base = pos.length / 3;
       const dx   = bx - ax, dz = bz - az;
       const len  = Math.sqrt(dx * dx + dz * dz) || 1;
-      const nx   =  dz / len, nz = -dx / len;
-
-      pos.push(ax, baseY, az,  bx, baseY, bz,  bx, topY, bz,  ax, topY, az);
-      for (let k = 0; k < 4; k++) nrm.push(nx, 0, nz);
-      idxArr.push(base, base + 2, base + 1,  base, base + 3, base + 2);
+      pos.push(ax, baseY, az, bx, baseY, bz, bx, topY, bz, ax, topY, az);
+      for (let k = 0; k < 4; k++) nrm.push(dz / len, 0, -dx / len);
+      idxArr.push(base, base + 2, base + 1, base, base + 3, base + 2);
     }
 
     const wallCount = idxArr.length;
-
-    // ── Roof ──────────────────────────────────────────────────
-    const topBase = pos.length / 3;
+    const topBase   = pos.length / 3;
     for (const v of verts) pos.push(v.x, topY, v.z);
     for (let k = 0; k < n; k++) nrm.push(0, 1, 0);
     for (let k = 0; k < indices.length; k += 3) {
-      idxArr.push(
-        topBase + indices[k],
-        topBase + indices[k + 2],
-        topBase + indices[k + 1],
-      );
+      idxArr.push(topBase + indices[k], topBase + indices[k + 2], topBase + indices[k + 1]);
     }
 
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geom.setAttribute('normal',   new THREE.Float32BufferAttribute(nrm, 3));
     geom.setIndex(idxArr);
-    geom.addGroup(0,          wallCount,                0);
-    geom.addGroup(wallCount,  idxArr.length - wallCount, 1);
+    geom.addGroup(0,         wallCount,                0);
+    geom.addGroup(wallCount, idxArr.length - wallCount, 1);
 
-    const wallCol  = new THREE.Color(buildingPalette(way.tags));
-    const roofCol  = new THREE.Color(roofColour(way.tags));
-    const wallMat  = new THREE.MeshToonMaterial({ color: wallCol, gradientMap: this._toonGradient });
-    const roofMat  = new THREE.MeshToonMaterial({ color: roofCol, gradientMap: this._toonGradient });
-
-    const mesh = new THREE.Mesh(geom, [wallMat, roofMat]);
+    const mesh = new THREE.Mesh(geom, [
+      new THREE.MeshToonMaterial({ color: new THREE.Color(buildingPalette(way.tags)), gradientMap: this._toonGradient }),
+      new THREE.MeshToonMaterial({ color: new THREE.Color(roofColour(way.tags)),      gradientMap: this._toonGradient }),
+    ]);
     mesh.castShadow    = true;
     mesh.receiveShadow = true;
     mesh.userData      = { kind: 'building', tags: way.tags, height: h };
     return mesh;
   }
 
-  // ── Road geometry (returned as arrays for merging) ────────────
+  // ── Road geometry ─────────────────────────────────────────────
+  // Smooths road elevation: each vertex Y is the average of itself
+  // and its two neighbours, preventing single-point spikes.
   _roadGeom(way, elev) {
     const coords = way.coords;
     if (coords.length < 2) return null;
 
-    const hw  = this._roadHalfWidth(way.tags.highway);
+    const hw = this._roadHalfWidth(way.tags.highway);
+
+    // Pre-compute raw elevations along the centreline
+    const rawY = coords.map(c => elev(c.x, c.z));
+
+    // Smooth with a 3-point moving average to remove spike artefacts
+    const smoothY = rawY.map((y, i) => {
+      const a = rawY[Math.max(0, i - 1)];
+      const b = y;
+      const c = rawY[Math.min(rawY.length - 1, i + 1)];
+      return (a + b + c) / 3;
+    });
+
     const pos = [], idx = [];
 
     for (let i = 0; i < coords.length; i++) {
@@ -267,7 +267,7 @@ export class WorldBuilder {
       const dx   = next.x - prev.x, dz = next.z - prev.z;
       const len  = Math.sqrt(dx * dx + dz * dz) || 1;
       const nx   = -dz / len, nz = dx / len;
-      const y    = elev(coords[i].x, coords[i].z) + 0.15;
+      const y    = smoothY[i] + 0.15; // tiny bias above ground
 
       pos.push(
         coords[i].x + nx * hw, y, coords[i].z + nz * hw,
@@ -284,11 +284,12 @@ export class WorldBuilder {
     geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geom.setIndex(idx);
     geom.computeVertexNormals();
-    const nrm = Array.from(geom.attributes.normal.array);
-    return { pos, idx, nrm };
+    return { pos, idx, nrm: Array.from(geom.attributes.normal.array) };
   }
 
-  // ── Flat polygon geometry (water / park) ──────────────────────
+  // ── Flat polygon (water / park) ───────────────────────────────
+  // Uses the average elevation of all vertices rather than per-vertex
+  // sampling, so water bodies stay flat rather than warping with terrain.
   _flatPolyGeom(way, elev, yBias = 0) {
     const verts = this._ensureCCW(way.coords.slice(0, -1));
     if (verts.length < 3) return null;
@@ -297,10 +298,10 @@ export class WorldBuilder {
     const indices = earcut(flat);
     if (!indices.length) return null;
 
-    const pos = [];
-    for (const v of verts) {
-      pos.push(v.x, elev(v.x, v.z) + yBias, v.z);
-    }
+    // Use average elevation so water/parks sit as flat planes on terrain
+    const avgY = verts.reduce((s, v) => s + elev(v.x, v.z), 0) / verts.length + yBias;
+
+    const pos = verts.flatMap(v => [v.x, avgY, v.z]);
 
     const flipped = [];
     for (let i = 0; i < indices.length; i += 3) {
@@ -311,8 +312,7 @@ export class WorldBuilder {
     geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geom.setIndex(flipped);
     geom.computeVertexNormals();
-    const nrm = Array.from(geom.attributes.normal.array);
-    return { pos, idx: flipped, nrm };
+    return { pos, idx: flipped, nrm: Array.from(geom.attributes.normal.array) };
   }
 
   _roadHalfWidth(highway) {
@@ -325,7 +325,6 @@ export class WorldBuilder {
   }
 
   _triCount(mesh) {
-    if (!mesh.geometry?.index) return 0;
-    return mesh.geometry.index.count / 3;
+    return mesh.geometry?.index ? mesh.geometry.index.count / 3 : 0;
   }
 }
