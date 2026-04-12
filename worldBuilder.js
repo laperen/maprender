@@ -9,8 +9,6 @@ import {
   roofColour,
 } from './textureFactory.js';
 
-// Reduced from 20 to 5 so small structural elements like tower
-// corner buttresses are not incorrectly culled.
 const MIN_BUILDING_AREA = 5; // m²
 
 export class WorldBuilder {
@@ -22,19 +20,16 @@ export class WorldBuilder {
   async build(ways, heightScale = 1, lat = 0, lng = 0, radiusMeters = 500) {
     let buildings = 0, roads = 0, water = 0, parks = 0, tris = 0;
 
-    // ── Elevation grid ────────────────────────────────────────
+    // ── Fetch elevation grid ──────────────────────────────────
     const gridSize = 64;
     let elevGrid   = null;
     try {
       elevGrid = await fetchElevationGrid(lat, lng, radiusMeters, gridSize);
     } catch (_) { /* flat fallback */ }
 
-    // ── Canonical bilinear elevation sampler ──────────────────
-    // Convention:
-    //   col 0          → x = -radiusMeters (west)
-    //   col gridSize-1 → x = +radiusMeters (east)
-    //   row 0          → z = -radiusMeters (north)
-    //   row gridSize-1 → z = +radiusMeters (south)
+    // ── Bilinear elevation sampler ────────────────────────────
+    // Convention: col 0 = west (-r), col N-1 = east (+r)
+    //             row 0 = north (-r in Z), row N-1 = south (+r in Z)
     const rawElev = (x, z) => {
       if (!elevGrid) return 0;
       const halfR = radiusMeters;
@@ -44,18 +39,19 @@ export class WorldBuilder {
       const r0 = Math.max(0, Math.min(gridSize - 2, Math.floor(fr)));
       const c1 = c0 + 1, r1 = r0 + 1;
       const tc = fc - c0, tr = fr - r0;
-      const v00 = elevGrid[r0 * gridSize + c0];
-      const v10 = elevGrid[r0 * gridSize + c1];
-      const v01 = elevGrid[r1 * gridSize + c0];
-      const v11 = elevGrid[r1 * gridSize + c1];
-      return v00*(1-tc)*(1-tr) + v10*tc*(1-tr) + v01*(1-tc)*tr + v11*tc*tr;
+      return elevGrid[r0*gridSize+c0]*(1-tc)*(1-tr)
+           + elevGrid[r0*gridSize+c1]*   tc *(1-tr)
+           + elevGrid[r1*gridSize+c0]*(1-tc)*   tr
+           + elevGrid[r1*gridSize+c1]*   tc *   tr;
     };
 
     const centreElev = rawElev(0, 0);
     const elev       = (x, z) => rawElev(x, z) - centreElev;
 
-    // ── Build displaced ground mesh ───────────────────────────
-    this.scene.buildElevationGround(elev, gridSize, radiusMeters);
+    // ── Collect building footprints for terrain flattening ────
+    // We store each building's footprint verts and its resolved
+    // baseY so we can flatten the ground mesh beneath it.
+    const buildingFootprints = []; // { verts, baseY }
 
     // ── Collect geometry ──────────────────────────────────────
     const roadPos = [], roadIdx = [], roadNrm = []; let roadBase = 0;
@@ -68,8 +64,12 @@ export class WorldBuilder {
     for (const way of ways) {
       try {
         if (way.kind === 'building' && way.closed) {
-          const mesh = this._buildingMesh(way, heightScale, elev);
-          if (mesh) { buildingGroup.add(mesh); buildings++; }
+          const result = this._buildingMesh(way, heightScale, elev);
+          if (result) {
+            buildingGroup.add(result.mesh);
+            buildingFootprints.push({ verts: result.verts, baseY: result.baseY });
+            buildings++;
+          }
 
         } else if (way.kind === 'road') {
           const r = this._roadGeom(way, elev);
@@ -104,6 +104,9 @@ export class WorldBuilder {
       } catch (_) { /* skip bad geometry */ }
     }
 
+    // ── Build terrain ground, flattened under buildings ───────
+    this.scene.buildElevationGround(elev, gridSize, radiusMeters, buildingFootprints);
+
     this.scene.addObject(buildingGroup, true);
     tris += buildingGroup.children.reduce((s, m) => s + this._triCount(m), 0);
 
@@ -113,7 +116,7 @@ export class WorldBuilder {
         new THREE.MeshLambertMaterial({ color: 0x505058 })
       );
       mesh.receiveShadow = true;
-      mesh.userData      = { kind: 'road' };
+      mesh.userData = { kind: 'road' };
       this.scene.addObject(mesh);
       tris += roadIdx.length / 3;
     }
@@ -134,7 +137,7 @@ export class WorldBuilder {
         new THREE.MeshLambertMaterial({ color: 0x4a7a40 })
       );
       mesh.receiveShadow = true;
-      mesh.userData      = { kind: 'park' };
+      mesh.userData = { kind: 'park' };
       this.scene.addObject(mesh);
       tris += parkIdx.length / 3;
     }
@@ -169,13 +172,24 @@ export class WorldBuilder {
     return this._signedArea(verts) < 0 ? verts.slice().reverse() : verts;
   }
 
+  // ── Point-in-polygon test (ray casting) ──────────────────────
+  _pointInPoly(px, pz, verts) {
+    let inside = false;
+    const n = verts.length;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const xi = verts[i].x, zi = verts[i].z;
+      const xj = verts[j].x, zj = verts[j].z;
+      if (((zi > pz) !== (zj > pz)) &&
+          (px < (xj - xi) * (pz - zi) / (zj - zi) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
   // ── Building mesh ─────────────────────────────────────────────
-  // Base Y = MINIMUM elevation across all footprint vertices.
-  // This grounds the building at its lowest corner so it never
-  // floats above the terrain surface, even on a slope.
-  // Walls extend downward from this baseY into the terrain where
-  // the terrain is higher than the minimum — intentional clipping
-  // is invisible from any normal viewing angle.
+  // Returns { mesh, verts, baseY } so the caller can pass footprints
+  // to the ground builder for terrain flattening.
   _buildingMesh(way, heightScale, elev) {
     const coords = way.coords;
     if (coords.length < 3) return null;
@@ -188,15 +202,13 @@ export class WorldBuilder {
     const indices = earcut(flat);
     if (!indices?.length) return null;
 
-    // Use minimum elevation so the building is always grounded
-    const vertElevs = verts.map(v => elev(v.x, v.z));
-    const baseY     = Math.min(...vertElevs);
-    const h         = way.height * heightScale;
-    const topY      = baseY + h;
-    const n         = verts.length;
-    const pos       = [], nrm = [], idxArr = [];
+    // Use minimum footprint elevation so building never floats
+    const baseY = Math.min(...verts.map(v => elev(v.x, v.z)));
+    const h     = way.height * heightScale;
+    const topY  = baseY + h;
+    const n     = verts.length;
+    const pos   = [], nrm = [], idxArr = [];
 
-    // Walls — bottom vertices sit at baseY (terrain minimum)
     for (let i = 0; i < n; i++) {
       const j    = (i + 1) % n;
       const ax   = verts[i].x, az = verts[i].z;
@@ -235,10 +247,13 @@ export class WorldBuilder {
     mesh.castShadow    = true;
     mesh.receiveShadow = true;
     mesh.userData      = { kind: 'building', tags: way.tags, height: h };
-    return mesh;
+
+    return { mesh, verts, baseY };
   }
 
   // ── Road geometry ─────────────────────────────────────────────
+  // Uses a wider 5-point moving average for smoother elevation
+  // transitions over noisy DEM data.
   _roadGeom(way, elev) {
     const coords = way.coords;
     if (coords.length < 2) return null;
@@ -246,12 +261,17 @@ export class WorldBuilder {
     const hw   = this._roadHalfWidth(way.tags.highway);
     const rawY = coords.map(c => elev(c.x, c.z));
 
-    // 3-point moving average to smooth spike artefacts from DEM noise
-    const smoothY = rawY.map((y, i) => {
-      const a = rawY[Math.max(0, i - 1)];
-      const b = y;
-      const c = rawY[Math.min(rawY.length - 1, i + 1)];
-      return (a + b + c) / 3;
+    // 5-point weighted moving average (1-2-3-2-1)
+    const smoothY = rawY.map((_, i) => {
+      const weights = [1, 2, 3, 2, 1];
+      let sum = 0, total = 0;
+      for (let w = -2; w <= 2; w++) {
+        const idx = Math.max(0, Math.min(rawY.length - 1, i + w));
+        const wt  = weights[w + 2];
+        sum   += rawY[idx] * wt;
+        total += wt;
+      }
+      return sum / total;
     });
 
     const pos = [], idx = [];
@@ -261,7 +281,8 @@ export class WorldBuilder {
       const dx   = next.x - prev.x, dz = next.z - prev.z;
       const len  = Math.sqrt(dx * dx + dz * dz) || 1;
       const nx   = -dz / len, nz = dx / len;
-      const y    = smoothY[i] + 0.15;
+      const y    = smoothY[i] + 0.5; // larger bias keeps roads above terrain
+
       pos.push(
         coords[i].x + nx * hw, y, coords[i].z + nz * hw,
         coords[i].x - nx * hw, y, coords[i].z - nz * hw,
@@ -280,10 +301,6 @@ export class WorldBuilder {
   }
 
   // ── Terrain-conforming polygon (water / park) ─────────────────
-  // Each vertex gets its own terrain Y value rather than a shared
-  // average. This makes the polygon follow the terrain surface so
-  // it never clips through, at the cost of being non-flat on slopes.
-  // A small yBias keeps the surface visually above the ground.
   _conformPolyGeom(way, elev, yBias = 0.2) {
     const verts = this._ensureCCW(way.coords.slice(0, -1));
     if (verts.length < 3) return null;
@@ -292,7 +309,6 @@ export class WorldBuilder {
     const indices = earcut(flat);
     if (!indices.length) return null;
 
-    // Per-vertex terrain elevation
     const pos = verts.flatMap(v => [v.x, elev(v.x, v.z) + yBias, v.z]);
 
     const flipped = [];

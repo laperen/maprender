@@ -9,8 +9,6 @@ export class SceneManager {
     this._objects    = [];
     this._clock      = new THREE.Clock();
     this._groundMesh = null;
-
-    // FPS tracking
     this._fpsFrames   = 0;
     this._fpsLastTime = performance.now();
     this._fpsEl       = null;
@@ -46,9 +44,9 @@ export class SceneManager {
 
     this._addLights();
 
-    // Flat placeholder ground — replaced by buildElevationGround() after build
-    const groundGeo  = new THREE.PlaneGeometry(6000, 6000);
-    const groundMat  = new THREE.MeshLambertMaterial({ color: 0x4a7a40 });
+    // Flat placeholder — replaced by buildElevationGround()
+    const groundGeo = new THREE.PlaneGeometry(6000, 6000);
+    const groundMat = new THREE.MeshLambertMaterial({ color: 0x4a7a40 });
     this._groundMesh = new THREE.Mesh(groundGeo, groundMat);
     this._groundMesh.rotation.x       = -Math.PI / 2;
     this._groundMesh.receiveShadow    = true;
@@ -79,9 +77,7 @@ export class SceneManager {
     this.scene.add(sun);
     this.sun = sun;
 
-    const ambient = new THREE.AmbientLight(0x90b0d8, 0.7);
-    this.scene.add(ambient);
-    this.ambientLight = ambient;
+    this.scene.add(new THREE.AmbientLight(0x90b0d8, 0.7));
 
     const rim = new THREE.DirectionalLight(0x4878c0, 0.5);
     rim.position.set(-400, 300, -500);
@@ -101,20 +97,12 @@ export class SceneManager {
     const el = document.createElement('div');
     el.id = 'fps-counter';
     Object.assign(el.style, {
-      position:      'fixed',
-      top:           '12px',
-      right:         '12px',
-      background:    'rgba(8,9,12,0.75)',
-      color:         '#4fffb0',
-      fontFamily:    "'Space Mono', monospace",
-      fontSize:      '12px',
-      fontWeight:    '700',
-      padding:       '4px 10px',
-      borderRadius:  '4px',
-      border:        '1px solid #1e2130',
-      zIndex:        '100',
-      pointerEvents: 'none',
-      letterSpacing: '0.05em',
+      position: 'fixed', top: '12px', right: '12px',
+      background: 'rgba(8,9,12,0.75)', color: '#4fffb0',
+      fontFamily: "'Space Mono', monospace", fontSize: '12px',
+      fontWeight: '700', padding: '4px 10px', borderRadius: '4px',
+      border: '1px solid #1e2130', zIndex: '100',
+      pointerEvents: 'none', letterSpacing: '0.05em',
     });
     el.textContent = '-- fps';
     document.body.appendChild(el);
@@ -135,21 +123,27 @@ export class SceneManager {
     }
   }
 
+  // ── Point-in-polygon (ray casting in XZ) ─────────────────────
+  _pointInPoly(px, pz, verts) {
+    let inside = false;
+    const n = verts.length;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const xi = verts[i].x, zi = verts[i].z;
+      const xj = verts[j].x, zj = verts[j].z;
+      if (((zi > pz) !== (zj > pz)) &&
+          (px < (xj - xi) * (pz - zi) / (zj - zi) + xi)) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
   // ── Elevation ground mesh ─────────────────────────────────────
-  // Accepts the same elev(x,z) function that worldBuilder uses, so
-  // the ground mesh is displaced by exactly the same values as all
-  // other geometry. No index-to-grid mapping needed here at all.
-  //
-  // PlaneGeometry vertex layout after rotateX(-π/2):
-  //   x runs west (-extent/2) to east (+extent/2)  [left to right]
-  //   z runs north (-extent/2) to south (+extent/2) [top to bottom]
-  //
-  // Our elev() convention:
-  //   x: west = -radiusMeters, east = +radiusMeters  ✓ matches
-  //   z: north = -radiusMeters, south = +radiusMeters ✓ matches
-  //
-  // So we simply read x,z from each vertex position and call elev(x,z).
-  buildElevationGround(elevFn, gridSize, radiusMeters) {
+  // elevFn(x,z)   — shared elevation function from worldBuilder
+  // buildingFootprints — [{ verts, baseY }] used to flatten terrain
+  //                      under each building so low-rise structures
+  //                      don't get terrain poking through their floors.
+  buildElevationGround(elevFn, gridSize, radiusMeters, buildingFootprints = []) {
     if (this._groundMesh) {
       this.scene.remove(this._groundMesh);
       this._groundMesh.geometry.dispose();
@@ -162,14 +156,26 @@ export class SceneManager {
     const geo    = new THREE.PlaneGeometry(extent, extent, segs, segs);
     geo.rotateX(-Math.PI / 2);
 
-    // After rotation, position attribute holds correct (x, y=0, z) values.
-    // We replace y with elev(x, z) — same function used by buildings/roads.
     const pos = geo.attributes.position;
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const z = pos.getZ(i);
-      pos.setY(i, elevFn(x, z));
+
+      let y = elevFn(x, z);
+
+      // If this vertex falls inside a building footprint, clamp its Y
+      // down to that building's baseY so the terrain doesn't poke through
+      // the floor of low-rise flat buildings.
+      for (const { verts, baseY } of buildingFootprints) {
+        if (this._pointInPoly(x, z, verts)) {
+          y = Math.min(y, baseY);
+          break; // a vertex is unlikely to be inside two buildings
+        }
+      }
+
+      pos.setY(i, y);
     }
+
     pos.needsUpdate = true;
     geo.computeVertexNormals();
 
@@ -184,12 +190,11 @@ export class SceneManager {
   }
 
   // ── Satellite ground texture ──────────────────────────────────
-  // PlaneGeometry UVs already span [0,1] across the mesh so no
-  // repeat scaling is needed — the texture fills it exactly.
+  // The texture from fetchSatelliteTexture() is already cropped to
+  // exactly ±radiusMeters. PlaneGeometry UVs span [0,1] natively,
+  // so no scaling is needed — the texture fills the mesh exactly.
   setGroundTexture(tex) {
     if (!this._groundMesh) return;
-    tex.wrapS = THREE.ClampToEdgeWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.needsUpdate = true;
     this._groundMesh.material.map   = tex;
     this._groundMesh.material.color.set(0xffffff);
