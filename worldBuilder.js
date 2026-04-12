@@ -9,7 +9,12 @@ import {
   roofColour,
 } from './textureFactory.js';
 
-const MIN_BUILDING_AREA = 5; // m²
+const MIN_BUILDING_AREA = 5;  // m² — skip degenerate footprints
+
+// Subdivision intervals — maximum metres between sampled vertices.
+// Smaller = closer terrain conformance but more triangles.
+const ROAD_STEP = 8;   // metres between road ribbon cross-sections
+const POLY_STEP = 15;  // metres between polygon edge vertices
 
 export class WorldBuilder {
   constructor(sceneManager) {
@@ -20,7 +25,7 @@ export class WorldBuilder {
   async build(ways, heightScale = 1, lat = 0, lng = 0, radiusMeters = 500) {
     let buildings = 0, roads = 0, water = 0, parks = 0, tris = 0;
 
-    // ── Fetch elevation grid ──────────────────────────────────
+    // ── Elevation grid ────────────────────────────────────────
     const gridSize = 64;
     let elevGrid   = null;
     try {
@@ -28,8 +33,6 @@ export class WorldBuilder {
     } catch (_) { /* flat fallback */ }
 
     // ── Bilinear elevation sampler ────────────────────────────
-    // Convention: col 0 = west (-r), col N-1 = east (+r)
-    //             row 0 = north (-r in Z), row N-1 = south (+r in Z)
     const rawElev = (x, z) => {
       if (!elevGrid) return 0;
       const halfR = radiusMeters;
@@ -48,12 +51,10 @@ export class WorldBuilder {
     const centreElev = rawElev(0, 0);
     const elev       = (x, z) => rawElev(x, z) - centreElev;
 
-    // ── Collect building footprints for terrain flattening ────
-    // We store each building's footprint verts and its resolved
-    // baseY so we can flatten the ground mesh beneath it.
-    const buildingFootprints = []; // { verts, baseY }
+    // ── Building footprints for terrain flattening ────────────
+    const buildingFootprints = [];
 
-    // ── Collect geometry ──────────────────────────────────────
+    // ── Geometry accumulators ─────────────────────────────────
     const roadPos = [], roadIdx = [], roadNrm = []; let roadBase = 0;
     const watPos  = [], watIdx  = [], watNrm  = []; let watBase  = 0;
     const parkPos = [], parkIdx = [], parkNrm = []; let parkBase = 0;
@@ -104,9 +105,7 @@ export class WorldBuilder {
       } catch (_) { /* skip bad geometry */ }
     }
 
-    // ── Build terrain ground, flattened under buildings ───────
     this.scene.buildElevationGround(elev, gridSize, radiusMeters, buildingFootprints);
-
     this.scene.addObject(buildingGroup, true);
     tris += buildingGroup.children.reduce((s, m) => s + this._triCount(m), 0);
 
@@ -149,6 +148,68 @@ export class WorldBuilder {
     return { buildings, roads, water, parks, triangleCount: Math.round(tris) };
   }
 
+  // ── Segment subdivision ───────────────────────────────────────
+  // Given two XZ points, returns an array of {x, z} points along
+  // the segment including both endpoints, spaced at most `step`
+  // metres apart. This is the core of Option 3 terrain conformance.
+  _subdivideSegment(ax, az, bx, bz, step) {
+    const dx  = bx - ax, dz = bz - az;
+    const len = Math.sqrt(dx * dx + dz * dz);
+    if (len === 0) return [{ x: ax, z: az }];
+
+    const count = Math.max(1, Math.ceil(len / step));
+    const pts   = [];
+    for (let i = 0; i <= count; i++) {
+      const t = i / count;
+      pts.push({ x: ax + dx * t, z: az + dz * t });
+    }
+    return pts;
+  }
+
+  // ── Subdivide a polyline ──────────────────────────────────────
+  // Inserts intermediate points along each segment so no gap
+  // exceeds `step` metres. Returns flat [{x,z}] array including
+  // all original nodes and all inserted sub-points.
+  _subdividePolyline(coords, step) {
+    const result = [];
+    for (let i = 0; i < coords.length; i++) {
+      if (i === coords.length - 1) {
+        // Always include the final point
+        result.push({ x: coords[i].x, z: coords[i].z });
+        break;
+      }
+      const pts = this._subdivideSegment(
+        coords[i].x, coords[i].z,
+        coords[i + 1].x, coords[i + 1].z,
+        step
+      );
+      // Include all but the last point of each segment (the next
+      // iteration's first point), except on the last segment.
+      for (let k = 0; k < pts.length - 1; k++) result.push(pts[k]);
+    }
+    return result;
+  }
+
+  // ── Subdivide a polygon ring ──────────────────────────────────
+  // Like _subdividePolyline but treats the last→first edge as
+  // closing the ring. Returns a flat [{x,z}] array, open (no
+  // duplicate closing vertex).
+  _subdivideRing(verts, step) {
+    const n      = verts.length;
+    const result = [];
+    for (let i = 0; i < n; i++) {
+      const next = (i + 1) % n;
+      const pts  = this._subdivideSegment(
+        verts[i].x,    verts[i].z,
+        verts[next].x, verts[next].z,
+        step
+      );
+      // Exclude the last point of each segment (= first of next)
+      for (let k = 0; k < pts.length - 1; k++) result.push(pts[k]);
+    }
+    return result;
+  }
+
   // ── Merged BufferGeometry ─────────────────────────────────────
   _mergedGeom(positions, indices, normals) {
     const geom = new THREE.BufferGeometry();
@@ -172,24 +233,7 @@ export class WorldBuilder {
     return this._signedArea(verts) < 0 ? verts.slice().reverse() : verts;
   }
 
-  // ── Point-in-polygon test (ray casting) ──────────────────────
-  _pointInPoly(px, pz, verts) {
-    let inside = false;
-    const n = verts.length;
-    for (let i = 0, j = n - 1; i < n; j = i++) {
-      const xi = verts[i].x, zi = verts[i].z;
-      const xj = verts[j].x, zj = verts[j].z;
-      if (((zi > pz) !== (zj > pz)) &&
-          (px < (xj - xi) * (pz - zi) / (zj - zi) + xi)) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  }
-
   // ── Building mesh ─────────────────────────────────────────────
-  // Returns { mesh, verts, baseY } so the caller can pass footprints
-  // to the ground builder for terrain flattening.
   _buildingMesh(way, heightScale, elev) {
     const coords = way.coords;
     if (coords.length < 3) return null;
@@ -202,7 +246,6 @@ export class WorldBuilder {
     const indices = earcut(flat);
     if (!indices?.length) return null;
 
-    // Use minimum footprint elevation so building never floats
     const baseY = Math.min(...verts.map(v => elev(v.x, v.z)));
     const h     = way.height * heightScale;
     const topY  = baseY + h;
@@ -247,49 +290,52 @@ export class WorldBuilder {
     mesh.castShadow    = true;
     mesh.receiveShadow = true;
     mesh.userData      = { kind: 'building', tags: way.tags, height: h };
-
     return { mesh, verts, baseY };
   }
 
-  // ── Road geometry ─────────────────────────────────────────────
-  // Uses a wider 5-point moving average for smoother elevation
-  // transitions over noisy DEM data.
+  // ── Road geometry with terrain subdivision ────────────────────
+  // Subdivides each OSM segment into sub-sections of at most
+  // ROAD_STEP metres, sampling elev() at each sub-vertex so the
+  // ribbon continuously follows the terrain surface.
   _roadGeom(way, elev) {
     const coords = way.coords;
     if (coords.length < 2) return null;
 
-    const hw   = this._roadHalfWidth(way.tags.highway);
-    const rawY = coords.map(c => elev(c.x, c.z));
+    const hw = this._roadHalfWidth(way.tags.highway);
 
-    // 5-point weighted moving average (1-2-3-2-1)
-    const smoothY = rawY.map((_, i) => {
-      const weights = [1, 2, 3, 2, 1];
-      let sum = 0, total = 0;
-      for (let w = -2; w <= 2; w++) {
-        const idx = Math.max(0, Math.min(rawY.length - 1, i + w));
-        const wt  = weights[w + 2];
-        sum   += rawY[idx] * wt;
-        total += wt;
-      }
-      return sum / total;
+    // Build a dense centreline by subdividing every OSM segment
+    const centreline = this._subdividePolyline(coords, ROAD_STEP);
+    if (centreline.length < 2) return null;
+
+    // Sample raw terrain elevation at every centreline point
+    const rawY = centreline.map(p => elev(p.x, p.z));
+
+    // Light 3-point smoothing to remove any remaining DEM noise
+    // (subdivision already reduces the problem significantly)
+    const smoothY = rawY.map((y, i) => {
+      const a = rawY[Math.max(0, i - 1)];
+      const b = y;
+      const c = rawY[Math.min(rawY.length - 1, i + 1)];
+      return (a + b + c) / 3;
     });
 
     const pos = [], idx = [];
-    for (let i = 0; i < coords.length; i++) {
-      const prev = coords[i - 1] || coords[i];
-      const next = coords[i + 1] || coords[i];
+    for (let i = 0; i < centreline.length; i++) {
+      const prev = centreline[i - 1] || centreline[i];
+      const next = centreline[i + 1] || centreline[i];
       const dx   = next.x - prev.x, dz = next.z - prev.z;
       const len  = Math.sqrt(dx * dx + dz * dz) || 1;
       const nx   = -dz / len, nz = dx / len;
-      const y    = smoothY[i] + 0.5; // larger bias keeps roads above terrain
+      const y    = smoothY[i] + 0.3;
 
       pos.push(
-        coords[i].x + nx * hw, y, coords[i].z + nz * hw,
-        coords[i].x - nx * hw, y, coords[i].z - nz * hw,
+        centreline[i].x + nx * hw, y, centreline[i].z + nz * hw,
+        centreline[i].x - nx * hw, y, centreline[i].z - nz * hw,
       );
+
       if (i > 0) {
         const b = (i - 1) * 2;
-        idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3);
+        idx.push(b, b + 2, b + 1,  b + 1, b + 2, b + 3);
       }
     }
 
@@ -300,17 +346,28 @@ export class WorldBuilder {
     return { pos, idx, nrm: Array.from(geom.attributes.normal.array) };
   }
 
-  // ── Terrain-conforming polygon (water / park) ─────────────────
+  // ── Terrain-conforming polygon (park / water) ─────────────────
+  // Subdivides every polygon edge into segments of at most POLY_STEP
+  // metres before triangulating. This gives earcut a denser ring of
+  // points, each with its own terrain-sampled Y, so the polygon
+  // surface drapes over hills rather than floating or clipping.
   _conformPolyGeom(way, elev, yBias = 0.2) {
-    const verts = this._ensureCCW(way.coords.slice(0, -1));
+    const raw = this._ensureCCW(way.coords.slice(0, -1));
+    if (raw.length < 3) return null;
+
+    // Subdivide the polygon ring edges
+    const verts = this._subdivideRing(raw, POLY_STEP);
     if (verts.length < 3) return null;
 
+    // Triangulate in XZ space (Y is ignored by earcut)
     const flat    = verts.flatMap(v => [v.x, v.z]);
     const indices = earcut(flat);
     if (!indices.length) return null;
 
+    // Assign terrain Y to every vertex
     const pos = verts.flatMap(v => [v.x, elev(v.x, v.z) + yBias, v.z]);
 
+    // Flip winding for upward-facing normals
     const flipped = [];
     for (let i = 0; i < indices.length; i += 3) {
       flipped.push(indices[i], indices[i + 2], indices[i + 1]);
