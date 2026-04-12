@@ -18,17 +18,48 @@ const ROAD_STEP  = 8;   // m — max segment length along road centreline
 const POLY_STEP  = 15;  // m — max segment length along polygon edges
 
 // ── DRAPE BIAS ────────────────────────────────────────────────
-// How many metres above the terrain surface roads and parks sit.
-// Increase if flat elements clip through terrain.
-// Decrease if the gap above terrain looks too large.
-const DRAPE_BIAS = 0.4; // metres
+const DRAPE_BIAS = 0.4; // metres above terrain surface
 
 const RAY_ORIGIN_Y = 2000; // ray cast start height — above any terrain
+
+// ── LAMP POST tuning ──────────────────────────────────────────
+// Only place lamps on roads wide enough to warrant them.
+const LAMP_ROAD_TYPES = new Set([
+  'motorway','trunk','primary','secondary',
+  'tertiary','residential','unclassified',
+]);
+// Spacing between lamp posts along centreline (metres)
+const LAMP_SPACING  = 35;
+// How far off the centreline the post sits (metres, towards kerb)
+const LAMP_OFFSET   = 3.5;
+// Post geometry dimensions (metres)
+const LAMP_HEIGHT   = 6.0;
+const LAMP_RADIUS   = 0.12;
+// Glow decal radius on ground (metres)
+const GLOW_RADIUS   = 7.0;
 
 export class WorldBuilder {
   constructor(sceneManager) {
     this.scene         = sceneManager;
     this._toonGradient = makeToonGradient();
+    this._glowTex      = this._makeGlowTexture();
+  }
+
+  // ── Shared orange glow radial-gradient texture ────────────────
+  _makeGlowTexture() {
+    const size   = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width  = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const cx  = size / 2;
+    const g   = ctx.createRadialGradient(cx, cx, 0, cx, cx, cx);
+    g.addColorStop(0,   'rgba(255,200,80,0.9)');
+    g.addColorStop(0.3, 'rgba(255,160,40,0.5)');
+    g.addColorStop(1,   'rgba(255,120,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, size, size);
+    return new THREE.CanvasTexture(canvas);
   }
 
   async build(ways, heightScale = 1, lat = 0, lng = 0, radiusMeters = 500) {
@@ -63,16 +94,16 @@ export class WorldBuilder {
     const buildingFootprints = [];
 
     // ── Raw XZ triangle collectors ────────────────────────────
-    // Roads and parks collect {a,b,c} XZ triangles.
-    // Y is assigned entirely by the draping pass below.
     const rawRoadTris = [];
-    //const rawParkTris = [];
 
     // Water uses flat-average approach, collected directly.
     const watPos = [], watIdx = [], watNrm = []; let watBase = 0;
 
     const buildingGroup = new THREE.Group();
     buildingGroup.name  = 'buildings';
+
+    // Collect road ways that qualify for lamp posts
+    const lampRoadWays = [];
 
     for (const way of ways) {
       try {
@@ -87,6 +118,9 @@ export class WorldBuilder {
         } else if (way.kind === 'road') {
           const ts = this._roadTriangles(way);
           if (ts) { ts.forEach(t => rawRoadTris.push(t)); roads++; }
+          if (LAMP_ROAD_TYPES.has(way.tags?.highway)) {
+            lampRoadWays.push(way);
+          }
 
         } else if (way.kind === 'water' && way.closed) {
           const r = this._waterPolyGeom(way, elev);
@@ -97,11 +131,7 @@ export class WorldBuilder {
             watBase += r.pos.length / 3;
             water++;
           }
-
-        }/* else if (way.kind === 'park' && way.closed) {
-          const ts = this._polygonTriangles(way);
-          if (ts) { ts.forEach(t => rawParkTris.push(t)); parks++; }
-        }*/
+        }
       } catch (_) {}
     }
 
@@ -138,23 +168,6 @@ export class WorldBuilder {
       tris += draped.idx.length / 3;
     }
 
-    // ── Drape parks ───────────────────────────────────────────
-    /*
-    if (rawParkTris.length) {
-      const draped = this._drapeTriangles(
-        rawParkTris, terrainMesh, bvh, elev, DRAPE_BIAS * 0.6
-      );
-      const mesh = new THREE.Mesh(
-        this._buildGeom(draped.pos, draped.idx, draped.nrm),
-        new THREE.MeshLambertMaterial({ color: 0x4a7a40 })
-      );
-      mesh.receiveShadow = true;
-      mesh.userData      = { kind: 'park' };
-      this.scene.addObject(mesh);
-      tris += draped.idx.length / 3;
-    }
-    */
-
     // ── Water ─────────────────────────────────────────────────
     if (watIdx.length) {
       const mesh = new THREE.Mesh(
@@ -166,6 +179,26 @@ export class WorldBuilder {
       tris += watIdx.length / 3;
     }
 
+    // ── Lamp posts ────────────────────────────────────────────
+    // Build after terrain BVH exists so we can snap post bases to terrain.
+    const snapY = (x, z) => {
+      if (!terrainMesh) return elev(x, z);
+      const raycaster = new THREE.Raycaster();
+      const dir       = new THREE.Vector3(0, -1, 0);
+      const origin    = new THREE.Vector3(x, RAY_ORIGIN_Y, z);
+      raycaster.set(origin, dir);
+      const hits = raycaster.intersectObject(terrainMesh, false);
+      return hits.length > 0 ? hits[0].point.y : elev(x, z);
+    };
+
+    if (lampRoadWays.length) {
+      const lampGroup = this._buildLampGroup(lampRoadWays, snapY);
+      this.scene.addObject(lampGroup);
+      this.scene.registerLampGroup(lampGroup);
+      // Re-apply current time-of-day so lamps start in the right state
+      this.scene.setTimeOfDay(this.scene.dayPhase);
+    }
+
     fetchSatelliteTexture(lat, lng, radiusMeters)
       .then(tex => this.scene.setGroundTexture(tex))
       .catch(() => {});
@@ -174,21 +207,125 @@ export class WorldBuilder {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // LAMP POST BUILDER
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildLampGroup(roadWays, snapY) {
+    const group = new THREE.Group();
+    group.name  = 'lamps';
+
+    // Shared geometries / materials (reused for all posts)
+    const poleGeo  = new THREE.CylinderGeometry(LAMP_RADIUS, LAMP_RADIUS * 1.2, LAMP_HEIGHT, 6, 1);
+    const headGeo  = new THREE.SphereGeometry(LAMP_RADIUS * 2.8, 8, 6);
+    const glowGeo  = new THREE.PlaneGeometry(GLOW_RADIUS * 2, GLOW_RADIUS * 2);
+
+    const poleMat  = new THREE.MeshLambertMaterial({ color: 0x707880 });
+    const headMat  = new THREE.MeshStandardMaterial({
+      color:             0xfff0c0,
+      emissive:          new THREE.Color(0xffa030),
+      emissiveIntensity: 0,       // driven by setTimeOfDay
+      roughness:         0.4,
+      metalness:         0.2,
+    });
+    const glowMat  = new THREE.MeshBasicMaterial({
+      map:         this._glowTex,
+      transparent: true,
+      opacity:     0,             // driven by setTimeOfDay
+      depthWrite:  false,
+      blending:    THREE.AdditiveBlending,
+      side:        THREE.DoubleSide,
+    });
+
+    // Track positions already used to avoid duplicate posts at intersections
+    const placed = new Set();
+    const key    = (x, z) => `${Math.round(x / 2)},${Math.round(z / 2)}`;
+
+    for (const way of roadWays) {
+      const coords = way.coords;
+      if (coords.length < 2) continue;
+
+      const hw = this._roadHalfWidth(way.tags.highway);
+      // Only place lamps on one side for narrow roads, both sides for wide
+      const bothSides = hw >= 3.5;
+
+      // Walk centreline at LAMP_SPACING intervals
+      let accumulated = 0;
+      for (let i = 0; i < coords.length - 1; i++) {
+        const ax = coords[i].x,   az = coords[i].z;
+        const bx = coords[i+1].x, bz = coords[i+1].z;
+        const dx = bx - ax, dz = bz - az;
+        const segLen = Math.sqrt(dx*dx + dz*dz);
+        if (segLen < 0.1) continue;
+
+        const ux = dx / segLen, uz = dz / segLen;
+        // Normal (perpendicular, pointing left)
+        const nx = -uz, nz = ux;
+
+        let d = LAMP_SPACING - (accumulated % LAMP_SPACING);
+        while (d <= segLen) {
+          const t  = d / segLen;
+          const cx = ax + ux * d;
+          const cz = az + uz * d;
+
+          // Right-side post
+          this._placeLamp(
+            group,
+            cx + nx * (hw + LAMP_OFFSET), cz + nz * (hw + LAMP_OFFSET),
+            snapY, poleGeo, headGeo, glowGeo, poleMat, headMat, glowMat, placed, key
+          );
+
+          // Left-side post (for wider roads)
+          if (bothSides) {
+            this._placeLamp(
+              group,
+              cx - nx * (hw + LAMP_OFFSET), cz - nz * (hw + LAMP_OFFSET),
+              snapY, poleGeo, headGeo, glowGeo, poleMat, headMat, glowMat, placed, key
+            );
+          }
+
+          d += LAMP_SPACING;
+        }
+
+        accumulated += segLen;
+      }
+    }
+
+    return group;
+  }
+
+  _placeLamp(group, x, z, snapY, poleGeo, headGeo, glowGeo, poleMat, headMat, glowMat, placed, key) {
+    const k = key(x, z);
+    if (placed.has(k)) return;
+    placed.add(k);
+
+    const baseY = snapY(x, z);
+
+    // Pole
+    const pole = new THREE.Mesh(poleGeo, poleMat);
+    pole.position.set(x, baseY + LAMP_HEIGHT / 2, z);
+    group.add(pole);
+
+    // Head (emissive bulb)
+    const head = new THREE.Mesh(headGeo, headMat.clone());   // clone so emissiveIntensity is independent
+    head.position.set(x, baseY + LAMP_HEIGHT + LAMP_RADIUS * 2.8, z);
+    head.userData.isLampHead = true;
+    group.add(head);
+
+    // Ground glow decal (flat plane, horizontal)
+    const glow = new THREE.Mesh(glowGeo, glowMat.clone());
+    glow.rotation.x   = -Math.PI / 2;
+    glow.position.set(x, baseY + 0.15, z);
+    glow.userData.isGlow = true;
+    group.add(glow);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // DRAPING ENGINE
   // ═══════════════════════════════════════════════════════════════
 
-  // ── _drapeTriangles ───────────────────────────────────────────
-  // For each input XZ triangle:
-  //   1. Query the BVH for terrain triangles overlapping its XZ bbox
-  //   2. Insert new vertices wherever input edges cross terrain edges
-  //   3. Re-triangulate the resulting polygon with earcut
-  //   4. Raycast each output vertex downward to snap Y to terrain + bias
-  //
-  // Falls back to elev()-based snap if BVH is unavailable.
   _drapeTriangles(inputTris, terrainMesh, bvh, elev, bias) {
     const outPos = [], outIdx = [], outNrm = [];
 
-    // Raycaster for snapping vertices to exact terrain surface
     const raycaster = new THREE.Raycaster();
     const rayDir    = new THREE.Vector3(0, -1, 0);
     const rayOrigin = new THREE.Vector3();
@@ -198,23 +335,17 @@ export class WorldBuilder {
       rayOrigin.set(x, RAY_ORIGIN_Y, z);
       raycaster.set(rayOrigin, rayDir);
       const hits = raycaster.intersectObject(terrainMesh, false);
-      // Always add bias on top of the terrain hit to stay above surface
       return hits.length > 0
         ? hits[0].point.y + bias
         : elev(x, z) + bias;
     };
 
     for (const tri of inputTris) {
-      // XZ bounding box for BVH query
       const minX = Math.min(tri.a.x, tri.b.x, tri.c.x);
       const maxX = Math.max(tri.a.x, tri.b.x, tri.c.x);
       const minZ = Math.min(tri.a.z, tri.b.z, tri.c.z);
       const maxZ = Math.max(tri.a.z, tri.b.z, tri.c.z);
 
-      // ── Collect terrain edge XZ intersections ───────────────
-      // edgePoints[0] = points along A→B (including A, excluding B)
-      // edgePoints[1] = points along B→C (including B, excluding C)
-      // edgePoints[2] = points along C→A (including C, excluding A)
       const corners  = [tri.a, tri.b, tri.c];
       const edgePts  = [
         [{ x: tri.a.x, z: tri.a.z }],
@@ -224,19 +355,15 @@ export class WorldBuilder {
       const edgeNext = [tri.b, tri.c, tri.a];
 
       if (bvh) {
-        // Query box — tall Y range so we hit all terrain tris
         const queryBox = new THREE.Box3(
           new THREE.Vector3(minX, -10000, minZ),
           new THREE.Vector3(maxX,  10000, maxZ)
         );
 
         try {
-          // three-mesh-bvh shapecast: intersectsTriangle receives a
-          // THREE.Triangle object with .a, .b, .c as Vector3 vertices.
           bvh.shapecast({
             intersectsBounds: (box) => box.intersectsBox(queryBox),
             intersectsTriangle: (terrTri) => {
-              // terrTri.a/b/c are THREE.Vector3 with full XYZ
               const tVerts = [terrTri.a, terrTri.b, terrTri.c];
 
               for (let ei = 0; ei < 3; ei++) {
@@ -254,28 +381,20 @@ export class WorldBuilder {
                   if (pt) edgePts[ei].push(pt);
                 }
               }
-              return false; // keep traversing
+              return false;
             },
           });
-        } catch (e) {
-          // shapecast unavailable or errored — edgePts stay as corners only
-        }
+        } catch (e) {}
       }
 
-      // Sort each edge's points by distance from corner and deduplicate
       for (let ei = 0; ei < 3; ei++) {
         const start = corners[ei];
-
-        // Add the endpoint (excluded from next edge's list)
         edgePts[ei].push({ x: edgeNext[ei].x, z: edgeNext[ei].z });
-
         edgePts[ei].sort((p, q) => {
           const dp = (p.x - start.x) ** 2 + (p.z - start.z) ** 2;
           const dq = (q.x - start.x) ** 2 + (q.z - start.z) ** 2;
           return dp - dq;
         });
-
-        // Deduplicate within 1cm
         edgePts[ei] = edgePts[ei].filter((p, i, arr) => {
           if (i === 0) return true;
           const prev = arr[i - 1];
@@ -283,9 +402,6 @@ export class WorldBuilder {
         });
       }
 
-      // Build the polygon ring from the three edge point lists.
-      // Each list includes its start corner and all inserted points
-      // but NOT the endpoint (which is the next list's first point).
       const ring = [];
       for (let ei = 0; ei < 3; ei++) {
         const pts = edgePts[ei];
@@ -296,17 +412,14 @@ export class WorldBuilder {
 
       if (ring.length < 3) continue;
 
-      // Snap every ring vertex to terrain Y + bias
       for (const p of ring) {
         p.y = snapY(p.x, p.z);
       }
 
-      // Triangulate the ring (XZ coords only for earcut)
       const flat    = ring.flatMap(p => [p.x, p.z]);
       const indices = earcut(flat);
       if (!indices || indices.length < 3) continue;
 
-      // Determine winding direction and emit triangles
       const area = this._signedAreaXZ(ring);
       const base = outPos.length / 3;
 
@@ -315,21 +428,14 @@ export class WorldBuilder {
         outNrm.push(0, 1, 0);
       }
 
-      // Flip winding if needed so normals face upward.
-      // In Three.js (right-handed, Y-up): a CCW ring in XZ already
-      // produces an upward normal with the default index order, so keep
-      // it as-is.  A CW ring (negative signed area) needs its winding
-      // reversed to make the normal point upward.
       for (let k = 0; k < indices.length; k += 3) {
         if (area >= 0) {
-          // CCW ring → keep winding (normal already faces up)
           outIdx.push(
             base + indices[k],
             base + indices[k + 1],
             base + indices[k + 2],
           );
         } else {
-          // CW ring → reverse winding so normal faces up
           outIdx.push(
             base + indices[k],
             base + indices[k + 2],
@@ -342,9 +448,6 @@ export class WorldBuilder {
     return { pos: outPos, idx: outIdx, nrm: outNrm };
   }
 
-  // ── _segSegIntersectXZ ────────────────────────────────────────
-  // Returns interior XZ intersection of two segments, or null.
-  // Strictly excludes endpoint intersections (eps guard).
   _segSegIntersectXZ(p1x, p1z, p2x, p2z, p3x, p3z, p4x, p4z) {
     const d1x = p2x - p1x, d1z = p2z - p1z;
     const d2x = p4x - p3x, d2z = p4z - p3z;
@@ -360,7 +463,6 @@ export class WorldBuilder {
     return null;
   }
 
-  // ── _signedAreaXZ ─────────────────────────────────────────────
   _signedAreaXZ(pts) {
     let area = 0, n = pts.length;
     for (let i = 0; i < n; i++) {

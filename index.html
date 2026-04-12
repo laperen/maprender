@@ -59,9 +59,22 @@
         <input type="range" id="radius-slider" min="200" max="2000" step="100" value="500" />
       </div>
 
+      <!--
+        Height slider: internal value 1–10, divided by 2 in ui.js to give
+        0.5×–5.0× multiplier. Default 2 = 1.0× (true real-world scale).
+      -->
       <div class="control-group">
         <label for="height-slider">Building Height Scale <span id="height-val">1.0×</span></label>
         <input type="range" id="height-slider" min="1" max="10" step="1" value="2" />
+      </div>
+
+      <!--
+        Time of day slider: 0 = noon, 50 = midnight, 100 = noon again.
+        Drives scene.setTimeOfDay(t) where t = raw / 100.
+      -->
+      <div class="control-group">
+        <label for="time-slider">Time of Day <span id="time-val">12:00 PM</span></label>
+        <input type="range" id="time-slider" min="0" max="100" step="1" value="0" />
       </div>
 
       <div class="control-group">
@@ -71,77 +84,6 @@
           <button class="mode-btn" data-mode="wireframe">Wireframe</button>
           <button class="mode-btn" data-mode="xray">X-Ray</button>
         </div>
-      </div>
-
-      <!-- ── Sun Controls ──────────────────────────────────── -->
-      <div class="control-group">
-        <label>Sun &amp; Lighting</label>
-        <div class="sun-panel">
-
-          <!-- Dial + label side-by-side -->
-          <div class="sun-dial-wrap">
-            <svg id="sun-dial" viewBox="0 0 64 64" width="64" height="64">
-              <!-- Compass ring -->
-              <circle cx="32" cy="32" r="30" fill="none" stroke="#1e2130" stroke-width="1.5"/>
-              <!-- Cardinal labels -->
-              <text x="32" y="7"  text-anchor="middle" font-size="7" fill="#4a5270">N</text>
-              <text x="32" y="62" text-anchor="middle" font-size="7" fill="#4a5270">S</text>
-              <text x="4"  y="35" text-anchor="middle" font-size="7" fill="#4a5270">W</text>
-              <text x="60" y="35" text-anchor="middle" font-size="7" fill="#4a5270">E</text>
-              <!-- Tick marks -->
-              <line x1="32" y1="3" x2="32" y2="8"  stroke="#1e2130" stroke-width="1"/>
-              <line x1="32" y1="56" x2="32" y2="61" stroke="#1e2130" stroke-width="1"/>
-              <line x1="3"  y1="32" x2="8"  y2="32" stroke="#1e2130" stroke-width="1"/>
-              <line x1="56" y1="32" x2="61" y2="32" stroke="#1e2130" stroke-width="1"/>
-              <!-- Centre -->
-              <circle cx="32" cy="32" r="2" fill="#4a5270"/>
-              <!-- Hand line -->
-              <line id="sun-dial-hand" x1="32" y1="32" x2="60" y2="32"
-                    stroke="#ffd060" stroke-width="1.5" stroke-linecap="round"/>
-              <!-- Sun dot -->
-              <circle id="sun-dial-dot" cx="60" cy="32" r="6" fill="#ffd060"/>
-            </svg>
-            <span id="sun-dial-label" class="sun-dial-label">10:00AM</span>
-          </div>
-
-          <!-- Mode buttons -->
-          <div class="toggle-row sun-mode-row">
-            <button id="sun-mode-device" class="mode-btn" title="Use device clock">⏱ Now</button>
-            <button id="sun-mode-time"   class="mode-btn active" title="Set time of day">🕐 Time</button>
-            <button id="sun-mode-manual" class="mode-btn" title="Manual angles">✦ Manual</button>
-          </div>
-
-          <!-- Time-of-day slider (shown in 'time' mode) -->
-          <div id="sun-time-row" class="sun-sub-row">
-            <div class="sun-sub-label">
-              <span>Time of day</span>
-              <span id="sun-time-val" class="accent-val">10:00 AM</span>
-            </div>
-            <input type="range" id="sun-time-slider"
-                   min="0" max="24" step="0.25" value="10" />
-            <div class="sun-time-ticks">
-              <span>12AM</span><span>6AM</span><span>12PM</span><span>6PM</span><span>12AM</span>
-            </div>
-          </div>
-
-          <!-- Manual elevation + azimuth (shown in 'manual' mode) -->
-          <div id="sun-manual-row" class="sun-sub-row hidden">
-            <div class="sun-sub-label">
-              <span>Elevation</span>
-              <span id="sun-elev-val" class="accent-val">45°</span>
-            </div>
-            <input type="range" id="sun-elev-slider"
-                   min="-10" max="90" step="1" value="45" />
-
-            <div class="sun-sub-label" style="margin-top:8px">
-              <span>Azimuth</span>
-              <span id="sun-azi-val" class="accent-val">135°</span>
-            </div>
-            <input type="range" id="sun-azi-slider"
-                   min="0" max="360" step="1" value="135" />
-          </div>
-
-        </div><!-- /sun-panel -->
       </div>
 
       <button id="generate-btn">Generate 3D World</button>

@@ -1,0 +1,8 @@
+csm shadows
+night portion of day night cycle.
+night time lighting
+clouds
+youtube juke box
+z fighting building portions
+replace orbit camera?
+state transition between map creation and ground level roam
