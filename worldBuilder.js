@@ -325,15 +325,15 @@ export class WorldBuilder {
           // CCW ring → keep winding (normal already faces up)
           outIdx.push(
             base + indices[k],
-            base + indices[k + 2],
             base + indices[k + 1],
+            base + indices[k + 2],
           );
         } else {
           // CW ring → reverse winding so normal faces up
           outIdx.push(
             base + indices[k],
-            base + indices[k + 1],
             base + indices[k + 2],
+            base + indices[k + 1],
           );
         }
       }
