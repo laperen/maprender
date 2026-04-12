@@ -6,6 +6,7 @@
   --border:    #1e2130;
   --accent:    #4fffb0;
   --accent2:   #3d8eff;
+  --sun:       #ffd060;
   --danger:    #ff4f6b;
   --text:      #c8d0e0;
   --muted:     #4a5270;
@@ -356,3 +357,90 @@ button {
 }
 
 .loading { animation: pulse 1s ease-in-out infinite; }
+
+/* ═══════════════════════════════════════════════════════════
+   SUN CONTROLS
+   ═══════════════════════════════════════════════════════════ */
+
+.sun-panel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Dial + label row */
+.sun-dial-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#sun-dial {
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 6px rgba(255, 208, 96, 0.2));
+}
+
+.sun-dial-label {
+  font-family: 'Syne', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--sun);
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+/* Mode row — slightly smaller text to fit 3 buttons */
+.sun-mode-row .mode-btn {
+  font-size: 9px;
+  padding: 6px 3px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+/* Sun slider thumb: warm yellow */
+#sun-time-slider::-webkit-slider-thumb,
+#sun-elev-slider::-webkit-slider-thumb,
+#sun-azi-slider::-webkit-slider-thumb  {
+  background: var(--sun);
+  box-shadow: 0 0 6px rgba(255, 208, 96, 0.6);
+}
+
+/* Sub-rows (time / manual content) */
+.sun-sub-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sun-sub-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.accent-val {
+  color: var(--sun);
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Time axis tick labels */
+.sun-time-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-size: 8px;
+  color: var(--muted);
+  padding: 0 1px;
+  margin-top: -2px;
+}

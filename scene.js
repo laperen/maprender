@@ -72,30 +72,134 @@ export class SceneManager {
     this._sky = sky;
 
     const uniforms = sky.material.uniforms;
-    uniforms['turbidity'].value      = 10;
-    uniforms['rayleigh'].value       = 2;
-    uniforms['mieCoefficient'].value = 0.005;
+    uniforms['turbidity'].value       = 10;
+    uniforms['rayleigh'].value        = 2;
+    uniforms['mieCoefficient'].value  = 0.005;
     uniforms['mieDirectionalG'].value = 0.8;
 
-    // Sun position: elevation ~15°, azimuth ~135° (south-east)
-    const phi   = THREE.MathUtils.degToRad(90 - 15);   // polar angle from top
-    const theta = THREE.MathUtils.degToRad(135);         // azimuth
+    // Default sun: elevation ~15°, azimuth ~135° (south-east) ≈ 10:00
+    this._sunElevationDeg = 45;
+    this._sunAzimuthDeg   = 135;
+    this._applySunPosition();
+  }
 
-    const sunPos = new THREE.Vector3();
-    sunPos.setFromSphericalCoords(1, phi, theta);
-    uniforms['sunPosition'].value.copy(sunPos);
+  // ── Public: update sun from elevation + azimuth degrees ───────
+  setSunAngles(elevationDeg, azimuthDeg) {
+    this._sunElevationDeg = elevationDeg;
+    this._sunAzimuthDeg   = azimuthDeg;
+    this._applySunPosition();
+  }
 
-    // Store normalised sun direction for the directional light
-    this._sunDirection = sunPos.clone().normalize();
+  // ── Public: update sun from a time-of-day (0–24 h) ───────────
+  // Simple analogue: hour maps to a sun arc across the sky.
+  // elevation peaks at noon, azimuth sweeps east→west.
+  setSunFromTime(hour) {
+    // hour in [0, 24]
+    const t = hour / 24; // 0–1
+
+    // Elevation: sine arc, rises at 6h, peaks at 12h, sets at 18h
+    // Give it a small negative floor so night is clearly dark.
+    const sunriseH = 6, sunsetH = 18;
+    const dayFrac  = (hour - sunriseH) / (sunsetH - sunriseH); // 0..1 during day
+    let elevDeg;
+    if (hour <= sunriseH || hour >= sunsetH) {
+      elevDeg = -10; // below horizon → night
+    } else {
+      elevDeg = Math.sin(dayFrac * Math.PI) * 75; // 0° at sunrise/set, 75° at noon
+    }
+
+    // Azimuth: 90° (east) at sunrise → 180° (south) at noon → 270° (west) at sunset
+    const azDeg = sunriseH <= hour && hour <= sunsetH
+      ? 90 + dayFrac * 180
+      : (hour < sunriseH ? 90 : 270);
+
+    this.setSunAngles(elevDeg, azDeg);
+    return { elevationDeg: elevDeg, azimuthDeg: azDeg };
+  }
+
+  _applySunPosition() {
+    const elevRad = THREE.MathUtils.degToRad(this._sunElevationDeg);
+    const aziRad  = THREE.MathUtils.degToRad(this._sunAzimuthDeg);
+
+    // Standard spherical → cartesian (Y-up, Z-south)
+    const sinElev = Math.sin(elevRad);
+    const cosElev = Math.cos(elevRad);
+    const sunPos  = new THREE.Vector3(
+      cosElev * Math.sin(aziRad),
+      sinElev,
+      cosElev * Math.cos(aziRad)
+    );
+
+    // Update sky shader
+    if (this._sky) {
+      const uniforms = this._sky.material.uniforms;
+      uniforms['sunPosition'].value.copy(sunPos);
+
+      // Adjust sky atmosphere params based on sun height
+      const t = Math.max(0, this._sunElevationDeg) / 75; // 0 = horizon, 1 = noon
+      uniforms['rayleigh'].value  = 0.5 + t * 2.5;  // more blue scattering at noon
+      uniforms['turbidity'].value = 4 + (1 - t) * 8; // hazier near horizon
+
+      // Mie scattering: stronger near horizon for golden hour glow
+      uniforms['mieCoefficient'].value  = 0.002 + (1 - t) * 0.025;
+      uniforms['mieDirectionalG'].value = 0.7 + t * 0.2;
+    }
+
+    // Update directional light
+    if (this.sun) {
+      const dist = 1000;
+      this.sun.position.set(
+        sunPos.x * dist,
+        sunPos.y * dist,
+        sunPos.z * dist
+      );
+
+      // Night/sunset colour transitions
+      const elevClamped = Math.max(-10, Math.min(75, this._sunElevationDeg));
+      const tLight      = Math.max(0, elevClamped) / 75;
+      const tHorizon    = 1 - Math.abs(elevClamped) / 75;
+
+      // Noon: warm white. Horizon: deep orange. Night: off.
+      const intensity = elevClamped <= 0 ? 0 : 0.4 + tLight * 2.6;
+
+      // Interpolate colour: orange (horizon) → warm white (noon)
+      const r = 1.0;
+      const g = 0.6 + tLight * 0.38;
+      const b = 0.3 + tLight * 0.58;
+      this.sun.color.setRGB(r, g, b);
+      this.sun.intensity = intensity;
+
+      // Ambient: cool blue at noon, dim warm at dusk, nearly off at night
+      if (this.ambientLight) {
+        const aIntensity = elevClamped <= 0
+          ? 0.05
+          : 0.2 + tLight * 0.4;
+        const aR = 0.5 + tLight * 0.2;
+        const aG = 0.6 + tLight * 0.1;
+        const aB = 0.8 + tLight * 0.1;
+        this.ambientLight.color.setRGB(aR, aG, aB);
+        this.ambientLight.intensity = aIntensity;
+      }
+    }
+
+    // Exposure: brighter at noon, darker at dusk/night
+    if (this.renderer) {
+      const elevC = Math.max(-10, Math.min(75, this._sunElevationDeg));
+      const tExp  = Math.max(0, elevC) / 75;
+      this.renderer.toneMappingExposure = 0.15 + tExp * 0.45;
+    }
   }
 
   _addLights() {
-    // Position directional light to match the sky's sun
     const dist = 1000;
-    const dir  = this._sunDirection;
+    const sunPos = new THREE.Vector3(
+      Math.cos(THREE.MathUtils.degToRad(this._sunElevationDeg)) * Math.sin(THREE.MathUtils.degToRad(this._sunAzimuthDeg)),
+      Math.sin(THREE.MathUtils.degToRad(this._sunElevationDeg)),
+      Math.cos(THREE.MathUtils.degToRad(this._sunElevationDeg)) * Math.cos(THREE.MathUtils.degToRad(this._sunAzimuthDeg))
+    );
 
     const sun = new THREE.DirectionalLight(0xfff5e0, 3.0);
-    sun.position.set(dir.x * dist, dir.y * dist, dir.z * dist);
+    sun.position.set(sunPos.x * dist, sunPos.y * dist, sunPos.z * dist);
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.near   = 10;
@@ -108,7 +212,9 @@ export class SceneManager {
     this.scene.add(sun);
     this.sun = sun;
 
-    this.scene.add(new THREE.AmbientLight(0x90b0d8, 0.5));
+    const ambient = new THREE.AmbientLight(0x90b0d8, 0.5);
+    this.scene.add(ambient);
+    this.ambientLight = ambient;
 
     const rim = new THREE.DirectionalLight(0x4878c0, 0.4);
     rim.position.set(-400, 300, -500);

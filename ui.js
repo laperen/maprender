@@ -11,6 +11,13 @@ export class UIController {
     this.radius      = 500;
     this.heightScale = 1;
     this.renderMode  = 'solid';
+
+    // Sun state
+    this._sunMode      = 'time';   // 'time' | 'manual'
+    this._sunHour      = 10;       // 0–24
+    this._sunElevation = 45;       // degrees, manual mode
+    this._sunAzimuth   = 135;      // degrees, manual mode
+    this._liveClockInterval = null;
   }
 
   init() {
@@ -18,6 +25,9 @@ export class UIController {
     this._bindEvents();
     this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
     this.minimap.update(this.lng, this.lat, this.radius);
+
+    // Apply default sun (time mode, hour = 10)
+    this._applySun();
   }
 
   _bindElements() {
@@ -39,6 +49,22 @@ export class UIController {
     this.$modeBtns      = document.querySelectorAll('.mode-btn');
     this.$tooltip       = document.getElementById('tooltip');
     this.$canvas        = document.getElementById('canvas-container');
+
+    // Sun controls
+    this.$sunModeDeviceBtn  = document.getElementById('sun-mode-device');
+    this.$sunModeTimeBtn    = document.getElementById('sun-mode-time');
+    this.$sunModeManualBtn  = document.getElementById('sun-mode-manual');
+    this.$sunTimeRow        = document.getElementById('sun-time-row');
+    this.$sunManualRow      = document.getElementById('sun-manual-row');
+    this.$sunTimeSlider     = document.getElementById('sun-time-slider');
+    this.$sunTimeVal        = document.getElementById('sun-time-val');
+    this.$sunElevSlider     = document.getElementById('sun-elev-slider');
+    this.$sunElevVal        = document.getElementById('sun-elev-val');
+    this.$sunAziSlider      = document.getElementById('sun-azi-slider');
+    this.$sunAziVal         = document.getElementById('sun-azi-val');
+    this.$sunDial           = document.getElementById('sun-dial');
+    this.$sunDialHand       = document.getElementById('sun-dial-hand');
+    this.$sunDialLabel      = document.getElementById('sun-dial-label');
   }
 
   _bindEvents() {
@@ -82,6 +108,150 @@ export class UIController {
     this.$canvas.addEventListener('mouseleave', () => {
       this.$tooltip.classList.add('hidden');
     });
+
+    // ── Sun mode buttons ──────────────────────────────────────
+    this.$sunModeDeviceBtn.addEventListener('click', () => {
+      this._setSunMode('device');
+    });
+    this.$sunModeTimeBtn.addEventListener('click', () => {
+      this._setSunMode('time');
+    });
+    this.$sunModeManualBtn.addEventListener('click', () => {
+      this._setSunMode('manual');
+    });
+
+    // Time slider
+    this.$sunTimeSlider.addEventListener('input', () => {
+      this._sunHour = parseFloat(this.$sunTimeSlider.value);
+      this._updateSunTimeLabel();
+      this._applySun();
+    });
+
+    // Manual sliders
+    this.$sunElevSlider.addEventListener('input', () => {
+      this._sunElevation = parseInt(this.$sunElevSlider.value);
+      this.$sunElevVal.textContent = `${this._sunElevation}°`;
+      this._applySun();
+    });
+
+    this.$sunAziSlider.addEventListener('input', () => {
+      this._sunAzimuth = parseInt(this.$sunAziSlider.value);
+      this.$sunAziVal.textContent = `${this._sunAzimuth}°`;
+      this._applySun();
+    });
+  }
+
+  _setSunMode(mode) {
+    this._sunMode = mode;
+
+    // Update button states
+    [this.$sunModeDeviceBtn, this.$sunModeTimeBtn, this.$sunModeManualBtn]
+      .forEach(b => b.classList.remove('active'));
+
+    if (mode === 'device') {
+      this.$sunModeDeviceBtn.classList.add('active');
+      this.$sunTimeRow.classList.add('hidden');
+      this.$sunManualRow.classList.add('hidden');
+      this._startLiveClock();
+    } else if (mode === 'time') {
+      this.$sunModeTimeBtn.classList.add('active');
+      this.$sunTimeRow.classList.remove('hidden');
+      this.$sunManualRow.classList.add('hidden');
+      this._stopLiveClock();
+    } else {
+      this.$sunModeManualBtn.classList.add('active');
+      this.$sunTimeRow.classList.add('hidden');
+      this.$sunManualRow.classList.remove('hidden');
+      this._stopLiveClock();
+    }
+    this._applySun();
+  }
+
+  _startLiveClock() {
+    this._stopLiveClock();
+    const tick = () => {
+      const now = new Date();
+      this._sunHour = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+      this._applySun();
+    };
+    tick();
+    this._liveClockInterval = setInterval(tick, 10000); // update every 10s
+  }
+
+  _stopLiveClock() {
+    if (this._liveClockInterval) {
+      clearInterval(this._liveClockInterval);
+      this._liveClockInterval = null;
+    }
+  }
+
+  _applySun() {
+    let elev, azi;
+
+    if (this._sunMode === 'manual') {
+      elev = this._sunElevation;
+      azi  = this._sunAzimuth;
+      this.scene.setSunAngles(elev, azi);
+    } else {
+      // time or device — both use _sunHour
+      const result = this.scene.setSunFromTime(this._sunHour);
+      elev = result.elevationDeg;
+      azi  = result.azimuthDeg;
+    }
+
+    this._updateSunDial(elev, azi);
+  }
+
+  _updateSunTimeLabel() {
+    const h   = Math.floor(this._sunHour);
+    const m   = Math.round((this._sunHour - h) * 60);
+    const pad = n => String(n).padStart(2, '0');
+    const ampm = h < 12 ? 'AM' : 'PM';
+    const h12  = h % 12 === 0 ? 12 : h % 12;
+    this.$sunTimeVal.textContent = `${h12}:${pad(m)} ${ampm}`;
+  }
+
+  _updateSunDial(elevDeg, aziDeg) {
+    // Draw sun position on the circular dial
+    // Dial is a top-down compass. Azimuth 0=N at top, 90=E at right, etc.
+    const aziRad = (aziDeg - 90) * Math.PI / 180; // offset so 0° = top
+    const r      = 28; // radius in px
+    const cx = 0, cy = 0;
+    const x  = Math.cos(aziRad) * r;
+    const y  = Math.sin(aziRad) * r;
+
+    if (this.$sunDialHand) {
+      this.$sunDialHand.setAttribute('x2', 32 + x);
+      this.$sunDialHand.setAttribute('y2', 32 + y);
+    }
+
+    // Sun dot position
+    const dot = document.getElementById('sun-dial-dot');
+    if (dot) {
+      dot.setAttribute('cx', 32 + x);
+      dot.setAttribute('cy', 32 + y);
+    }
+
+    // Label: time or elevation
+    if (this.$sunDialLabel) {
+      if (this._sunMode === 'device' || this._sunMode === 'time') {
+        const h   = Math.floor(this._sunHour);
+        const m   = Math.round((this._sunHour - h) * 60);
+        const pad = n => String(n).padStart(2, '0');
+        const ampm = h < 12 ? 'AM' : 'PM';
+        const h12  = h % 12 === 0 ? 12 : h % 12;
+        this.$sunDialLabel.textContent = `${h12}:${pad(m)}${ampm}`;
+      } else {
+        this.$sunDialLabel.textContent =
+          elevDeg <= 0 ? 'Night' : `${Math.round(elevDeg)}° elev`;
+      }
+    }
+
+    // Colour the dial dot: warm yellow/orange above horizon, dark blue below
+    if (dot) {
+      dot.setAttribute('fill', elevDeg > 0 ? '#ffd060' : '#1a2260');
+      dot.setAttribute('r', elevDeg > 30 ? 7 : 5);
+    }
   }
 
   async _geocode() {
@@ -125,6 +295,9 @@ export class UIController {
 
       this.scene.setRenderMode(this.renderMode);
       this.scene.flyTo(0, 0, this.radius);
+
+      // Re-apply sun after world rebuild
+      this._applySun();
 
       this.$statBuildings.textContent = `${result.buildings} buildings`;
       this.$statRoads.textContent     = `${result.roads} road segments`;
