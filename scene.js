@@ -139,10 +139,6 @@ export class SceneManager {
   }
 
   // ── Elevation ground mesh ─────────────────────────────────────
-  // elevFn(x,z)   — shared elevation function from worldBuilder
-  // buildingFootprints — [{ verts, baseY }] used to flatten terrain
-  //                      under each building so low-rise structures
-  //                      don't get terrain poking through their floors.
   buildElevationGround(elevFn, gridSize, radiusMeters, buildingFootprints = []) {
     if (this._groundMesh) {
       this.scene.remove(this._groundMesh);
@@ -160,16 +156,12 @@ export class SceneManager {
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const z = pos.getZ(i);
+      let y   = elevFn(x, z);
 
-      let y = elevFn(x, z);
-
-      // If this vertex falls inside a building footprint, clamp its Y
-      // down to that building's baseY so the terrain doesn't poke through
-      // the floor of low-rise flat buildings.
       for (const { verts, baseY } of buildingFootprints) {
         if (this._pointInPoly(x, z, verts)) {
           y = Math.min(y, baseY);
-          break; // a vertex is unlikely to be inside two buildings
+          break;
         }
       }
 
@@ -189,10 +181,15 @@ export class SceneManager {
     this._fitShadowFrustum(radiusMeters);
   }
 
+  // ── Expose terrain mesh for BVH raycasting ───────────────────
+  // Called by WorldBuilder after buildElevationGround() so it can
+  // build a BVH on the geometry and snap road/park vertices to the
+  // exact terrain surface.
+  getTerrainMesh() {
+    return this._groundMesh;
+  }
+
   // ── Satellite ground texture ──────────────────────────────────
-  // The texture from fetchSatelliteTexture() is already cropped to
-  // exactly ±radiusMeters. PlaneGeometry UVs span [0,1] natively,
-  // so no scaling is needed — the texture fills the mesh exactly.
   setGroundTexture(tex) {
     if (!this._groundMesh) return;
     tex.needsUpdate = true;

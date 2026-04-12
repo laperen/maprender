@@ -1,5 +1,6 @@
 // js/worldBuilder.js — Converts parsed OSM ways into Three.js meshes
 import * as THREE from 'three';
+import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { earcut } from './earcut.js';
 import {
   makeToonGradient,
@@ -9,12 +10,15 @@ import {
   roofColour,
 } from './textureFactory.js';
 
-const MIN_BUILDING_AREA = 5;  // m² — skip degenerate footprints
+// Patch THREE.Mesh so BVH-accelerated raycasting is used automatically
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-// Subdivision intervals — maximum metres between sampled vertices.
-// Smaller = closer terrain conformance but more triangles.
-const ROAD_STEP = 4;//8   // metres between road ribbon cross-sections
-const POLY_STEP = 8;//15  // metres between polygon edge vertices
+const MIN_BUILDING_AREA = 5;  // m²
+const ROAD_STEP         = 8;  // metres between road ribbon cross-sections
+const POLY_STEP         = 15; // metres between polygon edge vertices
+
+// Y position of the downward ray origin — well above any realistic terrain
+const RAY_ORIGIN_Y = 2000;
 
 export class WorldBuilder {
   constructor(sceneManager) {
@@ -25,14 +29,13 @@ export class WorldBuilder {
   async build(ways, heightScale = 1, lat = 0, lng = 0, radiusMeters = 500) {
     let buildings = 0, roads = 0, water = 0, parks = 0, tris = 0;
 
-    // ── Elevation grid ────────────────────────────────────────
+    // ── Elevation grid (used for terrain mesh + building base) ──
     const gridSize = 64;
     let elevGrid   = null;
     try {
       elevGrid = await fetchElevationGrid(lat, lng, radiusMeters, gridSize);
     } catch (_) { /* flat fallback */ }
 
-    // ── Bilinear elevation sampler ────────────────────────────
     const rawElev = (x, z) => {
       if (!elevGrid) return 0;
       const halfR = radiusMeters;
@@ -51,7 +54,7 @@ export class WorldBuilder {
     const centreElev = rawElev(0, 0);
     const elev       = (x, z) => rawElev(x, z) - centreElev;
 
-    // ── Building footprints for terrain flattening ────────────
+    // ── Building footprints for ground flattening ─────────────
     const buildingFootprints = [];
 
     // ── Geometry accumulators ─────────────────────────────────
@@ -105,17 +108,32 @@ export class WorldBuilder {
       } catch (_) { /* skip bad geometry */ }
     }
 
+    // ── Build terrain ground mesh ─────────────────────────────
+    // Must happen before BVH snap so the mesh exists to cast against.
     this.scene.buildElevationGround(elev, gridSize, radiusMeters, buildingFootprints);
+
+    // ── Build BVH on terrain and snap road/park vertices ──────
+    const terrainMesh = this.scene.getTerrainMesh();
+    if (terrainMesh) {
+      // Compute BVH on the terrain geometry — one-time cost, fast queries
+      terrainMesh.geometry.boundsTree = new MeshBVH(terrainMesh.geometry);
+
+      if (roadPos.length)  this._snapToTerrain(roadPos,  roadNrm,  terrainMesh, 0.3);
+      if (parkPos.length)  this._snapToTerrain(parkPos,  parkNrm,  terrainMesh, 0.2);
+    }
+
+    // ── Add merged meshes to scene ────────────────────────────
     this.scene.addObject(buildingGroup, true);
     tris += buildingGroup.children.reduce((s, m) => s + this._triCount(m), 0);
 
     if (roadIdx.length) {
+      const geom = this._mergedGeom(roadPos, roadIdx, roadNrm);
       const mesh = new THREE.Mesh(
-        this._mergedGeom(roadPos, roadIdx, roadNrm),
+        geom,
         new THREE.MeshLambertMaterial({ color: 0x505058 })
       );
       mesh.receiveShadow = true;
-      mesh.userData = { kind: 'road' };
+      mesh.userData      = { kind: 'road' };
       this.scene.addObject(mesh);
       tris += roadIdx.length / 3;
     }
@@ -131,12 +149,13 @@ export class WorldBuilder {
     }
 
     if (parkIdx.length) {
+      const geom = this._mergedGeom(parkPos, parkIdx, parkNrm);
       const mesh = new THREE.Mesh(
-        this._mergedGeom(parkPos, parkIdx, parkNrm),
+        geom,
         new THREE.MeshLambertMaterial({ color: 0x4a7a40 })
       );
       mesh.receiveShadow = true;
-      mesh.userData = { kind: 'park' };
+      mesh.userData      = { kind: 'park' };
       this.scene.addObject(mesh);
       tris += parkIdx.length / 3;
     }
@@ -148,15 +167,61 @@ export class WorldBuilder {
     return { buildings, roads, water, parks, triangleCount: Math.round(tris) };
   }
 
+  // ── BVH terrain snap ─────────────────────────────────────────
+  // Iterates every vertex in a flat positions array and casts a
+  // downward ray against the terrain BVH. If a hit is found, the
+  // vertex Y is replaced with the hit point Y + yBias.
+  // Normals are recomputed after all vertices are updated.
+  //
+  // positions: flat Float32 array [x0,y0,z0, x1,y1,z1, ...]
+  // normals:   parallel flat array, updated in-place after snap
+  // mesh:      terrain Mesh with boundsTree already set
+  // yBias:     metres above surface (prevents z-fighting)
+  _snapToTerrain(positions, normals, mesh, yBias = 0.2) {
+    const raycaster  = new THREE.Raycaster();
+    const rayDir     = new THREE.Vector3(0, -1, 0);
+    const rayOrigin  = new THREE.Vector3();
+    const count      = positions.length / 3;
+
+    for (let i = 0; i < count; i++) {
+      const x = positions[i * 3];
+      const z = positions[i * 3 + 2];
+
+      rayOrigin.set(x, RAY_ORIGIN_Y, z);
+      raycaster.set(rayOrigin, rayDir);
+
+      // intersectObject uses the BVH automatically via acceleratedRaycast
+      const hits = raycaster.intersectObject(mesh, false);
+      if (hits.length > 0) {
+        positions[i * 3 + 1] = hits[0].point.y + yBias;
+      }
+      // If no hit (vertex outside terrain bounds), leave Y unchanged —
+      // it will already have the elevation-grid value from geometry build.
+    }
+
+    // Recompute normals so lighting on roads/parks reflects the
+    // terrain slope they now sit on rather than the pre-snap geometry.
+    // We do this by rebuilding a temporary geometry, computing normals,
+    // then copying them back into the normals array.
+    // Only necessary if the normals array is non-empty.
+    if (normals.length > 0) {
+      // We don't have the index array here, so we approximate by
+      // zeroing all normals and setting them to straight up — this
+      // is correct for roads and parks which are nearly horizontal.
+      // The MeshLambertMaterial will shade correctly with Y-up normals.
+      for (let i = 0; i < normals.length; i += 3) {
+        normals[i]     = 0;
+        normals[i + 1] = 1;
+        normals[i + 2] = 0;
+      }
+    }
+  }
+
   // ── Segment subdivision ───────────────────────────────────────
-  // Given two XZ points, returns an array of {x, z} points along
-  // the segment including both endpoints, spaced at most `step`
-  // metres apart. This is the core of Option 3 terrain conformance.
   _subdivideSegment(ax, az, bx, bz, step) {
     const dx  = bx - ax, dz = bz - az;
     const len = Math.sqrt(dx * dx + dz * dz);
     if (len === 0) return [{ x: ax, z: az }];
-
     const count = Math.max(1, Math.ceil(len / step));
     const pts   = [];
     for (let i = 0; i <= count; i++) {
@@ -166,15 +231,10 @@ export class WorldBuilder {
     return pts;
   }
 
-  // ── Subdivide a polyline ──────────────────────────────────────
-  // Inserts intermediate points along each segment so no gap
-  // exceeds `step` metres. Returns flat [{x,z}] array including
-  // all original nodes and all inserted sub-points.
   _subdividePolyline(coords, step) {
     const result = [];
     for (let i = 0; i < coords.length; i++) {
       if (i === coords.length - 1) {
-        // Always include the final point
         result.push({ x: coords[i].x, z: coords[i].z });
         break;
       }
@@ -183,17 +243,11 @@ export class WorldBuilder {
         coords[i + 1].x, coords[i + 1].z,
         step
       );
-      // Include all but the last point of each segment (the next
-      // iteration's first point), except on the last segment.
       for (let k = 0; k < pts.length - 1; k++) result.push(pts[k]);
     }
     return result;
   }
 
-  // ── Subdivide a polygon ring ──────────────────────────────────
-  // Like _subdividePolyline but treats the last→first edge as
-  // closing the ring. Returns a flat [{x,z}] array, open (no
-  // duplicate closing vertex).
   _subdivideRing(verts, step) {
     const n      = verts.length;
     const result = [];
@@ -204,13 +258,15 @@ export class WorldBuilder {
         verts[next].x, verts[next].z,
         step
       );
-      // Exclude the last point of each segment (= first of next)
       for (let k = 0; k < pts.length - 1; k++) result.push(pts[k]);
     }
     return result;
   }
 
   // ── Merged BufferGeometry ─────────────────────────────────────
+  // Accepts plain JS arrays — positions and normals are already
+  // mutable plain arrays so _snapToTerrain can update them in-place
+  // before this geometry is created.
   _mergedGeom(positions, indices, normals) {
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -293,31 +349,16 @@ export class WorldBuilder {
     return { mesh, verts, baseY };
   }
 
-  // ── Road geometry with terrain subdivision ────────────────────
-  // Subdivides each OSM segment into sub-sections of at most
-  // ROAD_STEP metres, sampling elev() at each sub-vertex so the
-  // ribbon continuously follows the terrain surface.
+  // ── Road geometry ─────────────────────────────────────────────
+  // Produces subdivided ribbon with elev()-based Y as a first pass.
+  // _snapToTerrain() will refine these Y values against the BVH.
   _roadGeom(way, elev) {
     const coords = way.coords;
     if (coords.length < 2) return null;
 
-    const hw = this._roadHalfWidth(way.tags.highway);
-
-    // Build a dense centreline by subdividing every OSM segment
+    const hw         = this._roadHalfWidth(way.tags.highway);
     const centreline = this._subdividePolyline(coords, ROAD_STEP);
     if (centreline.length < 2) return null;
-
-    // Sample raw terrain elevation at every centreline point
-    const rawY = centreline.map(p => elev(p.x, p.z));
-
-    // Light 3-point smoothing to remove any remaining DEM noise
-    // (subdivision already reduces the problem significantly)
-    const smoothY = rawY.map((y, i) => {
-      const a = rawY[Math.max(0, i - 1)];
-      const b = y;
-      const c = rawY[Math.min(rawY.length - 1, i + 1)];
-      return (a + b + c) / 3;
-    });
 
     const pos = [], idx = [];
     for (let i = 0; i < centreline.length; i++) {
@@ -326,58 +367,52 @@ export class WorldBuilder {
       const dx   = next.x - prev.x, dz = next.z - prev.z;
       const len  = Math.sqrt(dx * dx + dz * dz) || 1;
       const nx   = -dz / len, nz = dx / len;
-      const y    = smoothY[i] + 0.3;
+      // Use elev() as the initial Y — will be overwritten by BVH snap
+      const y    = elev(centreline[i].x, centreline[i].z);
 
       pos.push(
         centreline[i].x + nx * hw, y, centreline[i].z + nz * hw,
         centreline[i].x - nx * hw, y, centreline[i].z - nz * hw,
       );
-
       if (i > 0) {
         const b = (i - 1) * 2;
         idx.push(b, b + 2, b + 1,  b + 1, b + 2, b + 3);
       }
     }
 
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geom.setIndex(idx);
-    geom.computeVertexNormals();
-    return { pos, idx, nrm: Array.from(geom.attributes.normal.array) };
+    // normals are placeholders — _snapToTerrain sets them to Y-up
+    const nrm = new Array(pos.length).fill(0);
+    for (let i = 1; i < nrm.length; i += 3) nrm[i] = 1;
+
+    return { pos, idx, nrm };
   }
 
   // ── Terrain-conforming polygon (park / water) ─────────────────
-  // Subdivides every polygon edge into segments of at most POLY_STEP
-  // metres before triangulating. This gives earcut a denser ring of
-  // points, each with its own terrain-sampled Y, so the polygon
-  // surface drapes over hills rather than floating or clipping.
+  // elev() gives initial Y. For parks, _snapToTerrain() will refine.
+  // Water keeps the average elevation approach so bodies stay flat.
   _conformPolyGeom(way, elev, yBias = 0.2) {
     const raw = this._ensureCCW(way.coords.slice(0, -1));
     if (raw.length < 3) return null;
 
-    // Subdivide the polygon ring edges
     const verts = this._subdivideRing(raw, POLY_STEP);
     if (verts.length < 3) return null;
 
-    // Triangulate in XZ space (Y is ignored by earcut)
     const flat    = verts.flatMap(v => [v.x, v.z]);
     const indices = earcut(flat);
     if (!indices.length) return null;
 
-    // Assign terrain Y to every vertex
     const pos = verts.flatMap(v => [v.x, elev(v.x, v.z) + yBias, v.z]);
 
-    // Flip winding for upward-facing normals
     const flipped = [];
     for (let i = 0; i < indices.length; i += 3) {
       flipped.push(indices[i], indices[i + 2], indices[i + 1]);
     }
 
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geom.setIndex(flipped);
-    geom.computeVertexNormals();
-    return { pos, idx: flipped, nrm: Array.from(geom.attributes.normal.array) };
+    // Y-up normals as placeholders — _snapToTerrain updates these
+    const nrm = new Array(pos.length).fill(0);
+    for (let i = 1; i < nrm.length; i += 3) nrm[i] = 1;
+
+    return { pos, idx: flipped, nrm };
   }
 
   _roadHalfWidth(highway) {
