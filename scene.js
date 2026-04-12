@@ -1,5 +1,6 @@
 // js/scene.js — Three.js scene, camera, renderer, lights, controls
 import * as THREE from 'three';
+import { Sky } from 'three/addons/objects/Sky.js';
 import { OrbitControlsImpl } from './orbitControls.js';
 
 export class SceneManager {
@@ -12,6 +13,8 @@ export class SceneManager {
     this._fpsFrames   = 0;
     this._fpsLastTime = performance.now();
     this._fpsEl       = null;
+    this._sky         = null;
+    this._sun         = null;
   }
 
   init() {
@@ -23,13 +26,11 @@ export class SceneManager {
     this.renderer.setSize(w, h);
     this.renderer.shadowMap.enabled  = true;
     this.renderer.shadowMap.type     = THREE.PCFSoftShadowMap;
-    this.renderer.toneMapping        = THREE.NoToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMapping        = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.5;
     this.container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x8ab0d0);
-    this.scene.fog = new THREE.Fog(0x8ab0d0, 1000, 4000);
 
     this.camera = new THREE.PerspectiveCamera(55, w / h, 1, 20000);
     this.camera.position.set(0, 600, 1200);
@@ -42,6 +43,7 @@ export class SceneManager {
     this.controls.minDistance   = 50;
     this.controls.maxDistance   = 8000;
 
+    this._initSky();
     this._addLights();
 
     // Flat placeholder — replaced by buildElevationGround()
@@ -62,9 +64,38 @@ export class SceneManager {
     window.addEventListener('resize', () => this._onResize());
   }
 
+  // ── Sky setup ─────────────────────────────────────────────────
+  _initSky() {
+    const sky  = new Sky();
+    sky.scale.setScalar(450000);
+    this.scene.add(sky);
+    this._sky = sky;
+
+    const uniforms = sky.material.uniforms;
+    uniforms['turbidity'].value      = 10;
+    uniforms['rayleigh'].value       = 2;
+    uniforms['mieCoefficient'].value = 0.005;
+    uniforms['mieDirectionalG'].value = 0.8;
+
+    // Sun position: elevation ~15°, azimuth ~135° (south-east)
+    const phi   = THREE.MathUtils.degToRad(90 - 15);   // polar angle from top
+    const theta = THREE.MathUtils.degToRad(135);         // azimuth
+
+    const sunPos = new THREE.Vector3();
+    sunPos.setFromSphericalCoords(1, phi, theta);
+    uniforms['sunPosition'].value.copy(sunPos);
+
+    // Store normalised sun direction for the directional light
+    this._sunDirection = sunPos.clone().normalize();
+  }
+
   _addLights() {
-    const sun = new THREE.DirectionalLight(0xfff5e0, 2.2);
-    sun.position.set(600, 1000, 400);
+    // Position directional light to match the sky's sun
+    const dist = 1000;
+    const dir  = this._sunDirection;
+
+    const sun = new THREE.DirectionalLight(0xfff5e0, 3.0);
+    sun.position.set(dir.x * dist, dir.y * dist, dir.z * dist);
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.near   = 10;
@@ -77,9 +108,9 @@ export class SceneManager {
     this.scene.add(sun);
     this.sun = sun;
 
-    this.scene.add(new THREE.AmbientLight(0x90b0d8, 0.7));
+    this.scene.add(new THREE.AmbientLight(0x90b0d8, 0.5));
 
-    const rim = new THREE.DirectionalLight(0x4878c0, 0.5);
+    const rim = new THREE.DirectionalLight(0x4878c0, 0.4);
     rim.position.set(-400, 300, -500);
     this.scene.add(rim);
   }
@@ -182,9 +213,6 @@ export class SceneManager {
   }
 
   // ── Expose terrain mesh for BVH raycasting ───────────────────
-  // Called by WorldBuilder after buildElevationGround() so it can
-  // build a BVH on the geometry and snap road/park vertices to the
-  // exact terrain surface.
   getTerrainMesh() {
     return this._groundMesh;
   }
