@@ -11,6 +11,7 @@ export class UIController {
     this.radius      = 500;
     this.heightScale = 1;
     this.renderMode  = 'solid';
+    this.timeOfDay   = 6; // 0–24h, default midday-ish (maps to day phase = 0)
   }
 
   init() {
@@ -19,8 +20,8 @@ export class UIController {
     this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
     this.minimap.update(this.lng, this.lat, this.radius);
 
-    // Set initial time of day (noon)
-    this._applyTimeOfDay(0);
+    // Apply default time-of-day (6 = full day, no night layer)
+    this._applyTimeOfDay(this.timeOfDay);
   }
 
   _bindElements() {
@@ -72,10 +73,10 @@ export class UIController {
       this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
     });
 
-    // Time of day slider: raw value 0–100, mapped to phase 0–1
+    // Time-of-day slider: value 0–24 (hours)
     this.$timeSlider.addEventListener('input', () => {
-      const raw = parseInt(this.$timeSlider.value) / 100;
-      this._applyTimeOfDay(raw);
+      this.timeOfDay = parseInt(this.$timeSlider.value);
+      this._applyTimeOfDay(this.timeOfDay);
     });
 
     this.$modeBtns.forEach(btn => {
@@ -95,19 +96,23 @@ export class UIController {
     });
   }
 
-  // ── Time-of-day helper ────────────────────────────────────────
-  _applyTimeOfDay(t) {
-    // t: 0 = noon, 0.5 = midnight, 1 = noon
-    this.scene.setTimeOfDay(t);
+  // ── Time-of-day mapping ────────────────────────────────────────
+  // Hour 0–24 → nightPhase 0–1:
+  //   06:00–18:00 = day (phase 0)
+  //   00:00 / 24:00 = midnight (phase 1)
+  //   Smooth cosine transition in between.
+  _applyTimeOfDay(hour) {
+    // Distance from noon (12h), normalised to 0–1 where 1 = midnight
+    const distFromNoon = Math.abs(hour - 12) / 12; // 0 at noon, 1 at midnight
+    this.scene.setTimeOfDay(distFromNoon);
 
-    // Format as a readable clock label.
-    // Map phase 0 → 12:00, 0.5 → 00:00, wrapping over 24h.
-    const hours   = (12 + t * 24) % 24;
-    const h       = Math.floor(hours);
-    const m       = Math.floor((hours - h) * 60);
-    const suffix  = h < 12 ? 'AM' : 'PM';
-    const display = `${((h % 12) || 12).toString().padStart(2, '0')}:${m.toString().padStart(2, '0')} ${suffix}`;
-    this.$timeVal.textContent = display;
+    // Label: format as HH:MM with a moon/sun icon
+    const h   = Math.floor(hour) % 24;
+    const m   = Math.round((hour % 1) * 60);
+    const hh  = String(h).padStart(2, '0');
+    const mm  = String(m).padStart(2, '0');
+    const icon = (hour >= 6 && hour <= 18) ? '☀' : '☽';
+    this.$timeVal.textContent = `${icon} ${hh}:${mm}`;
   }
 
   async _geocode() {
@@ -151,6 +156,9 @@ export class UIController {
 
       this.scene.setRenderMode(this.renderMode);
       this.scene.flyTo(0, 0, this.radius);
+
+      // Re-apply time of day so lamp meshes registered during build get driven
+      this._applyTimeOfDay(this.timeOfDay);
 
       this.$statBuildings.textContent = `${result.buildings} buildings`;
       this.$statRoads.textContent     = `${result.roads} road segments`;

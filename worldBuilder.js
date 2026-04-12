@@ -13,53 +13,52 @@ import {
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
 const MIN_BUILDING_AREA = 5;   // m² — skip degenerate footprints
-
 const ROAD_STEP  = 8;   // m — max segment length along road centreline
 const POLY_STEP  = 15;  // m — max segment length along polygon edges
+const DRAPE_BIAS = 0.4; // metres above terrain
+const RAY_ORIGIN_Y = 2000;
 
-// ── DRAPE BIAS ────────────────────────────────────────────────
-const DRAPE_BIAS = 0.4; // metres above terrain surface
-
-const RAY_ORIGIN_Y = 2000; // ray cast start height — above any terrain
-
-// ── LAMP POST tuning ──────────────────────────────────────────
-// Only place lamps on roads wide enough to warrant them.
-const LAMP_ROAD_TYPES = new Set([
-  'motorway','trunk','primary','secondary',
-  'tertiary','residential','unclassified',
+// ── Street lamp constants ─────────────────────────────────────
+// Spacing along road centrelines (metres between posts).
+const LAMP_SPACING      = 35;
+// How far to offset the post from the road centreline (metres).
+const LAMP_SIDE_OFFSET  = 3.2;
+// Only place lamps on road types that warrant street lighting.
+const LAMP_ROAD_TYPES   = new Set([
+  'motorway', 'trunk', 'primary', 'secondary',
+  'tertiary', 'residential', 'service', 'living_street',
 ]);
-// Spacing between lamp posts along centreline (metres)
-const LAMP_SPACING  = 35;
-// How far off the centreline the post sits (metres, towards kerb)
-const LAMP_OFFSET   = 3.5;
-// Post geometry dimensions (metres)
-const LAMP_HEIGHT   = 6.0;
-const LAMP_RADIUS   = 0.12;
-// Glow decal radius on ground (metres)
-const GLOW_RADIUS   = 7.0;
 
 export class WorldBuilder {
   constructor(sceneManager) {
     this.scene         = sceneManager;
     this._toonGradient = makeToonGradient();
-    this._glowTex      = this._makeGlowTexture();
+
+    // Shared lamp materials — emissiveIntensity is driven by scene.setTimeOfDay
+    this._lampPostMat = new THREE.MeshLambertMaterial({ color: 0x888890 });
+    this._lampGlobeMat = new THREE.MeshLambertMaterial({
+      color:             0xfff0c0,
+      emissive:          new THREE.Color(0xffa040),
+      emissiveIntensity: 0,       // starts off; setTimeOfDay drives it to 1
+    });
+    this._lampHaloTex  = this._makeLampHaloTexture();
   }
 
-  // ── Shared orange glow radial-gradient texture ────────────────
-  _makeGlowTexture() {
-    const size   = 128;
+  // ── Canvas texture for ground halo decal ─────────────────────
+  _makeLampHaloTexture() {
+    const size = 128;
     const canvas = document.createElement('canvas');
-    canvas.width  = size;
-    canvas.height = size;
+    canvas.width = canvas.height = size;
     const ctx = canvas.getContext('2d');
-    const cx  = size / 2;
-    const g   = ctx.createRadialGradient(cx, cx, 0, cx, cx, cx);
-    g.addColorStop(0,   'rgba(255,200,80,0.9)');
-    g.addColorStop(0.3, 'rgba(255,160,40,0.5)');
-    g.addColorStop(1,   'rgba(255,120,0,0)');
-    ctx.fillStyle = g;
+    const cx = size / 2, cy = size / 2;
+    const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, cx);
+    grd.addColorStop(0,    'rgba(255, 180, 60, 0.55)');
+    grd.addColorStop(0.35, 'rgba(255, 150, 30, 0.25)');
+    grd.addColorStop(1,    'rgba(255, 120,  0, 0.0)');
+    ctx.fillStyle = grd;
     ctx.fillRect(0, 0, size, size);
-    return new THREE.CanvasTexture(canvas);
+    const tex = new THREE.CanvasTexture(canvas);
+    return tex;
   }
 
   async build(ways, heightScale = 1, lat = 0, lng = 0, radiusMeters = 500) {
@@ -95,15 +94,13 @@ export class WorldBuilder {
 
     // ── Raw XZ triangle collectors ────────────────────────────
     const rawRoadTris = [];
-
-    // Water uses flat-average approach, collected directly.
     const watPos = [], watIdx = [], watNrm = []; let watBase = 0;
 
     const buildingGroup = new THREE.Group();
     buildingGroup.name  = 'buildings';
 
-    // Collect road ways that qualify for lamp posts
-    const lampRoadWays = [];
+    // Collect road ways for lamp placement after terrain is built
+    const roadWays = [];
 
     for (const way of ways) {
       try {
@@ -117,9 +114,12 @@ export class WorldBuilder {
 
         } else if (way.kind === 'road') {
           const ts = this._roadTriangles(way);
-          if (ts) { ts.forEach(t => rawRoadTris.push(t)); roads++; }
-          if (LAMP_ROAD_TYPES.has(way.tags?.highway)) {
-            lampRoadWays.push(way);
+          if (ts) {
+            ts.forEach(t => rawRoadTris.push(t));
+            roads++;
+            if (LAMP_ROAD_TYPES.has(way.tags.highway)) {
+              roadWays.push(way);
+            }
           }
 
         } else if (way.kind === 'water' && way.closed) {
@@ -135,7 +135,7 @@ export class WorldBuilder {
       } catch (_) {}
     }
 
-    // ── Build terrain mesh (must exist before BVH snap) ───────
+    // ── Build terrain mesh ─────────────────────────────────────
     this.scene.buildElevationGround(elev, gridSize, radiusMeters, buildingFootprints);
 
     const terrainMesh = this.scene.getTerrainMesh();
@@ -168,6 +168,21 @@ export class WorldBuilder {
       tris += draped.idx.length / 3;
     }
 
+    // ── Street lamps ──────────────────────────────────────────
+    if (roadWays.length) {
+      const lampGroup = this._buildStreetLamps(roadWays, elev, terrainMesh);
+      if (lampGroup) {
+        this.scene.addObject(lampGroup);
+        // Collect all lamp globe meshes for setTimeOfDay to drive
+        const lampMeshes = [];
+        lampGroup.traverse(child => {
+          if (child.isMesh && child.userData.isLampGlobe) lampMeshes.push(child);
+          if (child.isMesh && child.userData.isLampHalo)  lampMeshes.push(child);
+        });
+        this.scene.registerLampMeshes(lampMeshes);
+      }
+    }
+
     // ── Water ─────────────────────────────────────────────────
     if (watIdx.length) {
       const mesh = new THREE.Mesh(
@@ -179,26 +194,6 @@ export class WorldBuilder {
       tris += watIdx.length / 3;
     }
 
-    // ── Lamp posts ────────────────────────────────────────────
-    // Build after terrain BVH exists so we can snap post bases to terrain.
-    const snapY = (x, z) => {
-      if (!terrainMesh) return elev(x, z);
-      const raycaster = new THREE.Raycaster();
-      const dir       = new THREE.Vector3(0, -1, 0);
-      const origin    = new THREE.Vector3(x, RAY_ORIGIN_Y, z);
-      raycaster.set(origin, dir);
-      const hits = raycaster.intersectObject(terrainMesh, false);
-      return hits.length > 0 ? hits[0].point.y : elev(x, z);
-    };
-
-    if (lampRoadWays.length) {
-      const lampGroup = this._buildLampGroup(lampRoadWays, snapY);
-      this.scene.addObject(lampGroup);
-      this.scene.registerLampGroup(lampGroup);
-      // Re-apply current time-of-day so lamps start in the right state
-      this.scene.setTimeOfDay(this.scene.dayPhase);
-    }
-
     fetchSatelliteTexture(lat, lng, radiusMeters)
       .then(tex => this.scene.setGroundTexture(tex))
       .catch(() => {});
@@ -207,116 +202,91 @@ export class WorldBuilder {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // LAMP POST BUILDER
+  // STREET LAMPS
   // ═══════════════════════════════════════════════════════════════
 
-  _buildLampGroup(roadWays, snapY) {
+  _buildStreetLamps(roadWays, elev, terrainMesh) {
     const group = new THREE.Group();
-    group.name  = 'lamps';
+    group.name  = 'streetLamps';
 
-    // Shared geometries / materials (reused for all posts)
-    const poleGeo  = new THREE.CylinderGeometry(LAMP_RADIUS, LAMP_RADIUS * 1.2, LAMP_HEIGHT, 6, 1);
-    const headGeo  = new THREE.SphereGeometry(LAMP_RADIUS * 2.8, 8, 6);
-    const glowGeo  = new THREE.PlaneGeometry(GLOW_RADIUS * 2, GLOW_RADIUS * 2);
+    // Shared geometries (reused across all lamp instances)
+    const postGeo  = new THREE.CylinderGeometry(0.12, 0.16, 6.5, 6, 1);
+    const globeGeo = new THREE.SphereGeometry(0.45, 7, 5);
+    // Halo: thin flat disc, always faces up (normal already Y+)
+    const haloGeo  = new THREE.PlaneGeometry(14, 14);
 
-    const poleMat  = new THREE.MeshLambertMaterial({ color: 0x707880 });
-    const headMat  = new THREE.MeshStandardMaterial({
-      color:             0xfff0c0,
-      emissive:          new THREE.Color(0xffa030),
-      emissiveIntensity: 0,       // driven by setTimeOfDay
-      roughness:         0.4,
-      metalness:         0.2,
-    });
-    const glowMat  = new THREE.MeshBasicMaterial({
-      map:         this._glowTex,
-      transparent: true,
-      opacity:     0,             // driven by setTimeOfDay
-      depthWrite:  false,
-      blending:    THREE.AdditiveBlending,
-      side:        THREE.DoubleSide,
-    });
+    // Raycaster for snapping lamp base to terrain
+    const raycaster = new THREE.Raycaster();
+    const rayDir    = new THREE.Vector3(0, -1, 0);
+    const rayOrigin = new THREE.Vector3();
 
-    // Track positions already used to avoid duplicate posts at intersections
+    const snapY = (x, z) => {
+      if (!terrainMesh) return elev(x, z);
+      rayOrigin.set(x, RAY_ORIGIN_Y, z);
+      raycaster.set(rayOrigin, rayDir);
+      const hits = raycaster.intersectObject(terrainMesh, false);
+      return hits.length > 0 ? hits[0].point.y : elev(x, z);
+    };
+
+    // Deduplicate lamp positions — avoid double-posting at tight intersections
     const placed = new Set();
     const key    = (x, z) => `${Math.round(x / 2)},${Math.round(z / 2)}`;
 
     for (const way of roadWays) {
-      const coords = way.coords;
+      const coords    = way.coords;
       if (coords.length < 2) continue;
+      const centreline = this._subdividePolyline(coords, LAMP_SPACING);
+      if (centreline.length < 2) continue;
 
-      const hw = this._roadHalfWidth(way.tags.highway);
-      // Only place lamps on one side for narrow roads, both sides for wide
-      const bothSides = hw >= 3.5;
+      for (let i = 0; i < centreline.length; i++) {
+        // Compute perpendicular direction at this point
+        const prev = centreline[i - 1] || centreline[i];
+        const next = centreline[i + 1] || centreline[i];
+        const dx   = next.x - prev.x;
+        const dz   = next.z - prev.z;
+        const len  = Math.sqrt(dx * dx + dz * dz) || 1;
+        const nx   = -dz / len;
+        const nz   =  dx / len;
 
-      // Walk centreline at LAMP_SPACING intervals
-      let accumulated = 0;
-      for (let i = 0; i < coords.length - 1; i++) {
-        const ax = coords[i].x,   az = coords[i].z;
-        const bx = coords[i+1].x, bz = coords[i+1].z;
-        const dx = bx - ax, dz = bz - az;
-        const segLen = Math.sqrt(dx*dx + dz*dz);
-        if (segLen < 0.1) continue;
+        // Place one lamp on the left side of the road
+        const lx = centreline[i].x + nx * LAMP_SIDE_OFFSET;
+        const lz = centreline[i].z + nz * LAMP_SIDE_OFFSET;
+        const k  = key(lx, lz);
+        if (placed.has(k)) continue;
+        placed.add(k);
 
-        const ux = dx / segLen, uz = dz / segLen;
-        // Normal (perpendicular, pointing left)
-        const nx = -uz, nz = ux;
+        const baseY = snapY(lx, lz);
 
-        let d = LAMP_SPACING - (accumulated % LAMP_SPACING);
-        while (d <= segLen) {
-          const t  = d / segLen;
-          const cx = ax + ux * d;
-          const cz = az + uz * d;
+        // Post
+        const post = new THREE.Mesh(postGeo, this._lampPostMat);
+        post.position.set(lx, baseY + 3.25, lz); // centre of 6.5m post
+        post.castShadow = true;
+        group.add(post);
 
-          // Right-side post
-          this._placeLamp(
-            group,
-            cx + nx * (hw + LAMP_OFFSET), cz + nz * (hw + LAMP_OFFSET),
-            snapY, poleGeo, headGeo, glowGeo, poleMat, headMat, glowMat, placed, key
-          );
+        // Globe at top of post
+        const globe = new THREE.Mesh(globeGeo, this._lampGlobeMat.clone());
+        globe.position.set(lx, baseY + 6.8, lz);
+        globe.userData.isLampGlobe = true;
+        group.add(globe);
 
-          // Left-side post (for wider roads)
-          if (bothSides) {
-            this._placeLamp(
-              group,
-              cx - nx * (hw + LAMP_OFFSET), cz - nz * (hw + LAMP_OFFSET),
-              snapY, poleGeo, headGeo, glowGeo, poleMat, headMat, glowMat, placed, key
-            );
-          }
-
-          d += LAMP_SPACING;
-        }
-
-        accumulated += segLen;
+        // Ground halo decal — flat plane just above terrain
+        const haloMat = new THREE.MeshBasicMaterial({
+          map:         this._lampHaloTex,
+          transparent: true,
+          opacity:     0,              // driven by setTimeOfDay via emissiveIntensity proxy
+          depthWrite:  false,
+          blending:    THREE.AdditiveBlending,
+        });
+        const halo = new THREE.Mesh(haloGeo, haloMat);
+        halo.rotation.x     = -Math.PI / 2;
+        halo.position.set(lx, baseY + 0.08, lz);
+        halo.renderOrder    = 1;
+        halo.userData.isLampHalo = true;
+        group.add(halo);
       }
     }
 
-    return group;
-  }
-
-  _placeLamp(group, x, z, snapY, poleGeo, headGeo, glowGeo, poleMat, headMat, glowMat, placed, key) {
-    const k = key(x, z);
-    if (placed.has(k)) return;
-    placed.add(k);
-
-    const baseY = snapY(x, z);
-
-    // Pole
-    const pole = new THREE.Mesh(poleGeo, poleMat);
-    pole.position.set(x, baseY + LAMP_HEIGHT / 2, z);
-    group.add(pole);
-
-    // Head (emissive bulb)
-    const head = new THREE.Mesh(headGeo, headMat.clone());   // clone so emissiveIntensity is independent
-    head.position.set(x, baseY + LAMP_HEIGHT + LAMP_RADIUS * 2.8, z);
-    head.userData.isLampHead = true;
-    group.add(head);
-
-    // Ground glow decal (flat plane, horizontal)
-    const glow = new THREE.Mesh(glowGeo, glowMat.clone());
-    glow.rotation.x   = -Math.PI / 2;
-    glow.position.set(x, baseY + 0.15, z);
-    glow.userData.isGlow = true;
-    group.add(glow);
+    return group.children.length ? group : null;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -365,17 +335,14 @@ export class WorldBuilder {
             intersectsBounds: (box) => box.intersectsBox(queryBox),
             intersectsTriangle: (terrTri) => {
               const tVerts = [terrTri.a, terrTri.b, terrTri.c];
-
               for (let ei = 0; ei < 3; ei++) {
                 const es = corners[ei];
                 const ee = edgeNext[ei];
-
                 for (let ti = 0; ti < 3; ti++) {
                   const tv0 = tVerts[ti];
                   const tv1 = tVerts[(ti + 1) % 3];
-
                   const pt = this._segSegIntersectXZ(
-                    es.x,  es.z,  ee.x,  ee.z,
+                    es.x, es.z, ee.x, ee.z,
                     tv0.x, tv0.z, tv1.x, tv1.z
                   );
                   if (pt) edgePts[ei].push(pt);
@@ -430,17 +397,9 @@ export class WorldBuilder {
 
       for (let k = 0; k < indices.length; k += 3) {
         if (area >= 0) {
-          outIdx.push(
-            base + indices[k],
-            base + indices[k + 1],
-            base + indices[k + 2],
-          );
+          outIdx.push(base + indices[k], base + indices[k + 1], base + indices[k + 2]);
         } else {
-          outIdx.push(
-            base + indices[k],
-            base + indices[k + 2],
-            base + indices[k + 1],
-          );
+          outIdx.push(base + indices[k], base + indices[k + 2], base + indices[k + 1]);
         }
       }
     }
@@ -586,7 +545,6 @@ export class WorldBuilder {
     return this._signedArea(verts) < 0 ? verts.slice().reverse() : verts;
   }
 
-  // ── Water (flat average, no draping) ─────────────────────────
   _waterPolyGeom(way, elev) {
     const raw = this._ensureCCW(way.coords.slice(0, -1));
     if (raw.length < 3) return null;
@@ -606,7 +564,6 @@ export class WorldBuilder {
     return { pos, idx: flipped, nrm };
   }
 
-  // ── Building mesh ─────────────────────────────────────────────
   _buildingMesh(way, heightScale, elev) {
     const coords = way.coords;
     if (coords.length < 3) return null;

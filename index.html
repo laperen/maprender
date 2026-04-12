@@ -69,12 +69,12 @@
       </div>
 
       <!--
-        Time of day slider: 0 = noon, 50 = midnight, 100 = noon again.
-        Drives scene.setTimeOfDay(t) where t = raw / 100.
+        Time of day: 0 = midnight, 12 = noon, 24 = midnight.
+        Default 12 = full daylight. Night layer fades in outside 06:00–18:00.
       -->
       <div class="control-group">
-        <label for="time-slider">Time of Day <span id="time-val">12:00 PM</span></label>
-        <input type="range" id="time-slider" min="0" max="100" step="1" value="0" />
+        <label for="time-slider">Time of Day <span id="time-val">☀ 12:00</span></label>
+        <input type="range" id="time-slider" min="0" max="24" step="1" value="12" />
       </div>
 
       <div class="control-group">
