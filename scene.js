@@ -430,7 +430,7 @@ export class SceneManager {
     }
 
     // ── Moon ──────────────────────────────────────────────────
-    if (this._moonLight)    this._moonLight.intensity    = nightPhase * 0.6;
+    if (this._moonLight)    this._moonLight.intensity    = nightPhase;// * 0.6;
     if (this._nightAmbient) this._nightAmbient.intensity = nightPhase * 0.65;
     // Moon mesh and halo fade in with night
     if (this._moonMesh)  this._moonMesh.material.opacity  = nightPhase;
