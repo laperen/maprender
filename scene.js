@@ -345,7 +345,12 @@ export class SceneManager {
           float twinkle = 0.75 + 0.25 * sin(uTime * (1.2 + hash * 1.8) + hash * 6.2832);
           vAlpha        = aAlpha * uNightPhase * twinkle;
           vec4 mvPos    = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize  = aSize * 120.0;
+          // Perspective-correct sizing: stars sit at ~8000 units away.
+          // Dividing by -mvPos.z keeps them as tiny screen-space dots
+          // regardless of camera distance, just like real stars.
+          // Stars at ~8000 units → -mvPos.z ≈ 8000.
+          // 12000 / 8000 = 1.5, × aSize(0.6–4.0) → ~1–6 px screen dots.
+          gl_PointSize  = aSize * 12000.0 / -mvPos.z;
           gl_Position   = projectionMatrix * mvPos;
         }
       `,
