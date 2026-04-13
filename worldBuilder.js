@@ -551,6 +551,38 @@ export class WorldBuilder {
     }
     return inside;
   }
+  _segmentsIntersect(a, b, c, d) {
+    const orient = (p, q, r) => {
+      const val = (q.x - p.x) * (r.z - p.z) - (q.z - p.z) * (r.x - p.x);
+      if (Math.abs(val) < 1e-9) return 0; // collinear
+      return val > 0 ? 1 : -1; // CCW or CW
+    };
+  
+    const onSegment = (p, q, r) => {
+      return (
+        Math.min(p.x, q.x) <= r.x + 1e-9 &&
+        Math.max(p.x, q.x) >= r.x - 1e-9 &&
+        Math.min(p.z, q.z) <= r.z + 1e-9 &&
+        Math.max(p.z, q.z) >= r.z - 1e-9
+      );
+    };
+  
+    const o1 = orient(a, b, c);
+    const o2 = orient(a, b, d);
+    const o3 = orient(c, d, a);
+    const o4 = orient(c, d, b);
+  
+    // General case
+    if (o1 !== o2 && o3 !== o4) return true;
+  
+    // Special cases (collinear)
+    if (o1 === 0 && onSegment(a, b, c)) return true;
+    if (o2 === 0 && onSegment(a, b, d)) return true;
+    if (o3 === 0 && onSegment(c, d, a)) return true;
+    if (o4 === 0 && onSegment(c, d, b)) return true;
+  
+    return false;
+  }
   _polygonsOverlap(aVerts, bVerts) {
     const nA = aVerts.length;
     const nB = bVerts.length;
