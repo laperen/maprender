@@ -125,6 +125,7 @@ export class SceneManager {
 
     this._skyUniforms['sunPosition'].value.copy(sunPos);
     this._sunDirection = sunPos.clone().normalize();
+    this._moonDirection = this._sunDirection.clone().negate();
 
     // Update Sky atmosphere tint for different times
     const isDay = elevDeg > 0;
@@ -195,20 +196,29 @@ export class SceneManager {
     // of scene lighting, and NormalBlending composites it cleanly.
     const moonTex = new THREE.CanvasTexture(this._makeMoonCanvas(512));
     const moonGeo = new THREE.SphereGeometry(MOON_SIZE * 0.5, 32, 32);
+    //const moonGeo = new THREE.PlaneGeometry(MOON_SIZE, MOON_SIZE);
     const moonMat = new THREE.MeshBasicMaterial({
-      map:         moonTex,
+      //map: moonTex,
       transparent: true,
-      opacity:     0,           // driven by setTimeOfDay
-      depthWrite:  false,
-      depthTest:   true,        // buildings correctly occlude moon
-      blending:    THREE.NormalBlending,
+      opacity: 0,
+      //alphaTest: 0.2,
+      depthWrite: false,
+      depthTest: true,
+      //blending: THREE.NormalBlending,
     });
     this._moonMesh = new THREE.Mesh(moonGeo, moonMat);
+    
+    this._moonMesh.material.map = null;
+    this._moonMesh.material.color.set(0xffffff);
+    this._moonMesh.material.blending = THREE.AdditiveBlending;
+    this._moonMesh.material.fog = false;
+
     this._moonMesh.renderOrder    = 0;  // same as geometry; depthTest:false means it paints over sky bg
     this._moonMesh.frustumCulled  = false; // always render — repositioned each frame
 
     // Position updated each frame in _tickNight (camera-relative)
     this._moonMesh.position.set(0, MOON_DIST * 0.3, -MOON_DIST * 0.4);
+    //this._moonMesh.position.set(0,0, 0);
     this.scene.add(this._moonMesh);
 
     // Atmospheric glow halo around moon (separate plane, additive)
@@ -220,7 +230,7 @@ export class SceneManager {
       transparent: true,
       opacity:    0,
       depthWrite: false,
-      depthTest:  false,
+      depthTest:  true,
       blending:   THREE.AdditiveBlending,
     });
     this._moonHalo = new THREE.Mesh(haloGeo, haloMat);
@@ -228,6 +238,8 @@ export class SceneManager {
     this._moonHalo.frustumCulled = false; // always render
     // Position updated each frame in _tickNight (synced to moon)
     this._moonHalo.position.set(0, MOON_DIST * 0.3, -MOON_DIST * 0.4);
+    this._moonHalo.material.fog = false;
+    //this._moonHalo.position.set(0, 0, 0);
     this.scene.add(this._moonHalo);
 
     // ── Stars ─────────────────────────────────────────────────
@@ -393,7 +405,8 @@ export class SceneManager {
     this._currentHour = hour;
 
     // ── Sun elevation for this hour ───────────────────────────
-    const sunPos = this._setSkyPosition(hour);
+    //const sunPos = 
+    this._setSkyPosition(hour);
 
     // sunElevation: 1 = noon, 0 = horizon, negative = below
     const normalised  = (hour - 6) / 12; // 0 at 6am, 2 at 6pm
@@ -531,24 +544,17 @@ export class SceneManager {
     if (this._starPoints) {
       this._starPoints.position.copy(this.camera.position);
     }
-
-    // Keep moon in sky relative to camera — billboard + reposition each frame.
-    // Fixed world-space position causes the moon to disappear when the camera moves
-    // away or rotates such that the fixed point falls behind the near clip plane.
     if (this._moonMesh || this._moonHalo) {
       const moonPos = this.camera.position.clone()
-        .add(this._moonDirection.clone().multiplyScalar(MOON_DIST * 0.5));
-      // Ensure moon stays above horizon from camera's perspective
-      if (moonPos.y < this.camera.position.y + MOON_DIST * 0.15) {
-        moonPos.y = this.camera.position.y + MOON_DIST * 0.15;
-      }
+        .addScaledVector(this._moonDirection, MOON_DIST);
+    
       if (this._moonMesh) {
         this._moonMesh.position.copy(moonPos);
-        this._moonMesh.quaternion.copy(this.camera.quaternion);
       }
+    
       if (this._moonHalo) {
         this._moonHalo.position.copy(moonPos);
-        this._moonHalo.quaternion.copy(this.camera.quaternion);
+        this._moonHalo.quaternion.copy(this.camera.quaternion); // billboard only for halo
       }
     }
   }

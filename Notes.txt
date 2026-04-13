@@ -2,10 +2,7 @@ WIP
 
 night portion of day night cycle.
 p:
-The project has an established day night cycle which is mostly working properly. Despite attempted fixes previously the following problems still occur.
-The stars can appear infront of buildings and terrain.
 The moon isn't showing up at all.
-more complex buildings with overlapping geometry have z-fighting occuring.
 
 csm shadows
 p:
