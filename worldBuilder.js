@@ -600,7 +600,7 @@ export class WorldBuilder {
     // Each overlap level erodes by 0.08 m — invisible at scene scale but
     // enough to separate surfaces by more than floating-point precision.
     if (erodeLevel > 0) {
-      verts = this._erodeVerts(verts, erodeLevel * 0.08);
+      verts = this._erodeVerts(verts, erodeLevel * 0.8);//0.08
     }
 
     const flat    = verts.flatMap(c => [c.x, c.z]);
