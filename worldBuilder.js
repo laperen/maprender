@@ -529,13 +529,6 @@ export class WorldBuilder {
     return { pos, idx: flipped, nrm };
   }
 
-  // ── Footprint centroid ────────────────────────────────────────
-  _centroid(verts) {
-    let cx = 0, cz = 0;
-    for (const v of verts) { cx += v.x; cz += v.z; }
-    return { x: cx / verts.length, z: cz / verts.length };
-  }
-
   // ── Point-in-polygon (XZ plane) ───────────────────────────────
   _pointInFootprint(px, pz, verts) {
     let inside = false;
@@ -557,14 +550,82 @@ export class WorldBuilder {
   // (e.g. Tokyo Tower) as multiple overlapping building ways whose
   // wall faces end up exactly coplanar.
   _erodeVerts(verts, amount) {
-    const c = this._centroid(verts);
-    return verts.map(v => {
-      const dx  = v.x - c.x, dz = v.z - c.z;
-      const len = Math.sqrt(dx * dx + dz * dz) || 1;
-      // Pull vertex toward centroid by `amount`, but never past the centroid
-      const pull = Math.min(amount, len * 0.49);
-      return { x: v.x - (dx / len) * pull, z: v.z - (dz / len) * pull };
-    });
+    const n = verts.length;
+    if (n < 3) return verts;
+  
+    // Ensure CCW winding (important for inward normals)
+    verts = this._ensureCCW(verts);
+  
+    const result = [];
+  
+    const perp = (dx, dz) => ({ x: -dz, z: dx }); // 90° CCW
+  
+    const normalize = (x, z) => {
+      const len = Math.hypot(x, z) || 1;
+      return { x: x / len, z: z / len };
+    };
+  
+    const intersectLines = (p1, d1, p2, d2) => {
+      const cross = d1.x * d2.z - d1.z * d2.x;
+      if (Math.abs(cross) < 1e-6) return null; // parallel
+  
+      const dx = p2.x - p1.x;
+      const dz = p2.z - p1.z;
+  
+      const t = (dx * d2.z - dz * d2.x) / cross;
+  
+      return {
+        x: p1.x + d1.x * t,
+        z: p1.z + d1.z * t
+      };
+    };
+  
+    for (let i = 0; i < n; i++) {
+      const prev = verts[(i - 1 + n) % n];
+      const curr = verts[i];
+      const next = verts[(i + 1) % n];
+  
+      // Edge vectors
+      const e1 = normalize(curr.x - prev.x, curr.z - prev.z);
+      const e2 = normalize(next.x - curr.x, next.z - curr.z);
+  
+      // Inward normals (since CCW)
+      const n1 = perp(e1.x, e1.z);
+      const n2 = perp(e2.x, e2.z);
+  
+      // Offset points along normals
+      const p1 = {
+        x: curr.x + n1.x * amount,
+        z: curr.z + n1.z * amount
+      };
+  
+      const p2 = {
+        x: curr.x + n2.x * amount,
+        z: curr.z + n2.z * amount
+      };
+  
+      // Directions of offset edges
+      const d1 = e1;
+      const d2 = e2;
+  
+      const intersection = intersectLines(p1, d1, p2, d2);
+  
+      if (intersection) {
+        result.push(intersection);
+      } else {
+        // Fallback: average normals (handles parallel edges)
+        const avgNx = n1.x + n2.x;
+        const avgNz = n1.z + n2.z;
+        const norm = normalize(avgNx, avgNz);
+  
+        result.push({
+          x: curr.x + norm.x * amount,
+          z: curr.z + norm.z * amount
+        });
+      }
+    }
+  
+    return result;
   }
 
   _buildingMesh(way, heightScale, elev, placedFootprints) {
