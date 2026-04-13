@@ -19,7 +19,7 @@ const DRAPE_BIAS = 0.4;
 const RAY_ORIGIN_Y = 2000;
 
 // ── Street lamp constants ─────────────────────────────────────
-const LAMP_SPACING     = 35;   // metres between posts along centreline
+const LAMP_SPACING     = 60;   // metres between posts along centreline
 const LAMP_SIDE_OFFSET = 3.2;  // metres from centreline to post
 
 // Cell size for deduplication grid — two lamps within this distance collapse to one.

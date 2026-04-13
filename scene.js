@@ -171,34 +171,83 @@ export class SceneManager {
 
   // ── Night layer ───────────────────────────────────────────────
   _initNightLayer() {
-    const moonPhi   = THREE.MathUtils.degToRad(90 - 40);
+    // Moon sits opposite the sun, 50° above horizon
+    const moonPhi   = THREE.MathUtils.degToRad(90 - 50);
     const moonTheta = THREE.MathUtils.degToRad(135 + 180);
     const moonDir   = new THREE.Vector3();
     moonDir.setFromSphericalCoords(1, moonPhi, moonTheta);
     this._moonDirection = moonDir.clone();
 
+    // Moon directional light — blue-white, starts at 0 intensity
     this._moonLight = new THREE.DirectionalLight(0xc8d8ff, 0);
     this._moonLight.position.copy(moonDir.clone().multiplyScalar(1000));
+    this._moonLight.castShadow = false; // soft moonlight, no hard shadows
     this.scene.add(this._moonLight);
 
+    // Night ambient — deep indigo, starts at 0
     this._nightAmbient = new THREE.AmbientLight(0x0a1835, 0);
     this.scene.add(this._nightAmbient);
 
-    // Moon sprite
-    const moonTex = new THREE.CanvasTexture(this._makeMoonCanvas(256));
-    const moonMat = new THREE.SpriteMaterial({
-      map: moonTex, transparent: true, opacity: 0,
-      depthWrite: false, blending: THREE.AdditiveBlending,
+    // ── Moon mesh — emissive sphere, always self-lit ───────────
+    // A Sprite with AdditiveBlending is invisible against a dark sky.
+    // Using MeshBasicMaterial (unlit, ignores scene lights) with a
+    // canvas texture means the moon is always its own colour regardless
+    // of scene lighting, and NormalBlending composites it cleanly.
+    const moonTex = new THREE.CanvasTexture(this._makeMoonCanvas(512));
+    const moonGeo = new THREE.SphereGeometry(MOON_SIZE * 0.5, 32, 32);
+    const moonMat = new THREE.MeshBasicMaterial({
+      map:         moonTex,
+      transparent: true,
+      opacity:     0,           // driven by setTimeOfDay
+      depthWrite:  false,
+      depthTest:   false,       // always draws over geometry/sky
+      blending:    THREE.NormalBlending,
     });
-    this._moonSprite = new THREE.Sprite(moonMat);
-    this._moonSprite.scale.set(MOON_SIZE, MOON_SIZE, 1);
-    const moonPos = moonDir.clone().multiplyScalar(MOON_DIST);
-    if (moonPos.y < MOON_DIST * 0.15) moonPos.y = MOON_DIST * 0.15;
-    this._moonSprite.position.copy(moonPos);
-    this.scene.add(this._moonSprite);
+    this._moonMesh = new THREE.Mesh(moonGeo, moonMat);
+    this._moonMesh.renderOrder = 2;  // draw after sky dome
 
+    // Place at MOON_DIST in moon direction, ensure above horizon
+    const moonPos = moonDir.clone().multiplyScalar(MOON_DIST);
+    if (moonPos.y < MOON_DIST * 0.20) moonPos.y = MOON_DIST * 0.20;
+    this._moonMesh.position.copy(moonPos);
+    // Always face camera — updated each frame in _tickNight
+    this.scene.add(this._moonMesh);
+
+    // Atmospheric glow halo around moon (separate plane, additive)
+    const haloSize = MOON_SIZE * 2.2;
+    const haloGeo  = new THREE.PlaneGeometry(haloSize, haloSize);
+    const haloTex  = new THREE.CanvasTexture(this._makeMoonHaloCanvas(128));
+    const haloMat  = new THREE.MeshBasicMaterial({
+      map:        haloTex,
+      transparent: true,
+      opacity:    0,
+      depthWrite: false,
+      depthTest:  false,
+      blending:   THREE.AdditiveBlending,
+    });
+    this._moonHalo = new THREE.Mesh(haloGeo, haloMat);
+    this._moonHalo.renderOrder = 1;
+    this._moonHalo.position.copy(moonPos);
+    this.scene.add(this._moonHalo);
+
+    // ── Stars ─────────────────────────────────────────────────
     this._starPoints = this._makeStars();
     this.scene.add(this._starPoints);
+  }
+
+  // ── Moon halo canvas (soft glow ring) ────────────────────────
+  _makeMoonHaloCanvas(size) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const cx = size / 2, cy = size / 2;
+    const grd = ctx.createRadialGradient(cx, cy, size * 0.12, cx, cy, size * 0.5);
+    grd.addColorStop(0,   'rgba(180,210,255,0.35)');
+    grd.addColorStop(0.4, 'rgba(160,200,255,0.12)');
+    grd.addColorStop(1,   'rgba(140,180,255,0.0)');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, 0, size, size);
+    return canvas;
   }
 
   // ── Moon canvas ───────────────────────────────────────────────
@@ -310,7 +359,10 @@ export class SceneManager {
     });
 
     const points = new THREE.Points(geo, mat);
-    points.renderOrder = -1;
+    // renderOrder 3 — draws after sky dome (order 0) and moon (order 2).
+    // depthTest false ensures stars aren't occluded by the Sky geometry.
+    points.renderOrder = 3;
+    points.material.depthTest = false;
     return points;
   }
 
@@ -378,9 +430,11 @@ export class SceneManager {
     }
 
     // ── Moon ──────────────────────────────────────────────────
-    if (this._moonLight)  this._moonLight.intensity  = nightPhase * 0.35;
+    if (this._moonLight)    this._moonLight.intensity    = nightPhase * 0.6;
     if (this._nightAmbient) this._nightAmbient.intensity = nightPhase * 0.65;
-    if (this._moonSprite) this._moonSprite.material.opacity = nightPhase;
+    // Moon mesh and halo fade in with night
+    if (this._moonMesh)  this._moonMesh.material.opacity  = nightPhase;
+    if (this._moonHalo)  this._moonHalo.material.opacity  = nightPhase * 0.8;
 
     // ── Stars ─────────────────────────────────────────────────
     if (this._starPoints) {
@@ -426,9 +480,13 @@ export class SceneManager {
   }
 
   _tickNight(dt) {
-    if (!this._starPoints) return;
-    this._starTime += dt;
-    this._starPoints.material.uniforms.uTime.value = this._starTime;
+    if (this._starPoints) {
+      this._starTime += dt;
+      this._starPoints.material.uniforms.uTime.value = this._starTime;
+    }
+    // Keep moon disc and halo facing the camera (billboard behaviour)
+    if (this._moonMesh) this._moonMesh.quaternion.copy(this.camera.quaternion);
+    if (this._moonHalo) this._moonHalo.quaternion.copy(this.camera.quaternion);
   }
 
   _fitShadowFrustum(radiusMeters) {
