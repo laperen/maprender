@@ -2,7 +2,7 @@ WIP
 
 night portion of day night cycle.
 p:
-The moon and stars still aren't showing up. Might they just be outside of the camera's render distance?
+The project has an established day night cycle which is mostly working properly. The moon and stars aren't showing up while in night. Might they be outside of the camera's render distance? investigate and fix.
 
 csm shadows
 p:
