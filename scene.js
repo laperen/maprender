@@ -345,7 +345,7 @@ export class SceneManager {
           float twinkle = 0.75 + 0.25 * sin(uTime * (1.2 + hash * 1.8) + hash * 6.2832);
           vAlpha        = aAlpha * uNightPhase * twinkle;
           vec4 mvPos    = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize  = aSize * (700.0 / -mvPos.z);
+          gl_PointSize  = aSize * 120.0;
           gl_Position   = projectionMatrix * mvPos;
         }
       `,
@@ -423,7 +423,7 @@ export class SceneManager {
     // The Sky shader goes near-black when sun is below horizon. We layer a
     // deep navy scene.background that crossfades in as the sky goes dark,
     // giving a proper deep-blue night sky behind the stars and moon.
-    if (nightPhase > 0.01) {
+    if (nightPhase > 0.3) {
       const nightSkyColor = new THREE.Color().lerpColors(
         new THREE.Color(0x0a1428),  // deep midnight navy
         new THREE.Color(0x040810),  // near-black at full night
@@ -431,8 +431,11 @@ export class SceneManager {
       );
       // Blend from sky-shader to night colour
       this.scene.background = nightSkyColor;
+      // Hide the Sky mesh so it doesn't occlude moon/stars through tone mapping
+      if (this._sky) this._sky.visible = false;
     } else {
       this.scene.background = null; // let Sky shader render normally
+      if (this._sky) this._sky.visible = true;
     }
 
     // ── Moon light & ambient ───────────────────────────────────
