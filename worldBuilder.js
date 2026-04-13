@@ -559,7 +559,7 @@ export class WorldBuilder {
       const dx  = v.x - c.x, dz = v.z - c.z;
       const len = Math.sqrt(dx * dx + dz * dz) || 1;
       // Pull vertex toward centroid by `amount`, but never past the centroid
-      const pull = Math.min(amount, len * 0.49);
+      const pull = Math.max(amount, len * 0.49);
       return { x: v.x - (dx / len) * pull, z: v.z - (dz / len) * pull };
     });
   }
@@ -600,7 +600,7 @@ export class WorldBuilder {
     // Each overlap level erodes by 0.08 m — invisible at scene scale but
     // enough to separate surfaces by more than floating-point precision.
     if (erodeLevel > 0) {
-      verts = this._erodeVerts(verts, erodeLevel * 8);//0.08
+      verts = this._erodeVerts(verts, erodeLevel * 0.08);//0.08
     }
 
     const flat    = verts.flatMap(c => [c.x, c.z]);
