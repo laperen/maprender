@@ -551,7 +551,34 @@ export class WorldBuilder {
     }
     return inside;
   }
-
+  _polygonsOverlap(aVerts, bVerts) {
+    const nA = aVerts.length;
+    const nB = bVerts.length;
+  
+    // 1. Edge intersection test
+    for (let i = 0; i < nA; i++) {
+      const a1 = aVerts[i];
+      const a2 = aVerts[(i + 1) % nA];
+  
+      for (let j = 0; j < nB; j++) {
+        const b1 = bVerts[j];
+        const b2 = bVerts[(j + 1) % nB];
+  
+        if (this._segmentsIntersect(a1, a2, b1, b2)) {
+          return true;
+        }
+      }
+    }
+  
+    // 2. Containment test (no edges intersect, but one inside another)
+    const a0 = aVerts[0];
+    if (this._pointInFootprint(a0.x, a0.z, bVerts)) return true;
+  
+    const b0 = bVerts[0];
+    if (this._pointInFootprint(b0.x, b0.z, aVerts)) return true;
+  
+    return false;
+  }
   // ── Erode a polygon inward by `amount` metres toward its centroid ─
   // Used to prevent z-fighting when OSM encodes complex structures
   // (e.g. Tokyo Tower) as multiple overlapping building ways whose
