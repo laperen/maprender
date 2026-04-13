@@ -1,15 +1,8 @@
 WIP
 
 night portion of day night cycle.
-night time lighting
 p:
-The elements for a day night cycle are there, but not fully integrated together. there is the skybox, the sun, the moon, the stars, and street lamps. I need the same UI to control all of these currently seperate elements. 
-
-They also need to be sensibly enabled and disabled, eg. the sun and sun lighting are dimmed till they can be disabled. At the same time enabling the moon, stars, and street lamp lights, brightening them at the same time.
-
-The UI needs to include option, to follow the current device time, or an explicitly set time of day.
-
-Account for when street lamps positions will be too clustered together, and consolidate into 1 position where there is only 1 street lamp.
+The moon and stars still aren't showing up. Might they just be outside of the camera's render distance?
 
 csm shadows
 p:
@@ -18,7 +11,7 @@ I have the ThreeJS cascading shadow map(csm) example in my instance of ThreeJS, 
 z fighting building portions
 p:
 *screenshot
-more complex objects have z-fighting occuring. what are the options to solve this?
+more complex generated 3d objects have z-fighting occuring. what are the options to solve this?
 
 TODO
 
