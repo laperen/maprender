@@ -300,7 +300,8 @@ export class SceneManager {
     const v = new THREE.Vector3();
     for (let i = 0; i < STAR_COUNT; i++) {
       const theta = Math.random() * Math.PI * 2;
-      const phi   = Math.acos(1 - Math.random() * 1.65);
+      //const phi   = Math.acos(1 - Math.random() * 1.65);
+      const phi = Math.acos(2 * Math.random() - 1);
       v.setFromSphericalCoords(STAR_SPHERE_R, phi, theta);
       positions[i * 3]     = v.x;
       positions[i * 3 + 1] = Math.max(v.y, STAR_SPHERE_R * 0.06);
@@ -338,11 +339,19 @@ export class SceneManager {
         uniform float uNightPhase;
         uniform float uTwinkle;
         void main() {
-          float hash    = fract(sin(dot(position.xy, vec2(12.9898, 78.233))) * 43758.5453);
+          float hash = fract(sin(dot(position.xy, vec2(12.9898, 78.233))) * 43758.5453);
           float twinkle = 0.80 + 0.20 * fract(uTwinkle + hash);
-          vAlpha        = aAlpha * uNightPhase * twinkle;
-          gl_Position  = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = aSize * 1.8;
+        
+          vAlpha = aAlpha * uNightPhase * twinkle;
+        
+          // 1. FIRST: transform position to view space
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        
+          // 2. THEN: projection
+          gl_Position = projectionMatrix * mvPosition;
+        
+          // 3. IMPORTANT: size based on depth (distance attenuation)
+          gl_PointSize = aSize * (300.0 / -mvPosition.z);
         }
       `,
       fragmentShader: /* glsl */`
@@ -362,9 +371,11 @@ export class SceneManager {
     // Buildings and ground use renderOrder 0 (default) with depthTest:true so they
     // naturally overdraw the stars. depthTest:false on stars means they always paint
     // on the background pass regardless of depth buffer state — exactly what we want.
+    points.material.depthTest = true;
+    points.material.depthWrite = false; // keep this off
     points.renderOrder = -1;
-    points.material.depthTest  = false;
-    points.material.depthWrite = false;
+    //points.material.depthTest  = false;
+    //points.material.depthWrite = false;
     return points;
   }
 
