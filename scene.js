@@ -308,7 +308,7 @@ export class SceneManager {
       positions[i * 3 + 2] = v.z;
       sizes[i]  = Math.random() < 0.07
         ? 2.5 + Math.random() * 1.5 : 0.6 + Math.random() * 1.8;
-      alphas[i] = 0.4 + Math.random() * 0.6;
+      alphas[i] = 1;//0.4 + Math.random() * 0.6;
     }
 
     const geo = new THREE.BufferGeometry();
