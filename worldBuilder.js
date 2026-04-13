@@ -532,11 +532,19 @@ export class WorldBuilder {
     const flat    = verts.flatMap(c => [c.x, c.z]);
     const indices = earcut(flat);
     if (!indices?.length) return null;
-    const baseY = Math.min(...verts.map(v => elev(v.x, v.z)));
-    const h     = way.height * heightScale;
-    const topY  = baseY + h;
-    const n     = verts.length;
-    const pos   = [], nrm = [], idxArr = [];
+
+    // Tiny deterministic per-building Y jitter derived from way ID prevents
+    // perfectly coplanar base/roof planes between adjacent buildings with
+    // identical terrain elevation, which is the primary source of z-fighting.
+    const idHash  = (way.id % 997) / 997;           // 0..1, unique per way
+    const jitter  = idHash * 0.04;                   // up to 4 cm — visually invisible
+    const baseY   = Math.min(...verts.map(v => elev(v.x, v.z))) + jitter;
+    const h       = way.height * heightScale;
+    // Roof sits 2 mm above topY so the roof cap never exactly coplanar-fights
+    // a neighbouring building's roof at the same height.
+    const topY    = baseY + h + 0.002;
+    const n       = verts.length;
+    const pos     = [], nrm = [], idxArr = [];
 
     for (let i = 0; i < n; i++) {
       const j    = (i + 1) % n;
@@ -565,10 +573,25 @@ export class WorldBuilder {
     geom.addGroup(0,         wallCount,                 0);
     geom.addGroup(wallCount, idxArr.length - wallCount, 1);
 
-    const mesh = new THREE.Mesh(geom, [
-      new THREE.MeshToonMaterial({ color: new THREE.Color(buildingPalette(way.tags)), gradientMap: this._toonGradient }),
-      new THREE.MeshToonMaterial({ color: new THREE.Color(roofColour(way.tags)),      gradientMap: this._toonGradient }),
-    ]);
+    // polygonOffset pushes each building's fragments slightly toward the camera
+    // in depth, resolving the shared-edge wall z-fighting that occurs when two
+    // buildings share an OSM node and therefore produce exactly coplanar wall faces.
+    const wallMat = new THREE.MeshToonMaterial({
+      color:               new THREE.Color(buildingPalette(way.tags)),
+      gradientMap:         this._toonGradient,
+      polygonOffset:       true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits:  -1,
+    });
+    const roofMat = new THREE.MeshToonMaterial({
+      color:               new THREE.Color(roofColour(way.tags)),
+      gradientMap:         this._toonGradient,
+      polygonOffset:       true,
+      polygonOffsetFactor: -2,   // roof pulls slightly more to avoid ground-plane fight
+      polygonOffsetUnits:  -2,
+    });
+
+    const mesh = new THREE.Mesh(geom, [wallMat, roofMat]);
     mesh.castShadow    = true;
     mesh.receiveShadow = true;
     mesh.userData      = { kind: 'building', tags: way.tags, height: h };
