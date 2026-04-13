@@ -416,25 +416,37 @@ export class SceneManager {
       this._rimLight.intensity = sunDayPhase * 0.4;
     }
 
-    // ── Sky visibility ────────────────────────────────────────
-    // When fully night, make sky almost black (not perfectly to avoid pop)
-    if (this._skyUniforms) {
-      const skyFade = THREE.MathUtils.clamp(sunDayPhase + 0.05, 0, 1);
-      // Push sun below visible disc at night by moving it far below horizon
-      // (already handled by _setSkyPosition elevation, but we also scale rayleigh)
-      if (elevDeg <= -5) {
-        this._skyUniforms['rayleigh'].value = THREE.MathUtils.lerp(
-          0.05, this._skyUniforms['rayleigh'].value, sunDayPhase
-        );
-      }
+    // ── Night sky background ──────────────────────────────────
+    // The Sky shader goes near-black when sun is below horizon. We layer a
+    // deep navy scene.background that crossfades in as the sky goes dark,
+    // giving a proper deep-blue night sky behind the stars and moon.
+    if (nightPhase > 0.01) {
+      const nightSkyColor = new THREE.Color().lerpColors(
+        new THREE.Color(0x0a1428),  // deep midnight navy
+        new THREE.Color(0x040810),  // near-black at full night
+        Math.max(0, nightPhase - 0.5) * 2
+      );
+      // Blend from sky-shader to night colour
+      this.scene.background = nightSkyColor;
+    } else {
+      this.scene.background = null; // let Sky shader render normally
     }
 
-    // ── Moon ──────────────────────────────────────────────────
-    if (this._moonLight)    this._moonLight.intensity    = nightPhase;// * 0.6;
-    if (this._nightAmbient) this._nightAmbient.intensity = nightPhase * 0.65;
+    // ── Moon light & ambient ───────────────────────────────────
+    // Moonlight intensity must be meaningful against a dark scene.
+    // toneMappingExposure at night is kept at 0.45 (see below) so
+    // these raw intensities translate to visible illumination.
+    if (this._moonLight) {
+      this._moonLight.intensity = nightPhase * 1.2;   // blue-white directional
+    }
+    if (this._nightAmbient) {
+      // Colour: mid-blue so night scenes have a cool ambient fill
+      this._nightAmbient.color.set(0x1a3a6a);
+      this._nightAmbient.intensity = nightPhase * 0.8;
+    }
     // Moon mesh and halo fade in with night
-    if (this._moonMesh)  this._moonMesh.material.opacity  = nightPhase;
-    if (this._moonHalo)  this._moonHalo.material.opacity  = nightPhase * 0.8;
+    if (this._moonMesh) this._moonMesh.material.opacity = nightPhase;
+    if (this._moonHalo) this._moonHalo.material.opacity = nightPhase * 0.8;
 
     // ── Stars ─────────────────────────────────────────────────
     if (this._starPoints) {
@@ -471,8 +483,12 @@ export class SceneManager {
       this.scene.fog = null;
     }
 
-    // ── Tone mapping exposure — brighter day, dimmer night ────
-    this.renderer.toneMappingExposure = THREE.MathUtils.lerp(0.18, 0.5, sunDayPhase);
+    // ── Tone mapping exposure ─────────────────────────────────
+    // Day: 0.5 (standard). Night: 0.45 — NOT very low, because all
+    // scene lights are already dim; crushing exposure further makes
+    // moonlight and ambient invisible. A near-constant exposure lets
+    // the light intensities themselves control the perceived brightness.
+    this.renderer.toneMappingExposure = THREE.MathUtils.lerp(0.45, 0.5, sunDayPhase);
   }
 
   registerLampMeshes(meshes) {

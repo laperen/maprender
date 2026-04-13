@@ -38,12 +38,25 @@ export class WorldBuilder {
     this._toonGradient = makeToonGradient();
 
     this._lampPostMat = new THREE.MeshLambertMaterial({ color: 0x888890 });
+    // Globe is now a small box — much lower tri count than a sphere
     this._lampGlobeMat = new THREE.MeshLambertMaterial({
       color:             0xfff0c0,
       emissive:          new THREE.Color(0xffa040),
       emissiveIntensity: 0,
     });
     this._lampHaloTex = this._makeLampHaloTexture();
+
+    // Aviation obstruction lights — red, flashing emissive boxes on tall buildings
+    this._aviatMat = new THREE.MeshLambertMaterial({
+      color:             0xff1a00,
+      emissive:          new THREE.Color(0xff2200),
+      emissiveIntensity: 0,   // driven by setTimeOfDay via isLampGlobe flag
+    });
+    // Shared geometries (constructed once, instanced by reference)
+    this._globeGeo  = new THREE.BoxGeometry(0.7, 0.5, 0.7);
+    this._aviatGeo  = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+    this._postGeo   = new THREE.CylinderGeometry(0.12, 0.16, 6.5, 6, 1);
+    this._haloGeo   = new THREE.PlaneGeometry(14, 14);
   }
 
   _makeLampHaloTexture() {
@@ -95,7 +108,8 @@ export class WorldBuilder {
     const buildingGroup = new THREE.Group();
     buildingGroup.name  = 'buildings';
 
-    const roadWays = [];
+    const roadWays     = [];
+    const tallBuildings = [];   // { verts, topY } for aviation lights
 
     for (const way of ways) {
       try {
@@ -104,6 +118,10 @@ export class WorldBuilder {
           if (result) {
             buildingGroup.add(result.mesh);
             buildingFootprints.push({ verts: result.verts, baseY: result.baseY });
+            // Collect tall buildings (≥ 30 m scaled) for aviation lights
+            if (result.topY - result.baseY >= 30) {
+              tallBuildings.push({ verts: result.verts, topY: result.topY });
+            }
             buildings++;
           }
         } else if (way.kind === 'road') {
@@ -165,6 +183,18 @@ export class WorldBuilder {
       }
     }
 
+    if (tallBuildings.length) {
+      const aviatGroup = this._buildAviationLights(tallBuildings);
+      if (aviatGroup) {
+        this.scene.addObject(aviatGroup);
+        const aviatMeshes = [];
+        aviatGroup.traverse(child => {
+          if (child.isMesh && child.userData.isLampGlobe) aviatMeshes.push(child);
+        });
+        this.scene.registerLampMeshes(aviatMeshes);
+      }
+    }
+
     if (watIdx.length) {
       const mesh = new THREE.Mesh(
         this._buildGeom(watPos, watIdx, watNrm),
@@ -190,9 +220,10 @@ export class WorldBuilder {
     const group = new THREE.Group();
     group.name  = 'streetLamps';
 
-    const postGeo  = new THREE.CylinderGeometry(0.12, 0.16, 6.5, 6, 1);
-    const globeGeo = new THREE.SphereGeometry(0.45, 7, 5);
-    const haloGeo  = new THREE.PlaneGeometry(14, 14);
+    // Use shared geometries defined in constructor
+    const postGeo = this._postGeo;
+    const globeGeo = this._globeGeo;   // box, not sphere
+    const haloGeo  = this._haloGeo;
 
     const raycaster = new THREE.Raycaster();
     const rayDir    = new THREE.Vector3(0, -1, 0);
@@ -529,7 +560,48 @@ export class WorldBuilder {
     mesh.castShadow    = true;
     mesh.receiveShadow = true;
     mesh.userData      = { kind: 'building', tags: way.tags, height: h };
-    return { mesh, verts, baseY };
+    return { mesh, verts, baseY, topY };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // AVIATION OBSTRUCTION LIGHTS
+  // Red emissive boxes placed at roof corners of tall buildings.
+  // Activated by the same lamp-phase rules as street lights.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildAviationLights(tallBuildings) {
+    const group = new THREE.Group();
+    group.name  = 'aviationLights';
+
+    const geo = this._aviatGeo;
+
+    // Dedup grid — one light per ~4 m cell so adjacent buildings
+    // with shared corners don't double-place.
+    const placed  = new Set();
+    const dedupKey = (x, z) =>
+      `${Math.round(x / 4)},${Math.round(z / 4)}`;
+
+    for (const { verts, topY } of tallBuildings) {
+      if (!verts || verts.length < 3) continue;
+
+      // Place one light at each roof corner vertex
+      for (const v of verts) {
+        const k = dedupKey(v.x, v.z);
+        if (placed.has(k)) continue;
+        placed.add(k);
+
+        // Clone shared material so emissiveIntensity can be driven independently
+        const mat = this._aviatMat.clone();
+
+        const light = new THREE.Mesh(geo, mat);
+        // Sit the box on top of the roof surface with a small raised offset
+        light.position.set(v.x, topY + 0.35, v.z);
+        light.userData.isLampGlobe = true;  // reuse lamp activation path
+        group.add(light);
+      }
+    }
+
+    return group.children.length ? group : null;
   }
 
   _roadHalfWidth(highway) {
