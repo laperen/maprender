@@ -350,7 +350,7 @@ export class SceneManager {
           // regardless of camera distance, just like real stars.
           // Stars at ~8000 units → -mvPos.z ≈ 8000.
           // 12000 / 8000 = 1.5, × aSize(0.6–4.0) → ~1–6 px screen dots.
-          gl_PointSize  = aSize * 12.0 / -mvPos.z;
+          gl_PointSize  = aSize * 12000.0 / -mvPos.z;
           gl_Position   = projectionMatrix * mvPos;
         }
       `,
