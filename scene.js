@@ -327,11 +327,10 @@ export class SceneManager {
     sc.fillStyle = sg;
     sc.fillRect(0, 0, 32, 32);
     const starTex = new THREE.CanvasTexture(starCanvas);
-
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         uNightPhase: { value: 0.0 },
-        uTime:       { value: 0.0 },
+        uTwinkle:    { value: 0.0 },
         uMap:        { value: starTex },
       },
       vertexShader: /* glsl */`
@@ -339,26 +338,20 @@ export class SceneManager {
         attribute float aAlpha;
         varying   float vAlpha;
         uniform float uNightPhase;
-        uniform float uTime;
+        uniform float uTwinkle;
         void main() {
           float hash    = fract(sin(dot(position.xy, vec2(12.9898, 78.233))) * 43758.5453);
-          float twinkle = 0.75 + 0.25 * sin(uTime * (1.2 + hash * 1.8) + hash * 6.2832);
+          float twinkle = 0.80 + 0.20 * fract(uTwinkle + hash);
           vAlpha        = aAlpha * uNightPhase * twinkle;
-          vec4 mvPos    = modelViewMatrix * vec4(position, 1.0);
-          // Perspective-correct sizing: stars sit at ~8000 units away.
-          // Dividing by -mvPos.z keeps them as tiny screen-space dots
-          // regardless of camera distance, just like real stars.
-          // Stars at ~8000 units → -mvPos.z ≈ 8000.
-          // 12000 / 8000 = 1.5, × aSize(0.6–4.0) → ~1–6 px screen dots.
-          gl_PointSize  = aSize * 12000.0 / -mvPos.z;
-          gl_Position   = projectionMatrix * mvPos;
+          gl_Position  = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = aSize * 1.8;
         }
       `,
       fragmentShader: /* glsl */`
         uniform sampler2D uMap;
         varying float vAlpha;
         void main() {
-          vec4 col     = texture2D(uMap, gl_PointCoord);
+          vec4 col = texture2D(uMap, gl_PointCoord);
           gl_FragColor = vec4(col.rgb, col.a * vAlpha);
           if (gl_FragColor.a < 0.01) discard;
         }
@@ -509,7 +502,9 @@ export class SceneManager {
   _tickNight(dt) {
     if (this._starPoints) {
       this._starTime += dt;
-      this._starPoints.material.uniforms.uTime.value = this._starTime;
+      // uTwinkle advances slowly and wraps at 1.0 — the vertex shader uses fract()
+      // so no discontinuity. Much cheaper than driving a sin() per vertex per frame.
+      this._starPoints.material.uniforms.uTwinkle.value = (this._starTime * 0.08) % 1.0;
     }
     // Keep moon disc and halo facing the camera (billboard behaviour)
     if (this._moonMesh) this._moonMesh.quaternion.copy(this.camera.quaternion);
