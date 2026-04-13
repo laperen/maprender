@@ -371,7 +371,7 @@ export class SceneManager {
     // Buildings and ground use renderOrder 0 (default) with depthTest:true so they
     // naturally overdraw the stars. depthTest:false on stars means they always paint
     // on the background pass regardless of depth buffer state — exactly what we want.
-    points.material.depthTest = true;
+    points.material.depthTest = false;
     points.material.depthWrite = false; // keep this off
     points.renderOrder = -1;
     //points.material.depthTest  = false;
