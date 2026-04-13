@@ -543,8 +543,11 @@ export class WorldBuilder {
     for (let i = 0, j = n - 1; i < n; j = i++) {
       const xi = verts[i].x, zi = verts[i].z;
       const xj = verts[j].x, zj = verts[j].z;
+      //if (((zi > pz) !== (zj > pz)) &&
+      //    (px < (xj - xi) * (pz - zi) / (zj - zi) + xi)) inside = !inside;
+          
       if (((zi > pz) !== (zj > pz)) &&
-          (px < (xj - xi) * (pz - zi) / (zj - zi) + xi)) inside = !inside;
+        (px < (xj - xi) * (pz - zi) / (zj - zi) + xi)) return true;// = !inside;
     }
     return inside;
   }
@@ -559,7 +562,7 @@ export class WorldBuilder {
       const dx  = v.x - c.x, dz = v.z - c.z;
       const len = Math.sqrt(dx * dx + dz * dz) || 1;
       // Pull vertex toward centroid by `amount`, but never past the centroid
-      const pull = Math.max(amount, len * 0.49);
+      const pull = Math.min(amount, len * 0.49);
       return { x: v.x - (dx / len) * pull, z: v.z - (dz / len) * pull };
     });
   }
