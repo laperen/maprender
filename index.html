@@ -59,22 +59,15 @@
         <input type="range" id="radius-slider" min="200" max="2000" step="100" value="500" />
       </div>
 
-      <!--
-        Height slider: internal value 1–10, divided by 2 in ui.js to give
-        0.5×–5.0× multiplier. Default 2 = 1.0× (true real-world scale).
-      -->
       <div class="control-group">
         <label for="height-slider">Building Height Scale <span id="height-val">1.0×</span></label>
         <input type="range" id="height-slider" min="1" max="10" step="1" value="2" />
       </div>
 
-      <!--
-        Time of day: 0 = midnight, 12 = noon, 24 = midnight.
-        Default 12 = full daylight. Night layer fades in outside 06:00–18:00.
-      -->
+      <!-- Time of Day — built by UIController -->
       <div class="control-group">
-        <label for="time-slider">Time of Day <span id="time-val">☀ 12:00</span></label>
-        <input type="range" id="time-slider" min="0" max="24" step="1" value="12" />
+        <label>Time of Day</label>
+        <div id="time-panel-host"></div>
       </div>
 
       <div class="control-group">

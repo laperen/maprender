@@ -5,9 +5,9 @@ import { OrbitControlsImpl } from './orbitControls.js';
 
 // ── Night-sky constants ───────────────────────────────────────
 const STAR_COUNT    = 3000;
-const STAR_SPHERE_R = 8000;   // must be < camera.far (20000)
-const MOON_DIST     = 7500;   // distance from origin for moon sprite
-const MOON_SIZE     = 320;    // world-units diameter of moon sprite
+const STAR_SPHERE_R = 8000;
+const MOON_DIST     = 7500;
+const MOON_SIZE     = 320;
 
 export class SceneManager {
   constructor(container) {
@@ -20,18 +20,24 @@ export class SceneManager {
     this._fpsLastTime = performance.now();
     this._fpsEl       = null;
     this._sky         = null;
-    this._sun         = null;
+    this._skyUniforms = null;
 
-    // Night-layer references — all start invisible (phase = 0)
-    this._moonLight    = null;   // DirectionalLight
-    this._moonSprite   = null;   // Sprite
-    this._starPoints   = null;   // Points
-    this._nightAmbient = null;   // AmbientLight
-    this._nightPhase   = 0;      // 0 = full day, 1 = full night
-    this._starTime     = 0;      // accumulator for twinkle animation
+    // Day lights
+    this.sun         = null;       // DirectionalLight (sun)
+    this._dayAmbient = null;       // AmbientLight (sky bounce)
+    this._rimLight   = null;       // DirectionalLight (fill)
 
-    // Street-lamp emissive meshes registered by WorldBuilder
+    // Night-layer references
+    this._moonLight    = null;
+    this._moonSprite   = null;
+    this._starPoints   = null;
+    this._nightAmbient = null;
+    this._nightPhase   = 0;
+    this._starTime     = 0;
     this._lampMeshes   = [];
+
+    // Current hour (0–24) cached for re-use
+    this._currentHour  = 12;
   }
 
   init() {
@@ -64,7 +70,7 @@ export class SceneManager {
     this._addLights();
     this._initNightLayer();
 
-    // Flat placeholder — replaced by buildElevationGround()
+    // Flat placeholder ground
     const groundGeo = new THREE.PlaneGeometry(6000, 6000);
     const groundMat = new THREE.MeshLambertMaterial({ color: 0x4a7a40 });
     this._groundMesh = new THREE.Mesh(groundGeo, groundMat);
@@ -82,7 +88,7 @@ export class SceneManager {
     window.addEventListener('resize', () => this._onResize());
   }
 
-  // ── Sky setup (unchanged) ─────────────────────────────────────
+  // ── Sky setup ─────────────────────────────────────────────────
   _initSky() {
     const sky = new Sky();
     sky.scale.setScalar(450000);
@@ -94,105 +100,121 @@ export class SceneManager {
     uniforms['rayleigh'].value        = 2;
     uniforms['mieCoefficient'].value  = 0.005;
     uniforms['mieDirectionalG'].value = 0.8;
+    this._skyUniforms = uniforms;
 
-    // Sun position: elevation ~15°, azimuth ~135° (south-east)
-    const phi   = THREE.MathUtils.degToRad(90 - 15);
-    const theta = THREE.MathUtils.degToRad(135);
+    // Initial sun position (noon, south-east azimuth)
+    this._setSkyPosition(12);
+  }
+
+  // Compute sun world-space direction from hour (0–24) and push to sky shader
+  _setSkyPosition(hour) {
+    // Map 0–24h to an elevation angle:
+    // Noon (12h) = 75° elevation; sunrise/sunset (~6/18h) = 0°; night = below horizon
+    const normalised = (hour - 6) / 12; // 0 at 6am, 1 at noon, 2 at 6pm
+    const elevDeg    = Math.max(-20, 75 * Math.sin(normalised * Math.PI));
+
+    // Azimuth: sun travels from east (90°) at sunrise to west (270°) at sunset
+    const aziFrac  = THREE.MathUtils.clamp(normalised, 0, 2) / 2; // 0..1 (E→W)
+    const aziDeg   = 90 + aziFrac * 180;
+
+    const phi   = THREE.MathUtils.degToRad(90 - elevDeg);
+    const theta = THREE.MathUtils.degToRad(aziDeg);
+
     const sunPos = new THREE.Vector3();
     sunPos.setFromSphericalCoords(1, phi, theta);
-    uniforms['sunPosition'].value.copy(sunPos);
 
+    this._skyUniforms['sunPosition'].value.copy(sunPos);
     this._sunDirection = sunPos.clone().normalize();
+
+    // Update Sky atmosphere tint for different times
+    const isDay = elevDeg > 0;
+    // Golden-hour turbidity bump
+    const goldenHour = 1 - Math.abs(normalised - 1); // peaks at 1 near 6/18h
+    const turbidity  = isDay
+      ? THREE.MathUtils.lerp(8, 18, Math.pow(Math.max(0, goldenHour - 0.7) / 0.3, 2))
+      : 2;
+    const rayleigh   = isDay
+      ? THREE.MathUtils.lerp(1.5, 4, Math.pow(Math.max(0, goldenHour - 0.7) / 0.3, 2))
+      : 0.1;
+    this._skyUniforms['turbidity'].value = turbidity;
+    this._skyUniforms['rayleigh'].value  = rayleigh;
+
+    return sunPos;
   }
 
-  // ── Day lights (unchanged) ────────────────────────────────────
+  // ── Day lights ────────────────────────────────────────────────
   _addLights() {
     const dist = 1000;
-    const dir  = this._sunDirection;
+    // Placeholder direction; _setSkyPosition updates it
+    const dir  = new THREE.Vector3(0.5, 0.7, -0.3).normalize();
 
-    const sun = new THREE.DirectionalLight(0xfff5e0, 3.0);
-    sun.position.set(dir.x * dist, dir.y * dist, dir.z * dist);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
-    sun.shadow.camera.near   = 10;
-    sun.shadow.camera.far    = 3000;
-    sun.shadow.camera.left   = -800;
-    sun.shadow.camera.right  =  800;
-    sun.shadow.camera.top    =  800;
-    sun.shadow.camera.bottom = -800;
-    sun.shadow.bias = -0.0003;
-    this.scene.add(sun);
-    this.sun = sun;
+    this.sun = new THREE.DirectionalLight(0xfff5e0, 3.0);
+    this.sun.position.set(dir.x * dist, dir.y * dist, dir.z * dist);
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(1024, 1024);
+    this.sun.shadow.camera.near   = 10;
+    this.sun.shadow.camera.far    = 3000;
+    this.sun.shadow.camera.left   = -800;
+    this.sun.shadow.camera.right  =  800;
+    this.sun.shadow.camera.top    =  800;
+    this.sun.shadow.camera.bottom = -800;
+    this.sun.shadow.bias = -0.0003;
+    this.scene.add(this.sun);
 
-    this.scene.add(new THREE.AmbientLight(0x90b0d8, 0.5));
+    this._dayAmbient = new THREE.AmbientLight(0x90b0d8, 0.5);
+    this.scene.add(this._dayAmbient);
 
-    const rim = new THREE.DirectionalLight(0x4878c0, 0.4);
-    rim.position.set(-400, 300, -500);
-    this.scene.add(rim);
+    this._rimLight = new THREE.DirectionalLight(0x4878c0, 0.4);
+    this._rimLight.position.set(-400, 300, -500);
+    this.scene.add(this._rimLight);
   }
 
-  // ── Night layer: moon, stars, night ambient ───────────────────
-  // All objects start at opacity/intensity 0 and are driven by
-  // setTimeOfDay(). Day lights above are never touched here.
+  // ── Night layer ───────────────────────────────────────────────
   _initNightLayer() {
-    // Moon placed opposite the sun, elevated above horizon
-    const moonPhi   = THREE.MathUtils.degToRad(90 - 40); // 40° elevation
-    const moonTheta = THREE.MathUtils.degToRad(135 + 180); // opposite azimuth
+    const moonPhi   = THREE.MathUtils.degToRad(90 - 40);
+    const moonTheta = THREE.MathUtils.degToRad(135 + 180);
     const moonDir   = new THREE.Vector3();
     moonDir.setFromSphericalCoords(1, moonPhi, moonTheta);
     this._moonDirection = moonDir.clone();
 
-    // Moon directional light — blue-white, starts invisible
     this._moonLight = new THREE.DirectionalLight(0xc8d8ff, 0);
     this._moonLight.position.copy(moonDir.clone().multiplyScalar(1000));
     this.scene.add(this._moonLight);
 
-    // Night ambient — deep indigo, starts invisible
     this._nightAmbient = new THREE.AmbientLight(0x0a1835, 0);
     this.scene.add(this._nightAmbient);
 
     // Moon sprite
     const moonTex = new THREE.CanvasTexture(this._makeMoonCanvas(256));
     const moonMat = new THREE.SpriteMaterial({
-      map:         moonTex,
-      transparent: true,
-      opacity:     0,
-      depthWrite:  false,
-      blending:    THREE.AdditiveBlending,
+      map: moonTex, transparent: true, opacity: 0,
+      depthWrite: false, blending: THREE.AdditiveBlending,
     });
     this._moonSprite = new THREE.Sprite(moonMat);
     this._moonSprite.scale.set(MOON_SIZE, MOON_SIZE, 1);
-
-    // Place moon along its direction vector, ensuring it's above horizon
     const moonPos = moonDir.clone().multiplyScalar(MOON_DIST);
     if (moonPos.y < MOON_DIST * 0.15) moonPos.y = MOON_DIST * 0.15;
     this._moonSprite.position.copy(moonPos);
     this.scene.add(this._moonSprite);
 
-    // Stars
     this._starPoints = this._makeStars();
     this.scene.add(this._starPoints);
   }
 
-  // ── Moon canvas (glowing disc with subtle craters) ────────────
+  // ── Moon canvas ───────────────────────────────────────────────
   _makeMoonCanvas(size) {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = size;
     const ctx = canvas.getContext('2d');
     const cx = size / 2, cy = size / 2, r = size * 0.38;
 
-    // Outer atmospheric glow
     const glow = ctx.createRadialGradient(cx, cy, r * 0.5, cx, cy, r * 2.0);
-    glow.addColorStop(0,   'rgba(200,220,255,0.15)');
-    glow.addColorStop(1,   'rgba(200,220,255,0.0)');
+    glow.addColorStop(0, 'rgba(200,220,255,0.15)');
+    glow.addColorStop(1, 'rgba(200,220,255,0.0)');
     ctx.fillStyle = glow;
     ctx.fillRect(0, 0, size, size);
 
-    // Moon disc — off-white with slight blue tint on limb
-    const disc = ctx.createRadialGradient(
-      cx - r * 0.18, cy - r * 0.18, r * 0.05,
-      cx, cy, r
-    );
+    const disc = ctx.createRadialGradient(cx - r * 0.18, cy - r * 0.18, r * 0.05, cx, cy, r);
     disc.addColorStop(0,    '#ffffff');
     disc.addColorStop(0.55, '#dde8ff');
     disc.addColorStop(1,    '#a8bce8');
@@ -201,70 +223,59 @@ export class SceneManager {
     ctx.fillStyle = disc;
     ctx.fill();
 
-    // Subtle craters
     const craters = [
-      { x: 0.30, y: 0.25, r: 0.09 },
-      { x: 0.62, y: 0.52, r: 0.06 },
-      { x: 0.42, y: 0.66, r: 0.045 },
-      { x: 0.66, y: 0.30, r: 0.055 },
+      { x: 0.30, y: 0.25, r: 0.09 }, { x: 0.62, y: 0.52, r: 0.06 },
+      { x: 0.42, y: 0.66, r: 0.045 }, { x: 0.66, y: 0.30, r: 0.055 },
       { x: 0.52, y: 0.38, r: 0.035 },
     ];
     for (const c of craters) {
-      const ox = cx + (c.x - 0.5) * 2 * r;
-      const oy = cy + (c.y - 0.5) * 2 * r;
+      const ox = cx + (c.x - 0.5) * 2 * r, oy = cy + (c.y - 0.5) * 2 * r;
       const cr = c.r * r;
       const cg = ctx.createRadialGradient(ox, oy, 0, ox, oy, cr);
-      cg.addColorStop(0,   'rgba(150,170,210,0.25)');
-      cg.addColorStop(1,   'rgba(150,170,210,0.0)');
+      cg.addColorStop(0, 'rgba(150,170,210,0.25)');
+      cg.addColorStop(1, 'rgba(150,170,210,0.0)');
       ctx.beginPath();
       ctx.arc(ox, oy, cr, 0, Math.PI * 2);
       ctx.fillStyle = cg;
       ctx.fill();
     }
-
     return canvas;
   }
 
-  // ── Stars (Points on a sphere) ────────────────────────────────
+  // ── Stars ─────────────────────────────────────────────────────
   _makeStars() {
     const positions = new Float32Array(STAR_COUNT * 3);
     const sizes     = new Float32Array(STAR_COUNT);
     const alphas    = new Float32Array(STAR_COUNT);
-
     const v = new THREE.Vector3();
     for (let i = 0; i < STAR_COUNT; i++) {
-      // Distribute across upper hemisphere + a bit below for camera tilt
       const theta = Math.random() * Math.PI * 2;
-      const phi   = Math.acos(1 - Math.random() * 1.65); // 0..~115° from zenith
+      const phi   = Math.acos(1 - Math.random() * 1.65);
       v.setFromSphericalCoords(STAR_SPHERE_R, phi, theta);
       positions[i * 3]     = v.x;
       positions[i * 3 + 1] = Math.max(v.y, STAR_SPHERE_R * 0.06);
       positions[i * 3 + 2] = v.z;
-      // Randomise size: most small, few bright
       sizes[i]  = Math.random() < 0.07
-        ? 2.5 + Math.random() * 1.5   // bright star
-        : 0.6 + Math.random() * 1.8;  // normal star
+        ? 2.5 + Math.random() * 1.5 : 0.6 + Math.random() * 1.8;
       alphas[i] = 0.4 + Math.random() * 0.6;
     }
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute('aSize',    new THREE.BufferAttribute(sizes,     1));
-    geo.setAttribute('aAlpha',   new THREE.BufferAttribute(alphas,    1));
+    geo.setAttribute('aSize',    new THREE.BufferAttribute(sizes, 1));
+    geo.setAttribute('aAlpha',   new THREE.BufferAttribute(alphas, 1));
 
-    // Small radial-gradient sprite for each point
     const starCanvas = document.createElement('canvas');
     starCanvas.width = starCanvas.height = 32;
     const sc = starCanvas.getContext('2d');
     const sg = sc.createRadialGradient(16, 16, 0, 16, 16, 16);
-    sg.addColorStop(0,    'rgba(255,255,255,1)');
-    sg.addColorStop(0.3,  'rgba(220,235,255,0.7)');
-    sg.addColorStop(1,    'rgba(200,220,255,0)');
+    sg.addColorStop(0,   'rgba(255,255,255,1)');
+    sg.addColorStop(0.3, 'rgba(220,235,255,0.7)');
+    sg.addColorStop(1,   'rgba(200,220,255,0)');
     sc.fillStyle = sg;
     sc.fillRect(0, 0, 32, 32);
     const starTex = new THREE.CanvasTexture(starCanvas);
 
-    // ShaderMaterial so we can drive per-star twinkle via uniforms
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         uNightPhase: { value: 0.0 },
@@ -275,16 +286,12 @@ export class SceneManager {
         attribute float aSize;
         attribute float aAlpha;
         varying   float vAlpha;
-
         uniform float uNightPhase;
         uniform float uTime;
-
         void main() {
-          // Per-star hash drives a unique twinkle frequency
           float hash    = fract(sin(dot(position.xy, vec2(12.9898, 78.233))) * 43758.5453);
           float twinkle = 0.75 + 0.25 * sin(uTime * (1.2 + hash * 1.8) + hash * 6.2832);
           vAlpha        = aAlpha * uNightPhase * twinkle;
-
           vec4 mvPos    = modelViewMatrix * vec4(position, 1.0);
           gl_PointSize  = aSize * (700.0 / -mvPos.z);
           gl_Position   = projectionMatrix * mvPos;
@@ -293,16 +300,13 @@ export class SceneManager {
       fragmentShader: /* glsl */`
         uniform sampler2D uMap;
         varying float vAlpha;
-
         void main() {
           vec4 col     = texture2D(uMap, gl_PointCoord);
           gl_FragColor = vec4(col.rgb, col.a * vAlpha);
           if (gl_FragColor.a < 0.01) discard;
         }
       `,
-      transparent: true,
-      depthWrite:  false,
-      blending:    THREE.AdditiveBlending,
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     });
 
     const points = new THREE.Points(geo, mat);
@@ -310,75 +314,117 @@ export class SceneManager {
     return points;
   }
 
-  // ── setTimeOfDay ──────────────────────────────────────────────
-  // t = 0 → full day (existing lights unchanged, night layer invisible)
-  // t = 1 → full night (night layer fully visible)
-  // Existing sun / sky / day ambient / rim lights are NEVER modified.
-  setTimeOfDay(t) {
-    // Smooth S-curve so transition happens in the middle third of the slider
-    const phase = THREE.MathUtils.clamp(
-      THREE.MathUtils.smoothstep(t, 0.28, 0.65),
-      0, 1
+  // ── setTimeOfDay — THE main integration point ─────────────────
+  // hour: 0–24 (float). Drives sky, sun, moon, stars, lamps, fog.
+  setTimeOfDay(hour) {
+    this._currentHour = hour;
+
+    // ── Sun elevation for this hour ───────────────────────────
+    const sunPos = this._setSkyPosition(hour);
+
+    // sunElevation: 1 = noon, 0 = horizon, negative = below
+    const normalised  = (hour - 6) / 12; // 0 at 6am, 2 at 6pm
+    const elevDeg     = Math.max(-20, 75 * Math.sin(normalised * Math.PI));
+    const elevNorm    = THREE.MathUtils.clamp(elevDeg / 75, -0.267, 1); // -1..1 range clamped
+
+    // sunDayPhase: 1 = full bright day, 0 = below horizon, smooth twilight band
+    const sunDayPhase = THREE.MathUtils.clamp(
+      THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.18), 0, 1
     );
-    this._nightPhase = phase;
 
-    // Moon light: peak 0.35 intensity at full night
-    if (this._moonLight) {
-      this._moonLight.intensity = phase * 0.35;
+    // nightPhase: 1 = full night, 0 = full day
+    const nightPhase = 1 - sunDayPhase;
+    this._nightPhase = nightPhase;
+
+    // ── Update sun directional light ──────────────────────────
+    const dist = 1000;
+    this.sun.position.set(
+      this._sunDirection.x * dist,
+      this._sunDirection.y * dist,
+      this._sunDirection.z * dist,
+    );
+
+    // Colour transition: blue-white at noon → warm orange at golden hour → off at night
+    const goldenFrac = THREE.MathUtils.clamp(1 - Math.abs(normalised - 1) / 0.3, 0, 1);
+    const isGolden   = elevDeg > 0 && elevDeg < 22;
+    const sunColor   = new THREE.Color();
+    if (isGolden) {
+      sunColor.lerpColors(new THREE.Color(0xff8830), new THREE.Color(0xfff5e0), elevDeg / 22);
+    } else {
+      sunColor.set(0xfff5e0);
+    }
+    this.sun.color.copy(sunColor);
+    this.sun.intensity = sunDayPhase * 3.0;
+
+    // Day ambient fades with sun
+    if (this._dayAmbient) {
+      this._dayAmbient.intensity = sunDayPhase * 0.5;
+    }
+    if (this._rimLight) {
+      this._rimLight.intensity = sunDayPhase * 0.4;
     }
 
-    // Night ambient: peak 0.65 intensity — keeps shadows readable
-    if (this._nightAmbient) {
-      this._nightAmbient.intensity = phase * 0.65;
+    // ── Sky visibility ────────────────────────────────────────
+    // When fully night, make sky almost black (not perfectly to avoid pop)
+    if (this._skyUniforms) {
+      const skyFade = THREE.MathUtils.clamp(sunDayPhase + 0.05, 0, 1);
+      // Push sun below visible disc at night by moving it far below horizon
+      // (already handled by _setSkyPosition elevation, but we also scale rayleigh)
+      if (elevDeg <= -5) {
+        this._skyUniforms['rayleigh'].value = THREE.MathUtils.lerp(
+          0.05, this._skyUniforms['rayleigh'].value, sunDayPhase
+        );
+      }
     }
 
-    // Moon sprite opacity
-    if (this._moonSprite) {
-      this._moonSprite.material.opacity = phase;
-    }
+    // ── Moon ──────────────────────────────────────────────────
+    if (this._moonLight)  this._moonLight.intensity  = nightPhase * 0.35;
+    if (this._nightAmbient) this._nightAmbient.intensity = nightPhase * 0.65;
+    if (this._moonSprite) this._moonSprite.material.opacity = nightPhase;
 
-    // Stars driven per-frame in _tickNight via shader uniform
+    // ── Stars ─────────────────────────────────────────────────
     if (this._starPoints) {
-      this._starPoints.material.uniforms.uNightPhase.value = phase;
+      this._starPoints.material.uniforms.uNightPhase.value = nightPhase;
     }
 
-    // Street lamp glow — globes use emissiveIntensity, halos use opacity
+    // ── Street lamps ──────────────────────────────────────────
+    // Lamps turn on when nightPhase > 0.25 (dusk), full at nightPhase > 0.6
+    const lampPhase = THREE.MathUtils.clamp(
+      THREE.MathUtils.smoothstep(nightPhase, 0.25, 0.65), 0, 1
+    );
     for (const mesh of this._lampMeshes) {
       const mat = mesh.material;
       if (mesh.userData.isLampGlobe) {
-        // MeshLambertMaterial with emissive colour
-        mat.emissiveIntensity = phase;
+        mat.emissiveIntensity = lampPhase;
       } else if (mesh.userData.isLampHalo) {
-        // MeshBasicMaterial — drive opacity directly
-        mat.opacity = phase * 0.85;
+        mat.opacity = lampPhase * 0.85;
         mat.needsUpdate = true;
       }
     }
 
-    // Night fog — fades in toward midnight, absent at day
-    if (phase > 0.01) {
+    // ── Fog ───────────────────────────────────────────────────
+    if (nightPhase > 0.01) {
       if (!this.scene.fog) {
         this.scene.fog = new THREE.Fog(0x050a18, 3000, 14000);
       }
       const fogColor = new THREE.Color().lerpColors(
-        new THREE.Color(0x000000),
-        new THREE.Color(0x050a18),
-        phase
+        new THREE.Color(0x000000), new THREE.Color(0x050a18), nightPhase
       );
       this.scene.fog.color.copy(fogColor);
-      this.scene.fog.near = THREE.MathUtils.lerp(5000, 600,  phase);
-      this.scene.fog.far  = THREE.MathUtils.lerp(14000, 5000, phase);
+      this.scene.fog.near = THREE.MathUtils.lerp(5000, 600,  nightPhase);
+      this.scene.fog.far  = THREE.MathUtils.lerp(14000, 5000, nightPhase);
     } else {
       this.scene.fog = null;
     }
+
+    // ── Tone mapping exposure — brighter day, dimmer night ────
+    this.renderer.toneMappingExposure = THREE.MathUtils.lerp(0.18, 0.5, sunDayPhase);
   }
 
-  // ── Register lamp meshes so setTimeOfDay can drive their glow ─
   registerLampMeshes(meshes) {
     this._lampMeshes.push(...meshes);
   }
 
-  // ── Tick night uniforms (called every frame) ──────────────────
   _tickNight(dt) {
     if (!this._starPoints) return;
     this._starTime += dt;
@@ -412,8 +458,7 @@ export class SceneManager {
 
   _updateFPS() {
     this._fpsFrames++;
-    const now     = performance.now();
-    const elapsed = now - this._fpsLastTime;
+    const now = performance.now(), elapsed = now - this._fpsLastTime;
     if (elapsed >= 500) {
       const fps = Math.round(this._fpsFrames / (elapsed / 1000));
       this._fpsEl.style.color =
@@ -424,7 +469,6 @@ export class SceneManager {
     }
   }
 
-  // ── Point-in-polygon (ray casting in XZ) ─────────────────────
   _pointInPoly(px, pz, verts) {
     let inside = false;
     const n = verts.length;
@@ -432,14 +476,11 @@ export class SceneManager {
       const xi = verts[i].x, zi = verts[i].z;
       const xj = verts[j].x, zj = verts[j].z;
       if (((zi > pz) !== (zj > pz)) &&
-          (px < (xj - xi) * (pz - zi) / (zj - zi) + xi)) {
-        inside = !inside;
-      }
+          (px < (xj - xi) * (pz - zi) / (zj - zi) + xi)) inside = !inside;
     }
     return inside;
   }
 
-  // ── Elevation ground mesh ─────────────────────────────────────
   buildElevationGround(elevFn, gridSize, radiusMeters, buildingFootprints = []) {
     if (this._groundMesh) {
       this.scene.remove(this._groundMesh);
@@ -455,20 +496,13 @@ export class SceneManager {
 
     const pos = geo.attributes.position;
     for (let i = 0; i < pos.count; i++) {
-      const x = pos.getX(i);
-      const z = pos.getZ(i);
-      let y   = elevFn(x, z);
-
+      const x = pos.getX(i), z = pos.getZ(i);
+      let y = elevFn(x, z);
       for (const { verts, baseY } of buildingFootprints) {
-        if (this._pointInPoly(x, z, verts)) {
-          y = Math.min(y, baseY);
-          break;
-        }
+        if (this._pointInPoly(x, z, verts)) { y = Math.min(y, baseY); break; }
       }
-
       pos.setY(i, y);
     }
-
     pos.needsUpdate = true;
     geo.computeVertexNormals();
 
@@ -478,13 +512,10 @@ export class SceneManager {
     mesh.userData.isGround = true;
     this.scene.add(mesh);
     this._groundMesh = mesh;
-
     this._fitShadowFrustum(radiusMeters);
   }
 
-  getTerrainMesh() {
-    return this._groundMesh;
-  }
+  getTerrainMesh() { return this._groundMesh; }
 
   setGroundTexture(tex) {
     if (!this._groundMesh) return;
@@ -494,7 +525,6 @@ export class SceneManager {
     this._groundMesh.material.needsUpdate = true;
   }
 
-  // ── Render loop ───────────────────────────────────────────────
   start() {
     this.init();
     const animate = () => {
@@ -508,15 +538,13 @@ export class SceneManager {
     animate();
   }
 
-  // ── Object management ─────────────────────────────────────────
   clearWorld() {
     for (const obj of this._objects) {
       this.scene.remove(obj);
       obj.traverse(child => {
         if (child.isMesh) {
           child.geometry.dispose();
-          const mats = Array.isArray(child.material)
-            ? child.material : [child.material];
+          const mats = Array.isArray(child.material) ? child.material : [child.material];
           mats.forEach(m => m.dispose());
         }
       });
@@ -546,8 +574,7 @@ export class SceneManager {
     this._objects.forEach(group => {
       group.traverse(child => {
         if (!child.isMesh || child.userData.isGround) return;
-        const mats = Array.isArray(child.material)
-          ? child.material : [child.material];
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
         mats.forEach(mat => {
           if (mode === 'wireframe') {
             mat.wireframe = true; mat.transparent = false; mat.opacity = 1;
@@ -573,8 +600,7 @@ export class SceneManager {
   }
 
   _onResize() {
-    const w = this.container.clientWidth;
-    const h = this.container.clientHeight;
+    const w = this.container.clientWidth, h = this.container.clientHeight;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);

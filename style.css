@@ -358,89 +358,169 @@ button {
 
 .loading { animation: pulse 1s ease-in-out infinite; }
 
+
 /* ═══════════════════════════════════════════════════════════
-   SUN CONTROLS
+   TIME OF DAY PANEL
    ═══════════════════════════════════════════════════════════ */
 
-.sun-panel {
+.tod-panel {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 10px;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
 }
 
-/* Dial + label row */
-.sun-dial-wrap {
+/* Mode toggle row */
+.tod-mode-row {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+
+.tod-mode-btn {
+  flex: 1;
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 6px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
 }
 
-#sun-dial {
+.tod-mode-btn + .tod-mode-btn {
+  border-left: 1px solid var(--border);
+}
+
+.tod-mode-btn.active {
+  background: rgba(79, 255, 176, 0.08);
+  color: var(--accent);
+}
+
+.tod-mode-btn:hover:not(.active) {
+  background: rgba(255,255,255,0.04);
+  color: var(--text);
+}
+
+.tod-mode-btn svg {
   flex-shrink: 0;
-  filter: drop-shadow(0 0 6px rgba(255, 208, 96, 0.2));
+  opacity: 0.8;
 }
 
-.sun-dial-label {
-  font-family: 'Syne', sans-serif;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--sun);
+/* Arc canvas */
+.tod-arc-wrap {
+  position: relative;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 0;
+}
+
+#tod-arc {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0;
+}
+
+.tod-time-label {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(255,255,255,0.85);
+  text-shadow: 0 1px 4px rgba(0,0,0,0.8);
   letter-spacing: 0.05em;
   white-space: nowrap;
-  line-height: 1.2;
+  pointer-events: none;
 }
 
-/* Mode row — slightly smaller text to fit 3 buttons */
-.sun-mode-row .mode-btn {
-  font-size: 9px;
-  padding: 6px 3px;
-  letter-spacing: 0.02em;
-  text-transform: none;
-}
-
-/* Sun slider thumb: warm yellow */
-#sun-time-slider::-webkit-slider-thumb,
-#sun-elev-slider::-webkit-slider-thumb,
-#sun-azi-slider::-webkit-slider-thumb  {
-  background: var(--sun);
-  box-shadow: 0 0 6px rgba(255, 208, 96, 0.6);
-}
-
-/* Sub-rows (time / manual content) */
-.sun-sub-row {
+/* Slider section */
+.tod-slider-wrap {
+  padding: 10px 12px 8px;
+  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
+  transition: opacity 0.2s;
 }
 
-.sun-sub-label {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 10px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.accent-val {
-  color: var(--sun);
-  font-weight: 700;
-  font-size: 11px;
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-/* Time axis tick labels */
-.sun-time-ticks {
+.tod-tick-row {
   display: flex;
   justify-content: space-between;
   font-size: 8px;
   color: var(--muted);
   padding: 0 1px;
-  margin-top: -2px;
+  letter-spacing: 0.05em;
+}
+
+/* Time slider thumb: yellow-gold */
+#tod-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--sun);
+  box-shadow: 0 0 8px rgba(255, 208, 96, 0.7);
+  cursor: pointer;
+}
+
+#tod-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--sun);
+  box-shadow: 0 0 8px rgba(255, 208, 96, 0.7);
+  cursor: pointer;
+  border: none;
+}
+
+/* Indicator pills */
+.tod-indicators {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+}
+
+.tod-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 20px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+  border: 1px solid transparent;
+  color: var(--muted);
+  background: transparent;
+  transition: all 0.3s ease;
+  border-color: var(--border);
+}
+
+.tod-pill.active {
+  color: var(--pill-color, var(--accent));
+  border-color: var(--pill-color, var(--accent));
+  background: color-mix(in srgb, var(--pill-color, var(--accent)) 10%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--pill-color, var(--accent)) 30%, transparent);
+}
+
+.tod-pill span:first-child {
+  font-size: 10px;
+  line-height: 1;
 }
