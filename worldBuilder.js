@@ -162,7 +162,12 @@ export class WorldBuilder {
       const draped = this._drapeTriangles(rawRoadTris, terrainMesh, bvh, elev, DRAPE_BIAS);
       const mesh = new THREE.Mesh(
         this._buildGeom(draped.pos, draped.idx, draped.nrm),
-        new THREE.MeshLambertMaterial({ color: 0x505058 })
+        new THREE.MeshLambertMaterial({
+          color: 0x505058,
+          polygonOffset: true,
+          polygonOffsetFactor: -1,
+          polygonOffsetUnits: -1,
+        })
       );
       mesh.receiveShadow = true;
       mesh.userData      = { kind: 'road' };
@@ -198,7 +203,14 @@ export class WorldBuilder {
     if (watIdx.length) {
       const mesh = new THREE.Mesh(
         this._buildGeom(watPos, watIdx, watNrm),
-        new THREE.MeshLambertMaterial({ color: 0x2878b0, transparent: true, opacity: 0.85 })
+        new THREE.MeshLambertMaterial({
+          color: 0x2878b0,
+          transparent: true,
+          opacity: 0.85,
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+          polygonOffsetUnits: -2,
+        })
       );
       mesh.userData = { kind: 'water', isWater: true };
       this.scene.addObject(mesh);

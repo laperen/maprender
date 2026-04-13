@@ -200,18 +200,15 @@ export class SceneManager {
       transparent: true,
       opacity:     0,           // driven by setTimeOfDay
       depthWrite:  false,
-      depthTest:   false,       // always draws over geometry/sky
+      depthTest:   true,        // buildings correctly occlude moon
       blending:    THREE.NormalBlending,
     });
     this._moonMesh = new THREE.Mesh(moonGeo, moonMat);
-    this._moonMesh.renderOrder    = 2;  // draw after sky dome
-    this._moonMesh.frustumCulled  = false; // always render — it's at sky distance
+    this._moonMesh.renderOrder    = 0;  // same as geometry; depthTest:false means it paints over sky bg
+    this._moonMesh.frustumCulled  = false; // always render — repositioned each frame
 
-    // Place at MOON_DIST in moon direction, ensure above horizon
-    const moonPos = moonDir.clone().multiplyScalar(MOON_DIST);
-    if (moonPos.y < MOON_DIST * 0.20) moonPos.y = MOON_DIST * 0.20;
-    this._moonMesh.position.copy(moonPos);
-    // Always face camera — updated each frame in _tickNight
+    // Position updated each frame in _tickNight (camera-relative)
+    this._moonMesh.position.set(0, MOON_DIST * 0.3, -MOON_DIST * 0.4);
     this.scene.add(this._moonMesh);
 
     // Atmospheric glow halo around moon (separate plane, additive)
@@ -227,9 +224,10 @@ export class SceneManager {
       blending:   THREE.AdditiveBlending,
     });
     this._moonHalo = new THREE.Mesh(haloGeo, haloMat);
-    this._moonHalo.renderOrder   = 1;
+    this._moonHalo.renderOrder   = -1; // draws before geometry (stars also at -1, both are sky bg)
     this._moonHalo.frustumCulled = false; // always render
-    this._moonHalo.position.copy(moonPos);
+    // Position updated each frame in _tickNight (synced to moon)
+    this._moonHalo.position.set(0, MOON_DIST * 0.3, -MOON_DIST * 0.4);
     this.scene.add(this._moonHalo);
 
     // ── Stars ─────────────────────────────────────────────────
@@ -360,10 +358,13 @@ export class SceneManager {
     });
 
     const points = new THREE.Points(geo, mat);
-    // renderOrder 3 — draws after sky dome (order 0) and moon (order 2).
-    // depthTest false ensures stars aren't occluded by the Sky geometry.
-    points.renderOrder = 3;
-    points.material.depthTest = false;
+    // renderOrder -1 — stars paint as a skybox background BEFORE all scene geometry.
+    // Buildings and ground use renderOrder 0 (default) with depthTest:true so they
+    // naturally overdraw the stars. depthTest:false on stars means they always paint
+    // on the background pass regardless of depth buffer state — exactly what we want.
+    points.renderOrder = -1;
+    points.material.depthTest  = false;
+    points.material.depthWrite = false;
     return points;
   }
 
@@ -506,9 +507,31 @@ export class SceneManager {
       // so no discontinuity. Much cheaper than driving a sin() per vertex per frame.
       this._starPoints.material.uniforms.uTwinkle.value = (this._starTime * 0.08) % 1.0;
     }
-    // Keep moon disc and halo facing the camera (billboard behaviour)
-    if (this._moonMesh) this._moonMesh.quaternion.copy(this.camera.quaternion);
-    if (this._moonHalo) this._moonHalo.quaternion.copy(this.camera.quaternion);
+
+    // Move star sphere to follow camera so stars always fill the sky
+    if (this._starPoints) {
+      this._starPoints.position.copy(this.camera.position);
+    }
+
+    // Keep moon in sky relative to camera — billboard + reposition each frame.
+    // Fixed world-space position causes the moon to disappear when the camera moves
+    // away or rotates such that the fixed point falls behind the near clip plane.
+    if (this._moonMesh || this._moonHalo) {
+      const moonPos = this.camera.position.clone()
+        .add(this._moonDirection.clone().multiplyScalar(MOON_DIST * 0.5));
+      // Ensure moon stays above horizon from camera's perspective
+      if (moonPos.y < this.camera.position.y + MOON_DIST * 0.15) {
+        moonPos.y = this.camera.position.y + MOON_DIST * 0.15;
+      }
+      if (this._moonMesh) {
+        this._moonMesh.position.copy(moonPos);
+        this._moonMesh.quaternion.copy(this.camera.quaternion);
+      }
+      if (this._moonHalo) {
+        this._moonHalo.position.copy(moonPos);
+        this._moonHalo.quaternion.copy(this.camera.quaternion);
+      }
+    }
   }
 
   _fitShadowFrustum(radiusMeters) {
