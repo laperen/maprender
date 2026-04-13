@@ -111,13 +111,19 @@ export class WorldBuilder {
     const roadWays     = [];
     const tallBuildings = [];   // { verts, topY } for aviation lights
 
+    // placedFootprints is passed into _buildingMesh so each successive building
+    // can check whether it overlaps any already-built footprint and erode itself
+    // inward to prevent coplanar wall z-fighting (e.g. Tokyo Tower red/white bands).
+    const placedFootprints = [];
+
     for (const way of ways) {
       try {
         if (way.kind === 'building' && way.closed) {
-          const result = this._buildingMesh(way, heightScale, elev);
+          const result = this._buildingMesh(way, heightScale, elev, placedFootprints);
           if (result) {
             buildingGroup.add(result.mesh);
             buildingFootprints.push({ verts: result.verts, baseY: result.baseY });
+            placedFootprints.push({ verts: result.verts });
             // Collect tall buildings (≥ 30 m scaled) for aviation lights
             if (result.topY - result.baseY >= 30) {
               tallBuildings.push({ verts: result.verts, topY: result.topY });
@@ -523,28 +529,95 @@ export class WorldBuilder {
     return { pos, idx: flipped, nrm };
   }
 
-  _buildingMesh(way, heightScale, elev) {
+  // ── Footprint centroid ────────────────────────────────────────
+  _centroid(verts) {
+    let cx = 0, cz = 0;
+    for (const v of verts) { cx += v.x; cz += v.z; }
+    return { x: cx / verts.length, z: cz / verts.length };
+  }
+
+  // ── Point-in-polygon (XZ plane) ───────────────────────────────
+  _pointInFootprint(px, pz, verts) {
+    let inside = false;
+    const n = verts.length;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const xi = verts[i].x, zi = verts[i].z;
+      const xj = verts[j].x, zj = verts[j].z;
+      if (((zi > pz) !== (zj > pz)) &&
+          (px < (xj - xi) * (pz - zi) / (zj - zi) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+
+  // ── Erode a polygon inward by `amount` metres toward its centroid ─
+  // Used to prevent z-fighting when OSM encodes complex structures
+  // (e.g. Tokyo Tower) as multiple overlapping building ways whose
+  // wall faces end up exactly coplanar.
+  _erodeVerts(verts, amount) {
+    const c = this._centroid(verts);
+    return verts.map(v => {
+      const dx  = v.x - c.x, dz = v.z - c.z;
+      const len = Math.sqrt(dx * dx + dz * dz) || 1;
+      // Pull vertex toward centroid by `amount`, but never past the centroid
+      const pull = Math.min(amount, len * 0.49);
+      return { x: v.x - (dx / len) * pull, z: v.z - (dz / len) * pull };
+    });
+  }
+
+  _buildingMesh(way, heightScale, elev, placedFootprints) {
     const coords = way.coords;
     if (coords.length < 3) return null;
-    const verts = this._ensureCCW(coords.slice(0, -1));
+    let verts = this._ensureCCW(coords.slice(0, -1));
     if (verts.length < 3) return null;
     if (Math.abs(this._signedArea(verts)) < MIN_BUILDING_AREA) return null;
+
+    // ── Overlap detection & erosion ───────────────────────────────
+    // Check whether this building's centroid falls inside any already-placed
+    // footprint. If so, its walls are likely coplanar with that footprint's
+    // walls (classic OSM multi-part structure). Erode inward so surfaces
+    // are physically separated — no GPU trick needed for truly offset geometry.
+    let erodeLevel = 0;
+    if (placedFootprints && placedFootprints.length > 0) {
+      const c = this._centroid(verts);
+      for (const fp of placedFootprints) {
+        if (this._pointInFootprint(c.x, c.z, fp.verts)) {
+          erodeLevel++;
+          break;  // one overlap is enough to trigger erosion
+        }
+      }
+      // Also check if any placed centroid is inside *this* footprint
+      if (erodeLevel === 0) {
+        for (const fp of placedFootprints) {
+          const fc = this._centroid(fp.verts);
+          if (this._pointInFootprint(fc.x, fc.z, verts)) {
+            erodeLevel++;
+            break;
+          }
+        }
+      }
+    }
+
+    // Each overlap level erodes by 0.08 m — invisible at scene scale but
+    // enough to separate surfaces by more than floating-point precision.
+    if (erodeLevel > 0) {
+      verts = this._erodeVerts(verts, erodeLevel * 0.08);
+    }
+
     const flat    = verts.flatMap(c => [c.x, c.z]);
     const indices = earcut(flat);
     if (!indices?.length) return null;
 
-    // Tiny deterministic per-building Y jitter derived from way ID prevents
-    // perfectly coplanar base/roof planes between adjacent buildings with
-    // identical terrain elevation, which is the primary source of z-fighting.
-    const idHash  = (way.id % 997) / 997;           // 0..1, unique per way
-    const jitter  = idHash * 0.04;                   // up to 4 cm — visually invisible
-    const baseY   = Math.min(...verts.map(v => elev(v.x, v.z))) + jitter;
-    const h       = way.height * heightScale;
-    // Roof sits 2 mm above topY so the roof cap never exactly coplanar-fights
-    // a neighbouring building's roof at the same height.
-    const topY    = baseY + h + 0.002;
-    const n       = verts.length;
-    const pos     = [], nrm = [], idxArr = [];
+    // Deterministic per-building Y micro-jitter (< 5 cm) breaks coplanarity
+    // between buildings that share terrain height without visible effect.
+    const idHash = (way.id % 997) / 997;
+    const jitter = idHash * 0.045;
+    const baseY  = Math.min(...verts.map(v => elev(v.x, v.z))) + jitter;
+    const h      = way.height * heightScale;
+    // Eroded/overlapping buildings also get a small Y lift so their roof
+    // caps don't fight the parent building's roof at the same elevation.
+    const topY   = baseY + h + (erodeLevel > 0 ? 0.05 : 0.002);
+    const n      = verts.length;
+    const pos    = [], nrm = [], idxArr = [];
 
     for (let i = 0; i < n; i++) {
       const j    = (i + 1) % n;
@@ -573,22 +646,25 @@ export class WorldBuilder {
     geom.addGroup(0,         wallCount,                 0);
     geom.addGroup(wallCount, idxArr.length - wallCount, 1);
 
-    // polygonOffset pushes each building's fragments slightly toward the camera
-    // in depth, resolving the shared-edge wall z-fighting that occurs when two
-    // buildings share an OSM node and therefore produce exactly coplanar wall faces.
+    // polygonOffset as a secondary defence for any residual depth precision
+    // issues at grazing angles. Overlapping (eroded) buildings get a stronger
+    // pull so they always read as "in front" of the parent surface.
+    const pof = erodeLevel > 0 ? -4 : -1;
+    const pou = erodeLevel > 0 ? -4 : -1;
+
     const wallMat = new THREE.MeshToonMaterial({
       color:               new THREE.Color(buildingPalette(way.tags)),
       gradientMap:         this._toonGradient,
       polygonOffset:       true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits:  -1,
+      polygonOffsetFactor: pof,
+      polygonOffsetUnits:  pou,
     });
     const roofMat = new THREE.MeshToonMaterial({
       color:               new THREE.Color(roofColour(way.tags)),
       gradientMap:         this._toonGradient,
       polygonOffset:       true,
-      polygonOffsetFactor: -2,   // roof pulls slightly more to avoid ground-plane fight
-      polygonOffsetUnits:  -2,
+      polygonOffsetFactor: pof - 1,
+      polygonOffsetUnits:  pou - 1,
     });
 
     const mesh = new THREE.Mesh(geom, [wallMat, roofMat]);
