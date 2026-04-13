@@ -14,7 +14,7 @@ export class SceneManager {
     this.container   = container;
     this.renderMode  = 'solid';
     this._objects    = [];
-    this._clock      = new THREE.Clock();
+    this._timer      = new THREE.Timer();
     this._groundMesh = null;
     this._fpsFrames   = 0;
     this._fpsLastTime = performance.now();
@@ -48,14 +48,14 @@ export class SceneManager {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(w, h);
     this.renderer.shadowMap.enabled  = true;
-    this.renderer.shadowMap.type     = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type     = THREE.PCFShadowMap;
     this.renderer.toneMapping        = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.5;
     this.container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
 
-    this.camera = new THREE.PerspectiveCamera(55, w / h, 1, 20000);
+    this.camera = new THREE.PerspectiveCamera(55, w / h, 1, 30000);
     this.camera.position.set(0, 600, 1200);
     this.camera.lookAt(0, 0, 0);
 
@@ -204,7 +204,8 @@ export class SceneManager {
       blending:    THREE.NormalBlending,
     });
     this._moonMesh = new THREE.Mesh(moonGeo, moonMat);
-    this._moonMesh.renderOrder = 2;  // draw after sky dome
+    this._moonMesh.renderOrder    = 2;  // draw after sky dome
+    this._moonMesh.frustumCulled  = false; // always render — it's at sky distance
 
     // Place at MOON_DIST in moon direction, ensure above horizon
     const moonPos = moonDir.clone().multiplyScalar(MOON_DIST);
@@ -226,12 +227,14 @@ export class SceneManager {
       blending:   THREE.AdditiveBlending,
     });
     this._moonHalo = new THREE.Mesh(haloGeo, haloMat);
-    this._moonHalo.renderOrder = 1;
+    this._moonHalo.renderOrder   = 1;
+    this._moonHalo.frustumCulled = false; // always render
     this._moonHalo.position.copy(moonPos);
     this.scene.add(this._moonHalo);
 
     // ── Stars ─────────────────────────────────────────────────
     this._starPoints = this._makeStars();
+    this._starPoints.frustumCulled = false; // always render — bounding sphere is huge
     this.scene.add(this._starPoints);
   }
 
@@ -603,7 +606,8 @@ export class SceneManager {
     this.init();
     const animate = () => {
       requestAnimationFrame(animate);
-      const dt = this._clock.getDelta();
+      this._timer.update();
+      const dt = this._timer.getDelta();
       this._tickNight(dt);
       this.controls.update();
       this.renderer.render(this.scene, this.camera);

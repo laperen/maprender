@@ -23,9 +23,9 @@ const LAMP_SPACING     = 60;   // metres between posts along centreline
 const LAMP_SIDE_OFFSET = 3.2;  // metres from centreline to post
 
 // Cell size for deduplication grid — two lamps within this distance collapse to one.
-// Slightly larger than LAMP_SIDE_OFFSET * 2 to also catch opposite-side duplicates
-// at narrow intersections.
-const LAMP_DEDUP_CELL  = 9;    // metres
+// Large enough to collapse clusters at intersections where multiple road ways meet
+// and produce overlapping lamp positions from different directions.
+const LAMP_DEDUP_CELL  = 20;    // metres
 
 const LAMP_ROAD_TYPES  = new Set([
   'motorway', 'trunk', 'primary', 'secondary',
@@ -565,8 +565,10 @@ export class WorldBuilder {
 
   // ═══════════════════════════════════════════════════════════════
   // AVIATION OBSTRUCTION LIGHTS
-  // Red emissive boxes placed at roof corners of tall buildings.
-  // Activated by the same lamp-phase rules as street lights.
+  // Red emissive boxes placed at the 4 furthest roof corners only.
+  // "Furthest" = the vertices closest to each of the 4 diagonal
+  // extremes (NE, NW, SE, SW) of the building's bounding box,
+  // giving exactly 4 lights per building regardless of polygon complexity.
   // ═══════════════════════════════════════════════════════════════
 
   _buildAviationLights(tallBuildings) {
@@ -575,28 +577,31 @@ export class WorldBuilder {
 
     const geo = this._aviatGeo;
 
-    // Dedup grid — one light per ~4 m cell so adjacent buildings
-    // with shared corners don't double-place.
-    const placed  = new Set();
-    const dedupKey = (x, z) =>
-      `${Math.round(x / 4)},${Math.round(z / 4)}`;
+    // Global dedup — one light per ~4 m cell across all buildings
+    const placed   = new Set();
+    const dedupKey = (x, z) => `${Math.round(x / 4)},${Math.round(z / 4)}`;
 
     for (const { verts, topY } of tallBuildings) {
       if (!verts || verts.length < 3) continue;
 
-      // Place one light at each roof corner vertex
-      for (const v of verts) {
+      // Find the 4 corner candidates: vertex closest to each diagonal extreme.
+      // Score each vertex by (±x ± z) to find the 4 extremal directions.
+      const corners = [
+        verts.reduce((best, v) =>  (v.x + v.z) > (best.x + best.z) ? v : best, verts[0]), // NE (+x+z)
+        verts.reduce((best, v) =>  (v.x - v.z) > (best.x - best.z) ? v : best, verts[0]), // SE (+x-z)
+        verts.reduce((best, v) => (-v.x + v.z) > (-best.x + best.z) ? v : best, verts[0]), // NW (-x+z)
+        verts.reduce((best, v) => (-v.x - v.z) > (-best.x - best.z) ? v : best, verts[0]), // SW (-x-z)
+      ];
+
+      for (const v of corners) {
         const k = dedupKey(v.x, v.z);
         if (placed.has(k)) continue;
         placed.add(k);
 
-        // Clone shared material so emissiveIntensity can be driven independently
-        const mat = this._aviatMat.clone();
-
+        const mat   = this._aviatMat.clone();
         const light = new THREE.Mesh(geo, mat);
-        // Sit the box on top of the roof surface with a small raised offset
         light.position.set(v.x, topY + 0.35, v.z);
-        light.userData.isLampGlobe = true;  // reuse lamp activation path
+        light.userData.isLampGlobe = true;
         group.add(light);
       }
     }
