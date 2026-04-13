@@ -363,7 +363,7 @@ export class SceneManager {
           if (gl_FragColor.a < 0.01) discard;
         }
       `,
-      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      transparent: true, depthWrite: true, blending: THREE.AdditiveBlending,
     });
 
     const points = new THREE.Points(geo, mat);
