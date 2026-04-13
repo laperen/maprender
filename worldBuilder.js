@@ -529,6 +529,13 @@ export class WorldBuilder {
     return { pos, idx: flipped, nrm };
   }
 
+  // ── Footprint centroid ────────────────────────────────────────
+  _centroid(verts) {
+    let cx = 0, cz = 0;
+    for (const v of verts) { cx += v.x; cz += v.z; }
+    return { x: cx / verts.length, z: cz / verts.length };
+  }
+
   // ── Point-in-polygon (XZ plane) ───────────────────────────────
   _pointInFootprint(px, pz, verts) {
     let inside = false;
@@ -642,29 +649,15 @@ export class WorldBuilder {
     // are physically separated — no GPU trick needed for truly offset geometry.
     let erodeLevel = 0;
     if (placedFootprints && placedFootprints.length > 0) {
-      const c = this._centroid(verts);
       for (const fp of placedFootprints) {
-        if (this._pointInFootprint(c.x, c.z, fp.verts)) {
+        if (this._polygonsOverlap(verts, fp.verts)) {
           erodeLevel++;
-          break;  // one overlap is enough to trigger erosion
-        }
-      }
-      // Also check if any placed centroid is inside *this* footprint
-      if (erodeLevel === 0) {
-        for (const fp of placedFootprints) {
-          const fc = this._centroid(fp.verts);
-          if (this._pointInFootprint(fc.x, fc.z, verts)) {
-            erodeLevel++;
-            break;
-          }
         }
       }
     }
-
-    // Each overlap level erodes by 0.08 m — invisible at scene scale but
-    // enough to separate surfaces by more than floating-point precision.
+    
     if (erodeLevel > 0) {
-      verts = this._erodeVerts(verts, erodeLevel * 0.08);//0.08
+      verts = this._erodeVerts(verts, erodeLevel * 0.08);
     }
 
     const flat    = verts.flatMap(c => [c.x, c.z]);
