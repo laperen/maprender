@@ -1,17 +1,8 @@
 WIP
 
-night portion of day night cycle.
-p:
-The moon isn't showing up at all.
-
 csm shadows
 p:
 I have the ThreeJS cascading shadow map(csm) example in my instance of ThreeJS, import path "three\examples\jsm\csm". replace current shadow implementation with csm.
-
-z fighting building portions
-p:
-*screenshot
-more complex generated 3d objects have z-fighting occuring. what are the options to solve this?
 
 TODO
 
@@ -19,4 +10,3 @@ clouds
 youtube juke box
 replace orbit camera?
 state transition between map creation and ground level roam
-communication with OSM
