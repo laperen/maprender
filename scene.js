@@ -304,10 +304,18 @@ export class SceneManager {
       const phi = Math.acos(2 * Math.random() - 1);
       v.setFromSphericalCoords(STAR_SPHERE_R, phi, theta);
       positions[i * 3]     = v.x;
-      positions[i * 3 + 1] = Math.max(v.y, STAR_SPHERE_R * 0.06);
+      let y = v.y;
+      // compress slightly but don't clamp
+      y = y * 0.9;
+
+      // optional: allow deeper negative values occasionally
+      if (Math.random() < 0.15) {
+        y -= STAR_SPHERE_R * 0.2 * Math.random();
+      }
+      positions[i * 3 + 1] = y;// Math.max(v.y, STAR_SPHERE_R * 0.06);
       positions[i * 3 + 2] = v.z;
-      sizes[i]  = Math.random() < 7//0.07
-        ? 2.5 + Math.random() * 1.5 : 0.6 + Math.random() * 1.8;
+      sizes[i]  = 5 + (Math.random() * 20);//< 0.07
+        //? 2.5 + Math.random() * 1.5 : 0.6 + Math.random() * 1.8;
       alphas[i] = 1;//0.4 + Math.random() * 0.6;
     }
 
