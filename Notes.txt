@@ -2,7 +2,10 @@ WIP
 
 night portion of day night cycle.
 p:
-The project has an established day night cycle which is mostly working properly. The moon and stars aren't showing up while in night. Might they be outside of the camera's render distance? investigate and fix.
+The project has an established day night cycle which is mostly working properly. Despite attempted fixes previously the following problems still occur.
+The stars can appear infront of buildings and terrain.
+The moon isn't showing up at all.
+more complex buildings with overlapping geometry have z-fighting occuring.
 
 csm shadows
 p:
@@ -19,3 +22,4 @@ clouds
 youtube juke box
 replace orbit camera?
 state transition between map creation and ground level roam
+communication with OSM
