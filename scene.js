@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { OrbitControlsImpl } from './orbitControls.js';
+import { CloudLayer }        from './clouds.js';
 
 // ── Night-sky constants ───────────────────────────────────────
 const STAR_COUNT    = 3000;
@@ -38,6 +39,9 @@ export class SceneManager {
 
     // Current hour (0–24) cached for re-use
     this._currentHour  = 12;
+
+    // Cloud layer
+    this._clouds = new CloudLayer();
   }
 
   init() {
@@ -84,6 +88,9 @@ export class SceneManager {
     this.raycaster  = new THREE.Raycaster();
     this.mouseNDC   = new THREE.Vector2();
     this._pickables = [];
+
+    // Clouds sit above the scene — init after scene exists
+    this._clouds.init(this.scene);
 
     window.addEventListener('resize', () => this._onResize());
   }
@@ -526,6 +533,11 @@ export class SceneManager {
     // moonlight and ambient invisible. A near-constant exposure lets
     // the light intensities themselves control the perceived brightness.
     this.renderer.toneMappingExposure = THREE.MathUtils.lerp(0.45, 0.5, sunDayPhase);
+
+    // ── Cloud brightness — darken at night ────────────────────
+    if (this._clouds) {
+      this._clouds.setDayBrightness(THREE.MathUtils.lerp(0.25, 1.0, sunDayPhase));
+    }
   }
 
   registerLampMeshes(meshes) {
@@ -660,6 +672,7 @@ export class SceneManager {
       this._timer.update();
       const dt = this._timer.getDelta();
       this._tickNight(dt);
+      this._clouds.tick(dt, this.camera.position);
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
       this._updateFPS();
@@ -733,6 +746,11 @@ export class SceneManager {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+  }
+
+  // ── Weather / clouds ──────────────────────────────────────────
+  setWeather(cloudCover, weatherCode) {
+    this._clouds.setWeather(cloudCover, weatherCode);
   }
 
   flyTo(x, z, radius) {

@@ -401,8 +401,16 @@ export class UIController {
     this._setStatus('Fetching map data…', 'active loading');
 
     try {
-      const ways = await this._fetchWithRetry(this.lat, this.lng, this.radius);
+      // Fire map fetch and weather fetch in parallel — weather is non-blocking
+      const [ways, weather] = await Promise.all([
+        this._fetchWithRetry(this.lat, this.lng, this.radius),
+        this.fetcher.fetchWeather(this.lat, this.lng),   // never throws — has internal fallback
+      ]);
+
       if (!ways.length) throw new Error('No map features found in this area.');
+
+      // Apply weather to cloud layer immediately
+      this.scene.setWeather(weather.cloudCover, weather.weatherCode);
 
       this._setStatus('Fetching elevation data and building world…', 'active loading');
       await this._nextFrame();
@@ -418,7 +426,11 @@ export class UIController {
       this.$statTris.textContent      = `${Math.round(result.triangleCount).toLocaleString()} triangles`;
       this.$stats.classList.remove('hidden');
 
-      this._setStatus('World ready. Satellite imagery loading…', '');
+      // Show cloud cover in status briefly
+      const cloudDesc = weather.cloudCover < 20 ? 'clear skies' :
+                        weather.cloudCover < 50 ? 'partly cloudy' :
+                        weather.cloudCover < 80 ? 'mostly cloudy' : 'overcast';
+      this._setStatus(`World ready — ${cloudDesc} (${weather.cloudCover}% cloud cover). Satellite imagery loading…`, '');
       setTimeout(() => {
         if (this.$status.textContent.includes('Satellite')) {
           this._setStatus('Drag to orbit · Scroll to zoom · Hover to inspect', '');

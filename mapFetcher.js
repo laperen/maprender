@@ -114,6 +114,29 @@ out skel qt;
     return null;
   }
 
+  // ── Weather fetch (Open-Meteo, free, no API key) ─────────────
+  // Returns { cloudCover: 0-100, weatherCode: WMO int }
+  // Falls back to neutral values if the request fails.
+  async fetchWeather(lat, lng) {
+    try {
+      const url =
+        `https://api.open-meteo.com/v1/forecast` +
+        `?latitude=${lat.toFixed(4)}&longitude=${lng.toFixed(4)}` +
+        `&current=cloud_cover,weather_code` +
+        `&forecast_days=1`;
+      const res  = await fetch(url);
+      if (!res.ok) throw new Error('weather fetch failed');
+      const json = await res.json();
+      const cur  = json.current || {};
+      return {
+        cloudCover:  cur.cloud_cover  ?? 40,
+        weatherCode: cur.weather_code ?? 1,
+      };
+    } catch (_) {
+      return { cloudCover: 40, weatherCode: 1 };
+    }
+  }
+
   // ── Rough building height estimation ─────────────────────────
   _estimateHeight(tags) {
     if (tags.height)             return parseFloat(tags.height)             || 10;
