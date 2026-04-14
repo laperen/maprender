@@ -91,7 +91,70 @@
           <svg class="collapsible-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
         <div class="collapsible-body" id="cloud-body">
-          <div id="cloud-panel-host"></div>
+          <div id="cloud-panel-host">
+            <div class="tod-panel">
+
+              <!-- Mode toggle row -->
+              <div class="tod-mode-row">
+                <button class="tod-mode-btn" id="cloud-manual-btn" title="Set clouds manually">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                  </svg>
+                  Manual
+                </button>
+                <button class="tod-mode-btn active" id="cloud-auto-btn" title="Use live weather data">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <path d="M12 2a7 7 0 0 1 7 7c0 3.5-2 6-5 7H8c-3 0-5-2-5-5a5 5 0 0 1 5-5 7 7 0 0 1 7-4z"/>
+                  </svg>
+                  Live Weather
+                </button>
+              </div>
+      
+              <!-- Cloud preview canvas -->
+              <div class="tod-arc-wrap">
+                <canvas id="cloud-arc" width="240" height="80"></canvas>
+                <div class="tod-time-label" id="cloud-label">⛅ 40% cover</div>
+              </div>
+      
+              <!-- Manual controls (disabled in auto mode) -->
+              <div class="tod-slider-wrap" id="cloud-manual-wrap" style="opacity:0.35;pointer-events:none;">
+      
+                <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">Condition</label>
+                <select id="cloud-condition-select" style="margin-bottom:8px;">
+                  <option value="0">☀ Clear</option>
+                  <option value="1" selected>⛅ Partly Cloudy</option>
+                  <option value="2">🌥 Mostly Cloudy</option>
+                  <option value="3">☁ Overcast</option>
+                  <option value="4">🌧 Rain</option>
+                  <option value="5">⛈ Storm</option>
+                </select>
+      
+                <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
+                  Cloud Cover <span id="cloud-cover-val">40%</span>
+                </label>
+                <input type="range" id="cloud-cover-slider" min="0" max="100" step="5" value="40" style="margin-bottom:8px;" />
+      
+                <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
+                  Wind Speed <span id="cloud-wind-speed-val">18 u/s</span>
+                </label>
+                <input type="range" id="cloud-wind-speed-slider" min="0" max="80" step="2" value="18" style="margin-bottom:8px;" />
+      
+                <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
+                  Wind Direction <span id="cloud-wind-angle-val">13°</span>
+                </label>
+                <input type="range" id="cloud-wind-angle-slider" min="0" max="359" step="1" value="13" style="margin-bottom:8px;" />
+      
+                <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
+                  Altitude <span id="cloud-altitude-val">380m</span>
+                </label>
+                <input type="range" id="cloud-altitude-slider" min="100" max="1000" step="20" value="380" />
+      
+              </div>
+      
+              <!-- Cloud indicator pills -->
+              <div class="tod-indicators" id="cloud-indicators"></div>
+            </div>
+          </div>
         </div>
       </div>
 
