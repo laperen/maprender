@@ -1,5 +1,9 @@
 WIP
 
+stars:
+p:
+Stars not visible at night. The stars should be being created, size and depth testing are on purpose. check if skybox is hidden at night to not get in the way of the stars before further investigation.
+
 csm shadows
 p:
 I have the ThreeJS cascading shadow map(csm) example in my instance of ThreeJS, import path "three\examples\jsm\csm". replace current shadow implementation with csm.
