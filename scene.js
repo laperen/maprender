@@ -483,6 +483,7 @@ export class SceneManager {
     // these raw intensities translate to visible illumination.
     if (this._moonLight) {
       this._moonLight.intensity = nightPhase * 1.2;   // blue-white directional
+      this._moonLight.position.copy(this._moonDirection).multiplyScalar(1000);
     }
     if (this._nightAmbient) {
       // Colour: mid-blue so night scenes have a cool ambient fill

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Jukebox</title>
+        <style>
+            .hidden-player {
+                width: 0;
+                height: 0;
+                position: absolute;
+                top: 120px
+            }
+        </style>
+    </head>
+    <body>
+        <!-- Hidden players -->
+
+        <iframe id="soundcloud-player" class="hidden-player"></iframe>
+
+        <audio id="audio-player" class="hidden-player"></audio>
+
+        <!-- Controls -->
+        <div id="controls">
+            <input id="urlInput" placeholder="Paste link here">
+            <button onclick="addTrack()">Add</button>
+            <button onclick="userPlay()">Play</button>
+            <button onclick="pause()">Pause</button>
+            <button onclick="next()">Next</button>
+            <input type="range" min="0" max="100" value="50" onchange="setVolume(this.value)">
+        </div>
+        <p>
+            List:
+            <ul id="audiolist"></ul>
+        </p>
+    </body>
+    <script src="https://w.soundcloud.com/player/api.js"></script>
+    <script src="./jukebox.js"></script>
+</html>
