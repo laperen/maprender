@@ -69,45 +69,6 @@ export class UIController {
   // ── Build the time-of-day panel HTML ──────────────────────────
   _buildTimePanel() {
     if (!this.$timePanelHost) return;
-
-    this.$timePanelHost.innerHTML = `
-      <div class="tod-panel">
-
-        <!-- Mode toggle row -->
-        <div class="tod-mode-row">
-          <button class="tod-mode-btn active" id="tod-manual-btn" title="Set time manually">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-            </svg>
-            Manual
-          </button>
-          <button class="tod-mode-btn" id="tod-device-btn" title="Follow device clock">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12" y2="18.01"/>
-            </svg>
-            Device Time
-          </button>
-        </div>
-
-        <!-- Sky arc visualiser -->
-        <div class="tod-arc-wrap">
-          <canvas id="tod-arc" width="240" height="110"></canvas>
-          <div class="tod-time-label" id="tod-time-label">☀ 12:00</div>
-        </div>
-
-        <!-- Manual slider (hidden in device mode) -->
-        <div class="tod-slider-wrap" id="tod-slider-wrap">
-          <div class="tod-tick-row">
-            <span>00</span><span>06</span><span>12</span><span>18</span><span>24</span>
-          </div>
-          <input type="range" id="tod-slider" min="0" max="24" step="0.25" value="12" />
-        </div>
-
-        <!-- Indicator pills -->
-        <div class="tod-indicators" id="tod-indicators"></div>
-      </div>
-    `;
-
     this.$todArc         = document.getElementById('tod-arc');
     this.$todLabel       = document.getElementById('tod-time-label');
     this.$todSlider      = document.getElementById('tod-slider');
@@ -123,7 +84,6 @@ export class UIController {
   // ── Build the cloud panel HTML ────────────────────────────────
   _buildCloudPanel() {
     if (!this.$cloudPanelHost) return;
-
     this.$cloudArc          = document.getElementById('cloud-arc');
     this.$cloudLabel        = document.getElementById('cloud-label');
     this.$cloudManualWrap   = document.getElementById('cloud-manual-wrap');
