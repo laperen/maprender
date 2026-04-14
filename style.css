@@ -49,8 +49,7 @@ html, body {
   z-index: 10;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 #ui::-webkit-scrollbar { width: 4px; }
@@ -96,13 +95,24 @@ header {
   text-transform: uppercase;
 }
 
+/* ─── Scrollable middle region ───────────────────────────── */
+#ui-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+#ui-scroll::-webkit-scrollbar { width: 4px; }
+#ui-scroll::-webkit-scrollbar-track { background: transparent; }
+#ui-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
 /* ─── Controls ───────────────────────────────────────────── */
 #controls {
   padding: 16px 20px;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  flex: 1;
 }
 
 .control-group {
@@ -265,11 +275,13 @@ button {
 
 /* ─── Info Panel ─────────────────────────────────────────── */
 #info-panel {
-  padding: 16px 20px;
+  padding: 10px 20px;
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex-shrink: 0;
+  background: var(--panel);
 }
 
 #status {
@@ -605,4 +617,110 @@ button {
   border-radius: 50%;
   background: #b090ff;
   cursor: pointer; border: none;
+}
+
+/* ─── Sticky Bottom Bar ──────────────────────────────────── */
+#sticky-bottom {
+  flex-shrink: 0;
+  padding: 12px 20px 16px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sticky-label {
+  display: block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+/* ─── Collapsible Sections ───────────────────────────────── */
+.collapsible-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.collapsible-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  background: var(--bg);
+  border: none;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  text-align: left;
+}
+
+.collapsible-header:hover {
+  background: rgba(255,255,255,0.03);
+  color: var(--text);
+}
+
+.collapsible-header[aria-expanded="true"] {
+  color: var(--accent);
+  background: rgba(71,215,255,0.05);
+}
+
+.collapsible-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.collapsible-title svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.collapsible-meta {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  opacity: 0.8;
+  white-space: nowrap;
+  margin-right: 4px;
+  font-family: 'Space Mono', monospace;
+}
+
+.collapsible-header[aria-expanded="false"] .collapsible-meta {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.collapsible-chevron {
+  flex-shrink: 0;
+  transition: transform 0.25s ease;
+  opacity: 0.5;
+}
+
+.collapsible-header[aria-expanded="true"] .collapsible-chevron {
+  transform: rotate(180deg);
+  opacity: 1;
+}
+
+.collapsible-body {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.35s ease;
+}
+
+.collapsible-body.open {
+  max-height: 2000px;
+  transition: max-height 0.5s ease;
 }

@@ -716,7 +716,7 @@ export class WorldBuilder {
     }
     
     if (erodeLevel > 0) {
-      verts = this._erodeVerts(verts, erodeLevel * 0.08);
+      verts = this._erodeVerts(verts, erodeLevel * 0.015);
     }
 
     const flat    = verts.flatMap(c => [c.x, c.z]);

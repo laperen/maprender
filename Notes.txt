@@ -1,13 +1,5 @@
 WIP
 
-clouds
-p:
-For cloud controls, I would like for the switch from manual to live to update the clouds as it would during world generation. Getting live meteorological data only seems to work when generation of the 3d world is called.
-
-ui
-p:
-The ui seems to be getting a little cluttered. I would like collapsable menus for the "time of day" and "clouds & weather" categories. "Render mode" category, "generate 3d world", and feedback message box, all need to become a persistent part of the UI at the bottom of the panel, independent of the scroll bar.
-
 csm shadows
 p:
 I have the ThreeJS cascading shadow map(csm) example in my instance of ThreeJS, import path "three\examples\jsm\csm". replace current shadow implementation with csm.

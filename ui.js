@@ -56,6 +56,14 @@ export class UIController {
     this.$canvas        = document.getElementById('canvas-container');
     this.$timePanelHost = document.getElementById('time-panel-host');
     this.$cloudPanelHost = document.getElementById('cloud-panel-host');
+
+    // Collapsible toggles
+    this.$todToggle  = document.getElementById('tod-toggle');
+    this.$todBody    = document.getElementById('tod-body');
+    this.$todMeta    = document.getElementById('tod-meta');
+    this.$cloudToggle = document.getElementById('cloud-toggle');
+    this.$cloudBody   = document.getElementById('cloud-body');
+    this.$cloudMeta   = document.getElementById('cloud-meta');
   }
 
   // ── Build the time-of-day panel HTML ──────────────────────────
@@ -359,9 +367,9 @@ export class UIController {
     this._updateCloudPills();
 
     const condEmoji = ['☀', '⛅', '🌥', '☁', '🌧', '⛈'][this._cloudCondition];
-    if (this.$cloudLabel) {
-      this.$cloudLabel.textContent = `${condEmoji} ${this._cloudCover}% cover`;
-    }
+    const labelText = `${condEmoji} ${this._cloudCover}%`;
+    if (this.$cloudLabel) this.$cloudLabel.textContent = `${condEmoji} ${this._cloudCover}% cover`;
+    if (this.$cloudMeta)  this.$cloudMeta.textContent  = labelText;
   }
 
   // ── Cloud auto / manual mode ──────────────────────────────────
@@ -373,9 +381,48 @@ export class UIController {
       this.$cloudManualWrap.style.opacity      = auto ? '0.35' : '1';
       this.$cloudManualWrap.style.pointerEvents = auto ? 'none' : '';
     }
-    if (!auto) {
+    if (auto) {
+      // Immediately fetch live weather for the current coordinates
+      if (this.$cloudLabel) this.$cloudLabel.textContent = '⏳ Fetching weather…';
+      this.fetcher.fetchWeather(this.lat, this.lng).then(weather => {
+        this._syncWeatherToUI(weather);
+        this.scene.setWeather(weather.cloudCover, weather.weatherCode);
+        this._applyCloudProperties();
+      }).catch(() => {
+        // Fallback: apply whatever values are already set
+        this._applyCloudProperties();
+      });
+    } else {
       // Immediately apply current manual values
       this._applyCloudProperties();
+    }
+  }
+
+  // ── Sync all weather fields from an API response to internal state + sliders ─
+  // Covers cloud cover, condition, wind speed, and wind direction.
+  _syncWeatherToUI(weather) {
+    // Cloud cover
+    this._cloudCover = weather.cloudCover;
+    if (this.$cloudCoverSlider) this.$cloudCoverSlider.value = this._cloudCover;
+    if (this.$cloudCoverVal)    this.$cloudCoverVal.textContent = `${this._cloudCover}%`;
+
+    // Condition (map WMO code → our 0–5 index)
+    const wmo = weather.weatherCode;
+    this._cloudCondition = wmo >= 95 ? 5 : wmo >= 61 ? 4 : wmo >= 45 ? 3 : wmo >= 3 ? 2 : wmo >= 1 ? 1 : 0;
+    if (this.$cloudCondSelect) this.$cloudCondSelect.value = String(this._cloudCondition);
+
+    // Wind speed
+    if (weather.windSpeed !== undefined) {
+      this._windSpeed = weather.windSpeed;
+      if (this.$cloudWindSpeedSl)  this.$cloudWindSpeedSl.value = this._windSpeed;
+      if (this.$cloudWindSpeedVal) this.$cloudWindSpeedVal.textContent = `${this._windSpeed} u/s`;
+    }
+
+    // Wind direction
+    if (weather.windDirection !== undefined) {
+      this._windAngleDeg = weather.windDirection;
+      if (this.$cloudWindAngleSl)  this.$cloudWindAngleSl.value = this._windAngleDeg;
+      if (this.$cloudWindAngleVal) this.$cloudWindAngleVal.textContent = `${this._windAngleDeg}°`;
     }
   }
 
@@ -548,6 +595,14 @@ export class UIController {
       if (e.key === 'Enter') this._geocode();
     });
 
+    // Collapsible sections
+    if (this.$todToggle) {
+      this.$todToggle.addEventListener('click', () => this._toggleCollapsible(this.$todToggle, this.$todBody));
+    }
+    if (this.$cloudToggle) {
+      this.$cloudToggle.addEventListener('click', () => this._toggleCollapsible(this.$cloudToggle, this.$cloudBody));
+    }
+
     this.$latInput.addEventListener('change', () => {
       this.lat = parseFloat(this.$latInput.value) || this.lat;
       this._updateMinimap();
@@ -686,7 +741,14 @@ export class UIController {
     const mm = String(m).padStart(2, '0');
     const np = this._nightPhaseForHour(hour);
     const icon = np > 0.5 ? '☽' : '☀';
-    if (this.$todLabel) this.$todLabel.textContent = `${icon} ${hh}:${mm}`;
+    const label = `${icon} ${hh}:${mm}`;
+    if (this.$todLabel) this.$todLabel.textContent = label;
+    if (this.$todMeta)  this.$todMeta.textContent  = label;
+  }
+
+  _toggleCollapsible(btn, body) {
+    const isOpen = body.classList.toggle('open');
+    btn.setAttribute('aria-expanded', String(isOpen));
   }
 
   async _geocode() {
@@ -737,15 +799,7 @@ export class UIController {
       this.scene.setWeather(weather.cloudCover, weather.weatherCode);
 
       // If in auto mode, sync UI sliders to reflect fetched weather
-      if (this._cloudAutoMode) {
-        this._cloudCover     = weather.cloudCover;
-        // Map WMO code back to our condition index for display
-        const wmo = weather.weatherCode;
-        this._cloudCondition = wmo >= 95 ? 5 : wmo >= 61 ? 4 : wmo >= 45 ? 3 : wmo >= 3 ? 2 : wmo >= 1 ? 1 : 0;
-        if (this.$cloudCoverSlider) this.$cloudCoverSlider.value = this._cloudCover;
-        if (this.$cloudCoverVal)    this.$cloudCoverVal.textContent = `${this._cloudCover}%`;
-        if (this.$cloudCondSelect)  this.$cloudCondSelect.value = String(this._cloudCondition);
-      }
+      if (this._cloudAutoMode) this._syncWeatherToUI(weather);
 
       // Always apply physics properties (wind, altitude)
       this._applyCloudProperties();
