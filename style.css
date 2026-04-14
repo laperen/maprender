@@ -524,3 +524,85 @@ button {
   font-size: 10px;
   line-height: 1;
 }
+
+
+/* ═══════════════════════════════════════════════════════════
+   CLOUD PANEL
+   ═══════════════════════════════════════════════════════════ */
+
+/* Cloud preview canvas — slightly shorter than time arc */
+#cloud-arc {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0;
+}
+
+/* Cloud label follows same pattern as tod-time-label */
+#cloud-panel-host .tod-time-label {
+  bottom: 4px;
+}
+
+/* Inside the manual wrap, inputs already styled globally.
+   Just need tighter spacing for the stacked controls. */
+#cloud-manual-wrap {
+  padding: 10px 12px 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  transition: opacity 0.2s;
+}
+
+/* Wind-speed slider thumb: blue-cyan */
+#cloud-wind-speed-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  cursor: pointer;
+}
+
+#cloud-wind-speed-slider::-moz-range-thumb {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  cursor: pointer; border: none;
+}
+
+/* Wind-angle slider thumb: white-grey (compass) */
+#cloud-wind-angle-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #c8d0e0;
+  box-shadow: 0 0 6px rgba(200,208,224,0.6);
+  cursor: pointer;
+}
+
+#cloud-wind-angle-slider::-moz-range-thumb {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #c8d0e0;
+  cursor: pointer; border: none;
+}
+
+/* Altitude slider thumb: purple */
+#cloud-altitude-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #b090ff;
+  box-shadow: 0 0 6px rgba(176,144,255,0.6);
+  cursor: pointer;
+}
+
+#cloud-altitude-slider::-moz-range-thumb {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #b090ff;
+  cursor: pointer; border: none;
+}

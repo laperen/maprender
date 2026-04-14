@@ -4,19 +4,15 @@
 import * as THREE from 'three';
 
 // ── Tunables ──────────────────────────────────────────────────
-const CLOUD_ALTITUDE   = 380;   // base Y of cloud layer (metres above ground)
-const ALTITUDE_SPREAD  =  60;   // ± random variation in Y per cloud
 const CLOUD_FIELD      = 3000;  // half-width of cloud field (world units)
 const MAX_CLOUDS       =  80;   // hard cap on instance count
-const WIND_SPEED       =  18;   // world-units per second along X
-const WIND_ANGLE       = 0.22;  // radians off X-axis (slight diagonal)
 const TEX_SIZE         = 256;   // canvas texture resolution
 
-// Derive wind vector once
-const WIND_VEC = new THREE.Vector2(
-  Math.cos(WIND_ANGLE) * WIND_SPEED,
-  Math.sin(WIND_ANGLE) * WIND_SPEED,
-);
+// Defaults (can be overridden via setProperties)
+const DEFAULT_WIND_SPEED    =  18;   // world-units per second along X
+const DEFAULT_WIND_ANGLE    = 0.22;  // radians off X-axis (slight diagonal)
+const DEFAULT_ALTITUDE      = 380;   // base Y of cloud layer (metres above ground)
+const DEFAULT_ALTITUDE_SPREAD =  60; // ± random variation in Y per cloud
 
 // ── Noise helpers (no external lib) ──────────────────────────
 // Value noise: interpolate a grid of random values.
@@ -51,28 +47,22 @@ function _fbm(x, y, octaves = 5) {
 }
 
 // ── Build cloud texture ───────────────────────────────────────
-// Returns a CanvasTexture with a soft cloud puff shape.
-// offset/scale let each instance look different from the same texture
-// by using different UV regions of a larger noise field.
 function _buildCloudTexture() {
   const S = TEX_SIZE;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = S;
   const ctx = canvas.getContext('2d');
 
-  // Fill with noise into an ImageData for speed
   const id  = ctx.createImageData(S, S);
   const dat = id.data;
 
   for (let py = 0; py < S; py++) {
     for (let px = 0; px < S; px++) {
-      // Map pixel to noise space [0..4]
       const nx = (px / S) * 4;
       const ny = (py / S) * 4;
       let   n  = _fbm(nx, ny);
-      n = Math.pow(n, 1.4);          // sharpen core
+      n = Math.pow(n, 1.4);
 
-      // Radial vignette — fade to transparent at edges
       const dx = (px / S - 0.5) * 2;
       const dy = (py / S - 0.5) * 2;
       const r  = Math.sqrt(dx*dx + dy*dy);
@@ -80,15 +70,14 @@ function _buildCloudTexture() {
 
       const a = Math.min(255, Math.round(n * vignette * 310));
       const idx = (py * S + px) * 4;
-      dat[idx]   = 255;   // R
-      dat[idx+1] = 255;   // G
-      dat[idx+2] = 255;   // B
+      dat[idx]   = 255;
+      dat[idx+1] = 255;
+      dat[idx+2] = 255;
       dat[idx+3] = a;
     }
   }
   ctx.putImageData(id, 0, 0);
 
-  // Soft blur pass via shadow — cheap substitute for a Gaussian
   const canvas2 = document.createElement('canvas');
   canvas2.width = canvas2.height = S;
   const ctx2 = canvas2.getContext('2d');
@@ -104,31 +93,78 @@ function _buildCloudTexture() {
 // ── CloudLayer class ──────────────────────────────────────────
 export class CloudLayer {
   constructor() {
-    this._mesh      = null;   // THREE.InstancedMesh
-    this._count     = 0;      // active instance count
-    this._positions = [];     // [{x,y,z,rotY,scaleX,scaleZ}] per instance
+    this._mesh      = null;
+    this._count     = 0;
+    this._positions = [];
     this._time      = 0;
     this._texture   = null;
 
-    // Target weather state
-    this._targetOpacity = 0.5;
-    this._targetColor   = new THREE.Color(1, 1, 1);
+    // Weather-driven targets
+    this._targetOpacity  = 0.5;
+    this._targetColor    = new THREE.Color(1, 1, 1);
     this._currentOpacity = 0.5;
     this._currentColor   = new THREE.Color(1, 1, 1);
+
+    // Controllable properties (set via setProperties)
+    this._windSpeed   = DEFAULT_WIND_SPEED;
+    this._windAngle   = DEFAULT_WIND_ANGLE;
+    this._altitude    = DEFAULT_ALTITUDE;
+    this._altSpread   = DEFAULT_ALTITUDE_SPREAD;
+
+    // Derived wind vector (updated when speed/angle change)
+    this._windVec = new THREE.Vector2(
+      Math.cos(DEFAULT_WIND_ANGLE) * DEFAULT_WIND_SPEED,
+      Math.sin(DEFAULT_WIND_ANGLE) * DEFAULT_WIND_SPEED,
+    );
   }
 
-  // Call once after SceneManager.init()
+  // ── setProperties — called by SceneManager ─────────────────
+  // windSpeed: world-units/sec (0–80)
+  // windAngleDeg: compass degrees (0 = east, 90 = north, etc.)
+  // altitude: metres above ground (100–1000)
+  setProperties({ windSpeed, windAngleDeg, altitude } = {}) {
+    let changed = false;
+
+    if (windSpeed !== undefined && windSpeed !== this._windSpeed) {
+      this._windSpeed = windSpeed;
+      changed = true;
+    }
+    if (windAngleDeg !== undefined) {
+      const rad = windAngleDeg * Math.PI / 180;
+      if (rad !== this._windAngle) {
+        this._windAngle = rad;
+        changed = true;
+      }
+    }
+    if (altitude !== undefined && altitude !== this._altitude) {
+      this._altitude = altitude;
+      // Re-distribute cloud Y positions to new altitude
+      const rng = (lo, hi, seed) => lo + _smoothNoise(seed * 7.3, seed * 3.1) * (hi - lo);
+      for (let i = 0; i < this._positions.length; i++) {
+        this._positions[i].y = this._altitude + rng(-this._altSpread, this._altSpread, i * 2 + 7);
+      }
+    }
+
+    if (changed) {
+      this._windVec.set(
+        Math.cos(this._windAngle) * this._windSpeed,
+        Math.sin(this._windAngle) * this._windSpeed,
+      );
+    }
+  }
+
+  // ── init ───────────────────────────────────────────────────
   init(scene) {
     this._scene   = scene;
     this._texture = _buildCloudTexture();
 
-    const geo = new THREE.PlaneGeometry(1, 1);  // unit plane, scaled per instance
-    geo.rotateX(-Math.PI / 2);                  // lie flat (horizontal)
+    const geo = new THREE.PlaneGeometry(1, 1);
+    geo.rotateX(-Math.PI / 2);
 
     const mat = new THREE.MeshBasicMaterial({
       map:         this._texture,
       transparent: true,
-      opacity:     0,              // starts invisible; setWeather drives this
+      opacity:     0,
       depthWrite:  false,
       side:        THREE.DoubleSide,
       blending:    THREE.NormalBlending,
@@ -136,12 +172,10 @@ export class CloudLayer {
 
     this._mesh = new THREE.InstancedMesh(geo, mat, MAX_CLOUDS);
     this._mesh.frustumCulled = false;
-    this._mesh.renderOrder   = 2;   // after terrain, before UI
+    this._mesh.renderOrder   = 2;
     this._mesh.count         = 0;
     scene.add(this._mesh);
 
-    // Populate all MAX_CLOUDS slots with stable random positions/sizes
-    // so we can simply toggle count rather than rebuilding geometry.
     const dummy = new THREE.Object3D();
     this._positions = [];
     const rng = (lo, hi, seed) => lo + _smoothNoise(seed * 7.3, seed * 3.1) * (hi - lo);
@@ -149,7 +183,7 @@ export class CloudLayer {
     for (let i = 0; i < MAX_CLOUDS; i++) {
       const x      = rng(-CLOUD_FIELD, CLOUD_FIELD, i * 2);
       const z      = rng(-CLOUD_FIELD, CLOUD_FIELD, i * 2 + 1);
-      const y      = CLOUD_ALTITUDE + rng(-ALTITUDE_SPREAD, ALTITUDE_SPREAD, i * 2 + 7);
+      const y      = this._altitude + rng(-this._altSpread, this._altSpread, i * 2 + 7);
       const rotY   = rng(0, Math.PI * 2, i * 3 + 0.5);
       const scaleX = rng(350, 900, i * 5 + 1.1);
       const scaleZ = rng(220, 600, i * 5 + 2.3);
@@ -165,47 +199,33 @@ export class CloudLayer {
   }
 
   // ── setWeather ─────────────────────────────────────────────
-  // cloudCover: 0–100 (percent)
-  // weatherCode: WMO code (0=clear, 1-3=partly cloudy, 45+=fog/overcast,
-  //              61+=rain, 80+=showers, 95+=storm)
   setWeather(cloudCover, weatherCode) {
     const cc = Math.max(0, Math.min(100, cloudCover));
-
-    // Cloud count: 0% → 0, 100% → MAX_CLOUDS
     this._count = Math.round((cc / 100) * MAX_CLOUDS);
-
-    // Opacity: light wispy at low cover, solid at high cover
     this._targetOpacity = THREE.MathUtils.lerp(0.25, 0.82, cc / 100);
 
-    // Colour: white (clear) → mid grey (overcast) → dark grey (storm)
     let r, g, b;
     if (weatherCode >= 95) {
-      // Thunderstorm — dark
       r = g = b = 0.30;
     } else if (weatherCode >= 61) {
-      // Rain
       r = g = b = 0.52;
     } else if (weatherCode >= 45) {
-      // Fog / overcast
       r = g = b = 0.72;
     } else if (cc > 60) {
-      // Mostly cloudy
       r = g = b = 0.85;
     } else {
-      // Fair / partly cloudy
       r = 1; g = 1; b = 1;
     }
     this._targetColor.setRGB(r, g, b);
   }
 
-  // ── tick — called every frame from SceneManager ────────────
+  // ── tick ───────────────────────────────────────────────────
   tick(dt, cameraPosition) {
     if (!this._mesh) return;
 
     this._time += dt;
 
-    // Smoothly interpolate opacity and colour toward targets
-    const lerpK = 1 - Math.pow(0.02, dt);   // ~98% in 1 s
+    const lerpK = 1 - Math.pow(0.02, dt);
     this._currentOpacity = THREE.MathUtils.lerp(this._currentOpacity, this._targetOpacity, lerpK);
     this._currentColor.lerp(this._targetColor, lerpK);
 
@@ -215,10 +235,9 @@ export class CloudLayer {
 
     if (this._count === 0) return;
 
-    // Drift cloud positions with wind, wrap around field boundary
     const dummy  = new THREE.Object3D();
-    const dx     = WIND_VEC.x * dt;
-    const dz     = WIND_VEC.y * dt;
+    const dx     = this._windVec.x * dt;
+    const dz     = this._windVec.y * dt;
     const wrap   = CLOUD_FIELD * 2;
 
     for (let i = 0; i < this._count; i++) {
@@ -226,13 +245,11 @@ export class CloudLayer {
       p.x += dx;
       p.z += dz;
 
-      // Wrap: when a cloud drifts out of the field, teleport to opposite edge
       if (p.x >  CLOUD_FIELD) p.x -= wrap;
       if (p.x < -CLOUD_FIELD) p.x += wrap;
       if (p.z >  CLOUD_FIELD) p.z -= wrap;
       if (p.z < -CLOUD_FIELD) p.z += wrap;
 
-      // Keep centred on camera (X/Z only) so clouds always fill the view
       dummy.position.set(
         cameraPosition.x + p.x,
         p.y,
@@ -246,18 +263,13 @@ export class CloudLayer {
     this._mesh.instanceMatrix.needsUpdate = true;
   }
 
-  // Called each frame from setTimeOfDay — scales cloud colour by day brightness
   setDayBrightness(factor) {
-    // factor: 1.0 = full day, 0.25 = deep night
-    // Multiply the weather-derived target colour without overwriting it
     const b = THREE.MathUtils.clamp(factor, 0, 1);
     if (this._mesh) {
       this._mesh.material.color.copy(this._currentColor).multiplyScalar(b);
     }
   }
 
-  // Call when clearing the world (does NOT remove the mesh — clouds persist)
-  // If you want to reset weather call setWeather(0, 0).
   dispose() {
     if (this._mesh) {
       this._mesh.geometry.dispose();

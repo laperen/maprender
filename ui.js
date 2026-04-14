@@ -14,15 +14,25 @@ export class UIController {
     this.timeOfDay   = 12;   // 0–24h float
     this._deviceTimeMode  = false;
     this._deviceTimerID   = null;
+
+    // Cloud state
+    this._cloudAutoMode  = true;   // true = use weather API, false = manual
+    this._cloudCover     = 40;     // 0–100 %
+    this._cloudCondition = 1;      // WMO-style: 0=clear,1=partly,2=mostly,3=overcast,4=rain,5=storm
+    this._windSpeed      = 18;     // world-units/sec
+    this._windAngleDeg   = 13;     // degrees (0=east, CCW)
+    this._cloudAltitude  = 380;    // metres
   }
 
   init() {
     this._bindElements();
     this._buildTimePanel();
+    this._buildCloudPanel();
     this._bindEvents();
     this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
     this.minimap.update(this.lng, this.lat, this.radius);
     this._applyTimeOfDay(this.timeOfDay);
+    this._applyCloudProperties();
   }
 
   _bindElements() {
@@ -45,6 +55,7 @@ export class UIController {
     this.$tooltip       = document.getElementById('tooltip');
     this.$canvas        = document.getElementById('canvas-container');
     this.$timePanelHost = document.getElementById('time-panel-host');
+    this.$cloudPanelHost = document.getElementById('cloud-panel-host');
   }
 
   // ── Build the time-of-day panel HTML ──────────────────────────
@@ -101,6 +112,273 @@ export class UIController {
     this._updateIndicators(12);
   }
 
+  // ── Build the cloud panel HTML ────────────────────────────────
+  _buildCloudPanel() {
+    if (!this.$cloudPanelHost) return;
+
+    this.$cloudPanelHost.innerHTML = `
+      <div class="tod-panel">
+
+        <!-- Mode toggle row -->
+        <div class="tod-mode-row">
+          <button class="tod-mode-btn" id="cloud-manual-btn" title="Set clouds manually">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            Manual
+          </button>
+          <button class="tod-mode-btn active" id="cloud-auto-btn" title="Use live weather data">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M12 2a7 7 0 0 1 7 7c0 3.5-2 6-5 7H8c-3 0-5-2-5-5a5 5 0 0 1 5-5 7 7 0 0 1 7-4z"/>
+            </svg>
+            Live Weather
+          </button>
+        </div>
+
+        <!-- Cloud preview canvas -->
+        <div class="tod-arc-wrap">
+          <canvas id="cloud-arc" width="240" height="80"></canvas>
+          <div class="tod-time-label" id="cloud-label">⛅ 40% cover</div>
+        </div>
+
+        <!-- Manual controls (disabled in auto mode) -->
+        <div class="tod-slider-wrap" id="cloud-manual-wrap" style="opacity:0.35;pointer-events:none;">
+
+          <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">Condition</label>
+          <select id="cloud-condition-select" style="margin-bottom:8px;">
+            <option value="0">☀ Clear</option>
+            <option value="1" selected>⛅ Partly Cloudy</option>
+            <option value="2">🌥 Mostly Cloudy</option>
+            <option value="3">☁ Overcast</option>
+            <option value="4">🌧 Rain</option>
+            <option value="5">⛈ Storm</option>
+          </select>
+
+          <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
+            Cloud Cover <span id="cloud-cover-val">40%</span>
+          </label>
+          <input type="range" id="cloud-cover-slider" min="0" max="100" step="5" value="40" style="margin-bottom:8px;" />
+
+          <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
+            Wind Speed <span id="cloud-wind-speed-val">18 u/s</span>
+          </label>
+          <input type="range" id="cloud-wind-speed-slider" min="0" max="80" step="2" value="18" style="margin-bottom:8px;" />
+
+          <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
+            Wind Direction <span id="cloud-wind-angle-val">13°</span>
+          </label>
+          <input type="range" id="cloud-wind-angle-slider" min="0" max="359" step="1" value="13" style="margin-bottom:8px;" />
+
+          <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
+            Altitude <span id="cloud-altitude-val">380m</span>
+          </label>
+          <input type="range" id="cloud-altitude-slider" min="100" max="1000" step="20" value="380" />
+
+        </div>
+
+        <!-- Cloud indicator pills -->
+        <div class="tod-indicators" id="cloud-indicators"></div>
+      </div>
+    `;
+
+    this.$cloudArc          = document.getElementById('cloud-arc');
+    this.$cloudLabel        = document.getElementById('cloud-label');
+    this.$cloudManualWrap   = document.getElementById('cloud-manual-wrap');
+    this.$cloudManualBtn    = document.getElementById('cloud-manual-btn');
+    this.$cloudAutoBtn      = document.getElementById('cloud-auto-btn');
+    this.$cloudCondSelect   = document.getElementById('cloud-condition-select');
+    this.$cloudCoverSlider  = document.getElementById('cloud-cover-slider');
+    this.$cloudCoverVal     = document.getElementById('cloud-cover-val');
+    this.$cloudWindSpeedSl  = document.getElementById('cloud-wind-speed-slider');
+    this.$cloudWindSpeedVal = document.getElementById('cloud-wind-speed-val');
+    this.$cloudWindAngleSl  = document.getElementById('cloud-wind-angle-slider');
+    this.$cloudWindAngleVal = document.getElementById('cloud-wind-angle-val');
+    this.$cloudAltitudeSl   = document.getElementById('cloud-altitude-slider');
+    this.$cloudAltitudeVal  = document.getElementById('cloud-altitude-val');
+    this.$cloudIndicators   = document.getElementById('cloud-indicators');
+
+    this._drawCloudPreview();
+    this._updateCloudPills();
+  }
+
+  // ── Draw cloud preview canvas ─────────────────────────────────
+  _drawCloudPreview() {
+    if (!this.$cloudArc) return;
+    const canvas = this.$cloudArc;
+    const ctx    = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    const cover = this._cloudCover / 100;
+    const cond  = this._cloudCondition;
+
+    // Sky gradient
+    let skyTop, skyBot;
+    if (cond === 5) { skyTop = '#1a1520'; skyBot = '#2a2030'; }
+    else if (cond === 4) { skyTop = '#2a3040'; skyBot = '#404858'; }
+    else if (cond === 3) { skyTop = '#505860'; skyBot = '#707880'; }
+    else { skyTop = '#1565c0'; skyBot = '#42a5f5'; }
+
+    const grad = ctx.createLinearGradient(0, 0, 0, H - 12);
+    grad.addColorStop(0, skyTop);
+    grad.addColorStop(1, skyBot);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H - 12);
+
+    // Cloud puffs — scale count and opacity with cover
+    const cloudCount = Math.round(cover * 8);
+    const cloudAlpha = 0.25 + cover * 0.65;
+    let cloudColor;
+    if (cond === 5) cloudColor = `rgba(80,80,90,${cloudAlpha})`;
+    else if (cond === 4) cloudColor = `rgba(110,120,130,${cloudAlpha})`;
+    else if (cond >= 2) cloudColor = `rgba(180,185,195,${cloudAlpha})`;
+    else cloudColor = `rgba(230,235,245,${cloudAlpha})`;
+
+    // Stable cloud positions seeded by index
+    const clouds = [
+      { x: 0.10, y: 0.25, r: 22 }, { x: 0.28, y: 0.18, r: 28 },
+      { x: 0.48, y: 0.28, r: 20 }, { x: 0.65, y: 0.15, r: 32 },
+      { x: 0.80, y: 0.30, r: 18 }, { x: 0.92, y: 0.20, r: 24 },
+      { x: 0.38, y: 0.48, r: 22 }, { x: 0.72, y: 0.45, r: 26 },
+    ];
+
+    for (let i = 0; i < cloudCount; i++) {
+      const c  = clouds[i % clouds.length];
+      const cx = c.x * W, cy = c.y * (H - 16);
+      const r  = c.r;
+      const cg = ctx.createRadialGradient(cx, cy - r * 0.2, 0, cx, cy, r * 1.4);
+      cg.addColorStop(0,   cloudColor);
+      cg.addColorStop(0.6, cloudColor);
+      cg.addColorStop(1,   'rgba(0,0,0,0)');
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, r * 1.5, r * 0.8, 0, 0, Math.PI * 2);
+      ctx.fillStyle = cg;
+      ctx.fill();
+    }
+
+    // Wind arrow in top-right
+    if (this._windSpeed > 0) {
+      const arrowAlpha = Math.min(1, this._windSpeed / 40);
+      const angleDeg   = this._windAngleDeg;
+      const angleRad   = angleDeg * Math.PI / 180;
+      const arrowLen   = 12 + (this._windSpeed / 80) * 10;
+      const ax = W - 22, ay = 14;
+      ctx.save();
+      ctx.translate(ax, ay);
+      ctx.rotate(angleRad);
+      ctx.strokeStyle = `rgba(200,220,255,${arrowAlpha})`;
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(-arrowLen / 2, 0);
+      ctx.lineTo(arrowLen / 2, 0);
+      ctx.moveTo(arrowLen / 2 - 4, -3);
+      ctx.lineTo(arrowLen / 2, 0);
+      ctx.lineTo(arrowLen / 2 - 4, 3);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Ground strip
+    const groundGrad = ctx.createLinearGradient(0, H - 12, 0, H);
+    groundGrad.addColorStop(0, 'rgba(50,80,50,0.9)');
+    groundGrad.addColorStop(1, 'rgba(20,40,20,0.9)');
+    ctx.fillStyle = groundGrad;
+    ctx.fillRect(0, H - 12, W, 12);
+
+    // Rain streaks
+    if (cond >= 4) {
+      ctx.strokeStyle = `rgba(150,180,220,${cover * 0.55})`;
+      ctx.lineWidth   = 0.8;
+      for (let i = 0; i < 18; i++) {
+        const rx = (i / 18) * W + (i % 3) * 5;
+        const ry = 30 + (i % 5) * 8;
+        ctx.beginPath();
+        ctx.moveTo(rx, ry);
+        ctx.lineTo(rx - 2, ry + 9);
+        ctx.stroke();
+      }
+    }
+
+    // Lightning for storm
+    if (cond === 5 && cover > 0.3) {
+      ctx.strokeStyle = 'rgba(255,240,100,0.7)';
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(W * 0.55, 20);
+      ctx.lineTo(W * 0.50, 38);
+      ctx.lineTo(W * 0.56, 38);
+      ctx.lineTo(W * 0.50, 56);
+      ctx.stroke();
+    }
+  }
+
+  // ── Cloud pills ───────────────────────────────────────────────
+  _updateCloudPills() {
+    if (!this.$cloudIndicators) return;
+    const cover = this._cloudCover;
+    const cond  = this._cloudCondition;
+    const speed = this._windSpeed;
+
+    const labels = ['Clear', 'Partly', 'Mostly', 'Overcast', 'Rain', 'Storm'];
+    const icons  = ['☀', '⛅', '🌥', '☁', '🌧', '⛈'];
+    const condColors = ['#ffd060', '#c8d8ff', '#a0a8b8', '#8090a0', '#4888c0', '#a060d0'];
+
+    const windLabel = speed < 5 ? 'Calm' : speed < 20 ? 'Breeze' : speed < 45 ? 'Windy' : 'Gale';
+    const windColor = speed < 5 ? '#4fffb0' : speed < 20 ? '#47d7ff' : speed < 45 ? '#ffd060' : '#ff4f6b';
+
+    const pill = (icon, label, active, color) =>
+      `<div class="tod-pill ${active ? 'active' : ''}" style="--pill-color:${color}">
+        <span>${icon}</span><span>${label}</span>
+      </div>`;
+
+    this.$cloudIndicators.innerHTML =
+      pill(icons[cond], labels[cond], cover > 0, condColors[cond]) +
+      pill('↗', windLabel, speed > 0, windColor) +
+      pill('▲', `${this._cloudAltitude}m`, true, '#c8b8ff');
+  }
+
+  // ── Apply cloud properties to scene ──────────────────────────
+  _applyCloudProperties() {
+    // Always apply physics properties (wind, altitude) regardless of auto/manual
+    this.scene.setCloudProperties({
+      windSpeed:    this._windSpeed,
+      windAngleDeg: this._windAngleDeg,
+      altitude:     this._cloudAltitude,
+    });
+
+    // Apply weather (cover + condition) only in manual mode
+    // (auto mode sets these from the API in _generate)
+    if (!this._cloudAutoMode) {
+      // Map our simple condition index to WMO-style code for setWeather
+      const wmoCode = [0, 2, 3, 45, 61, 95][this._cloudCondition] ?? 1;
+      this.scene.setWeather(this._cloudCover, wmoCode);
+    }
+
+    // Redraw preview and update label
+    this._drawCloudPreview();
+    this._updateCloudPills();
+
+    const condEmoji = ['☀', '⛅', '🌥', '☁', '🌧', '⛈'][this._cloudCondition];
+    if (this.$cloudLabel) {
+      this.$cloudLabel.textContent = `${condEmoji} ${this._cloudCover}% cover`;
+    }
+  }
+
+  // ── Cloud auto / manual mode ──────────────────────────────────
+  _setCloudAutoMode(auto) {
+    this._cloudAutoMode = auto;
+    if (this.$cloudAutoBtn)   this.$cloudAutoBtn.classList.toggle('active', auto);
+    if (this.$cloudManualBtn) this.$cloudManualBtn.classList.toggle('active', !auto);
+    if (this.$cloudManualWrap) {
+      this.$cloudManualWrap.style.opacity      = auto ? '0.35' : '1';
+      this.$cloudManualWrap.style.pointerEvents = auto ? 'none' : '';
+    }
+    if (!auto) {
+      // Immediately apply current manual values
+      this._applyCloudProperties();
+    }
+  }
+
   // ── Draw the arc sky preview canvas ──────────────────────────
   _drawArc(hour) {
     if (!this.$todArc) return;
@@ -134,22 +412,19 @@ export class UIController {
     ctx.stroke();
 
     // Sun / Moon position on arc
-    const daySunAngle  = this._sunAngle(hour);   // radians, 0 at left, PI at right
+    const daySunAngle  = this._sunAngle(hour);
     const nightMoonAng = this._moonAngle(hour);
 
-    // Normalised elevation (0 at horizon, 1 at zenith)
-    const elevNorm = (hour - 6) / 12; // 0 at 6am, 1 at noon, 2 at 6pm
+    const elevNorm = (hour - 6) / 12;
     const elevDeg  = Math.max(-20, 75 * Math.sin(elevNorm * Math.PI));
     const isDay    = elevDeg > -3;
 
     if (isDay) {
-      // Sun disc
       const sx = cx + r * Math.cos(Math.PI + daySunAngle);
       const sy = cy - r * Math.sin(daySunAngle);
       const sunVisible = sy < cy;
 
       if (sunVisible) {
-        // Glow
         const sunGlow = ctx.createRadialGradient(sx, sy, 0, sx, sy, 22);
         sunGlow.addColorStop(0,   'rgba(255,220,100,0.55)');
         sunGlow.addColorStop(0.5, 'rgba(255,180,60,0.18)');
@@ -158,7 +433,6 @@ export class UIController {
         ctx.beginPath();
         ctx.arc(sx, sy, 22, 0, Math.PI * 2);
         ctx.fill();
-        // Disc
         ctx.beginPath();
         ctx.arc(sx, sy, 7, 0, Math.PI * 2);
         ctx.fillStyle = '#ffe090';
@@ -167,7 +441,6 @@ export class UIController {
     }
 
     if (!isDay || this._nightPhaseForHour(hour) > 0.1) {
-      // Moon
       const mx = cx + r * Math.cos(Math.PI + nightMoonAng);
       const my = cy - r * Math.sin(nightMoonAng);
       const moonVisible = my < cy;
@@ -204,7 +477,6 @@ export class UIController {
     ctx.fillStyle = groundGrad;
     ctx.fillRect(0, H - 18, W, 18);
 
-    // Lamp glow in ground strip at night
     if (np > 0.2) {
       const lampAlpha = Math.min(1, (np - 0.2) / 0.4);
       for (let lx = 30; lx < W - 20; lx += 48) {
@@ -222,12 +494,9 @@ export class UIController {
   _sunAngle(hour) {
     const t = THREE_MathUtils_clamp((hour - 6) / 12, 0, 2);
     return t * Math.PI * 0.5 + (t > 1 ? (t - 1) * Math.PI * 0.5 : 0);
-    // Simpler: just map 6h→0, 12h→PI/2, 18h→PI
-    // return THREE_MathUtils_clamp((hour - 6) / 12, 0, 2) / 2 * Math.PI;
   }
 
   _moonAngle(hour) {
-    // Moon visible from 18h to 6h — travel opposite arc
     const t = ((hour + 6) % 24) / 12;
     return THREE_MathUtils_clamp(t, 0, 2) / 2 * Math.PI;
   }
@@ -240,7 +509,6 @@ export class UIController {
   }
 
   _skyColor(hour) {
-    // Presets: midnight, dawn, morning, noon, afternoon, dusk, night
     const np = this._nightPhaseForHour(hour);
     const elevNorm = (hour - 6) / 12;
     const elevDeg  = Math.max(-20, 75 * Math.sin(elevNorm * Math.PI));
@@ -309,7 +577,7 @@ export class UIController {
       });
     }
 
-    // Mode buttons
+    // Time mode buttons
     if (this.$todManualBtn) {
       this.$todManualBtn.addEventListener('click', () => this._setDeviceMode(false));
     }
@@ -317,6 +585,54 @@ export class UIController {
       this.$todDeviceBtn.addEventListener('click', () => this._setDeviceMode(true));
     }
 
+    // ── Cloud panel events ────────────────────────────────────
+    if (this.$cloudManualBtn) {
+      this.$cloudManualBtn.addEventListener('click', () => this._setCloudAutoMode(false));
+    }
+    if (this.$cloudAutoBtn) {
+      this.$cloudAutoBtn.addEventListener('click', () => this._setCloudAutoMode(true));
+    }
+
+    if (this.$cloudCondSelect) {
+      this.$cloudCondSelect.addEventListener('change', () => {
+        this._cloudCondition = parseInt(this.$cloudCondSelect.value);
+        this._applyCloudProperties();
+      });
+    }
+
+    if (this.$cloudCoverSlider) {
+      this.$cloudCoverSlider.addEventListener('input', () => {
+        this._cloudCover = parseInt(this.$cloudCoverSlider.value);
+        if (this.$cloudCoverVal) this.$cloudCoverVal.textContent = `${this._cloudCover}%`;
+        this._applyCloudProperties();
+      });
+    }
+
+    if (this.$cloudWindSpeedSl) {
+      this.$cloudWindSpeedSl.addEventListener('input', () => {
+        this._windSpeed = parseInt(this.$cloudWindSpeedSl.value);
+        if (this.$cloudWindSpeedVal) this.$cloudWindSpeedVal.textContent = `${this._windSpeed} u/s`;
+        this._applyCloudProperties();
+      });
+    }
+
+    if (this.$cloudWindAngleSl) {
+      this.$cloudWindAngleSl.addEventListener('input', () => {
+        this._windAngleDeg = parseInt(this.$cloudWindAngleSl.value);
+        if (this.$cloudWindAngleVal) this.$cloudWindAngleVal.textContent = `${this._windAngleDeg}°`;
+        this._applyCloudProperties();
+      });
+    }
+
+    if (this.$cloudAltitudeSl) {
+      this.$cloudAltitudeSl.addEventListener('input', () => {
+        this._cloudAltitude = parseInt(this.$cloudAltitudeSl.value);
+        if (this.$cloudAltitudeVal) this.$cloudAltitudeVal.textContent = `${this._cloudAltitude}m`;
+        this._applyCloudProperties();
+      });
+    }
+
+    // Render mode buttons
     this.$modeBtns.forEach(btn => {
       btn.addEventListener('click', () => {
         this.$modeBtns.forEach(b => b.classList.remove('active'));
@@ -344,7 +660,6 @@ export class UIController {
 
     if (on) {
       this._syncDeviceTime();
-      // Refresh every 30 seconds
       this._deviceTimerID = setInterval(() => this._syncDeviceTime(), 30000);
     } else {
       if (this._deviceTimerID) { clearInterval(this._deviceTimerID); this._deviceTimerID = null; }
@@ -362,12 +677,9 @@ export class UIController {
   // ── Apply time: drives scene + updates UI ─────────────────────
   _applyTimeOfDay(hour) {
     this.scene.setTimeOfDay(hour);
-
-    // Arc canvas
     this._drawArc(hour);
     this._updateIndicators(hour);
 
-    // Label
     const h  = Math.floor(hour) % 24;
     const m  = Math.round((hour % 1) * 60);
     const hh = String(h).padStart(2, '0');
@@ -401,16 +713,42 @@ export class UIController {
     this._setStatus('Fetching map data…', 'active loading');
 
     try {
-      // Fire map fetch and weather fetch in parallel — weather is non-blocking
+      // In auto mode, fetch weather from API; in manual mode skip weather fetch
+      let weatherPromise;
+      if (this._cloudAutoMode) {
+        weatherPromise = this.fetcher.fetchWeather(this.lat, this.lng);
+      } else {
+        // Resolve immediately with current manual values
+        const wmoCode = [0, 2, 3, 45, 61, 95][this._cloudCondition] ?? 1;
+        weatherPromise = Promise.resolve({
+          cloudCover:  this._cloudCover,
+          weatherCode: wmoCode,
+        });
+      }
+
       const [ways, weather] = await Promise.all([
         this._fetchWithRetry(this.lat, this.lng, this.radius),
-        this.fetcher.fetchWeather(this.lat, this.lng),   // never throws — has internal fallback
+        weatherPromise,
       ]);
 
       if (!ways.length) throw new Error('No map features found in this area.');
 
-      // Apply weather to cloud layer immediately
+      // Apply weather (cover + condition)
       this.scene.setWeather(weather.cloudCover, weather.weatherCode);
+
+      // If in auto mode, sync UI sliders to reflect fetched weather
+      if (this._cloudAutoMode) {
+        this._cloudCover     = weather.cloudCover;
+        // Map WMO code back to our condition index for display
+        const wmo = weather.weatherCode;
+        this._cloudCondition = wmo >= 95 ? 5 : wmo >= 61 ? 4 : wmo >= 45 ? 3 : wmo >= 3 ? 2 : wmo >= 1 ? 1 : 0;
+        if (this.$cloudCoverSlider) this.$cloudCoverSlider.value = this._cloudCover;
+        if (this.$cloudCoverVal)    this.$cloudCoverVal.textContent = `${this._cloudCover}%`;
+        if (this.$cloudCondSelect)  this.$cloudCondSelect.value = String(this._cloudCondition);
+      }
+
+      // Always apply physics properties (wind, altitude)
+      this._applyCloudProperties();
 
       this._setStatus('Fetching elevation data and building world…', 'active loading');
       await this._nextFrame();
@@ -426,11 +764,11 @@ export class UIController {
       this.$statTris.textContent      = `${Math.round(result.triangleCount).toLocaleString()} triangles`;
       this.$stats.classList.remove('hidden');
 
-      // Show cloud cover in status briefly
-      const cloudDesc = weather.cloudCover < 20 ? 'clear skies' :
-                        weather.cloudCover < 50 ? 'partly cloudy' :
-                        weather.cloudCover < 80 ? 'mostly cloudy' : 'overcast';
-      this._setStatus(`World ready — ${cloudDesc} (${weather.cloudCover}% cloud cover). Satellite imagery loading…`, '');
+      const cloudDesc = this._cloudCover < 20 ? 'clear skies' :
+                        this._cloudCover < 50 ? 'partly cloudy' :
+                        this._cloudCover < 80 ? 'mostly cloudy' : 'overcast';
+      const modeTag = this._cloudAutoMode ? 'live weather' : 'manual';
+      this._setStatus(`World ready — ${cloudDesc} (${this._cloudCover}% · ${modeTag}). Satellite imagery loading…`, '');
       setTimeout(() => {
         if (this.$status.textContent.includes('Satellite')) {
           this._setStatus('Drag to orbit · Scroll to zoom · Hover to inspect', '');

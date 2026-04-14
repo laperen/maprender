@@ -753,6 +753,11 @@ export class SceneManager {
     this._clouds.setWeather(cloudCover, weatherCode);
   }
 
+  // windSpeed: world-units/sec, windAngleDeg: 0–360°, altitude: metres
+  setCloudProperties({ windSpeed, windAngleDeg, altitude } = {}) {
+    this._clouds.setProperties({ windSpeed, windAngleDeg, altitude });
+  }
+
   flyTo(x, z, radius) {
     const dist = radius * 2.5;
     this.camera.position.set(x, dist * 0.8, z + dist);
