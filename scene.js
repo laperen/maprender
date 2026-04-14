@@ -333,7 +333,7 @@ export class SceneManager {
       }
       positions[i * 3 + 1] = y;// Math.max(v.y, STAR_SPHERE_R * 0.06);
       positions[i * 3 + 2] = v.z;
-      sizes[i]  = 5 + (Math.random() * 20);//< 0.07
+      sizes[i]  = 1.0 + Math.random() * 2.5; // fixed screen-space px — looks natural
         //? 2.5 + Math.random() * 1.5 : 0.6 + Math.random() * 1.8;
       alphas[i] = 1;//0.4 + Math.random() * 0.6;
     }
@@ -377,8 +377,9 @@ export class SceneManager {
           // 2. THEN: projection
           gl_Position = projectionMatrix * mvPosition;
         
-          // 3. IMPORTANT: size based on depth (distance attenuation)
-          gl_PointSize = aSize * (300.0 / -mvPosition.z);
+          // Stars are a skybox layer — use fixed screen-space size (no depth attenuation).
+          // Depth-attenuating at STAR_SPHERE_R (~8000 units) shrinks points to <1px.
+          gl_PointSize = aSize;
         }
       `,
       fragmentShader: /* glsl */`
