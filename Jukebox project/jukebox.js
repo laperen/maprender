@@ -38,14 +38,13 @@ function UpdateAudioList(){
         audiolist.appendChild(li);
     }
 }
-function addTrack() {
-    const rawUrl = document.getElementById("urlInput").value;
+function addTrack(rawUrl) {
+    //const rawUrl = document.getElementById("urlInput").value;
     const url = normalizeArchiveUrl(rawUrl);
 
     const type = detectSource(url);
 
     playlist.push({ url, type });
-    console.log("Added:", type, url);
     UpdateAudioList();
 }
 //Soundcloud
@@ -168,3 +167,4 @@ function stopAll() {
     if (scWidget) scWidget.pause();
     if (audio) audio.pause();
 }
+export{addTrack,userPlay,pause,next}

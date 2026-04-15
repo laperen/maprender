@@ -3,7 +3,6 @@
 import * as THREE from 'three';
 
 const STATE = { NONE: -1, ROTATE: 0, DOLLY: 1, PAN: 2, TOUCH_ROTATE: 3, TOUCH_PAN: 4, TOUCH_DOLLY_PAN: 5 };
-const EPS   = 0.000001;
 const TWO_PI = Math.PI * 2;
 
 export class OrbitControlsImpl {

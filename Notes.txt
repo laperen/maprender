@@ -1,7 +1,9 @@
 WIP
 
+collision, physics, and character movement
+p:
+???
 
 TODO
 
 replace orbit camera?
-collision, physics, and character movement

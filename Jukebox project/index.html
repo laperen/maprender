@@ -6,8 +6,8 @@
             .hidden-player {
                 width: 0;
                 height: 0;
+                opacity: 0;
                 position: absolute;
-                top: 120px
             }
         </style>
     </head>
@@ -21,17 +21,21 @@
         <!-- Controls -->
         <div id="controls">
             <input id="urlInput" placeholder="Paste link here">
-            <button onclick="addTrack()">Add</button>
-            <button onclick="userPlay()">Play</button>
-            <button onclick="pause()">Pause</button>
-            <button onclick="next()">Next</button>
+            <button id="addbtn">Add</button>
+            <button id="playbtn">Play</button>
+            <button id="pausebtn">Pause</button>
+            <button id="nextbtn">Next</button>
             <input type="range" min="0" max="100" value="50" onchange="setVolume(this.value)">
         </div>
-        <p>
-            List:
-            <ul id="audiolist"></ul>
-        </p>
+        List:
+        <ul id="audiolist"></ul>
     </body>
     <script src="https://w.soundcloud.com/player/api.js"></script>
-    <script src="./jukebox.js"></script>
+    <script type="module">
+        import * as jukebox from "./jukebox.js";
+        addbtn.onclick = ()=>{jukebox.addTrack(urlInput.value);};
+        playbtn.onclick = jukebox.userPlay;
+        pausebtn.onclick = jukebox.pause;
+        nextbtn.onclick = jukebox.next;
+    </script>
 </html>
