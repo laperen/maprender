@@ -1,5 +1,11 @@
 WIP
 
+jukebox
+p:
+*add screenshot
+*provide stylesheet and html in text
+I need UI styling to follow the style set by the main application. Provided is an example of how elements look in the main application, the stylesheet of the main application, and html to apply styling to. Use only what is in the stylesheet without adding anything to it.
+
 collision, physics, and character movement
 p:
 ???

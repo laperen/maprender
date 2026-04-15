@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Jukebox</title>
+    <style>
+        .hidden-player {
+            width: 0;
+            height: 0;
+            opacity: 0;
+            position: absolute;
+        }
+
+        li {
+            padding: 6px;
+            cursor: grab;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        li:active { cursor: grabbing; }
+    </style>
+</head>
+
+<body>
+
+<iframe id="soundcloud-player" class="hidden-player"></iframe>
+<audio id="audio-player" class="hidden-player"></audio>
+
+<div id="tabs">
+    <button id="daycategory">Day</button>
+    <button id="nightcategory">Night</button>
+    <button id="wincategory">Win</button>
+    <button id="losecategory">Lose</button>
+</div>
+
+<div id="controls">
+    <input id="urlInput" placeholder="Paste link here">
+    <button id="addbtn">Add</button>
+    <button id="playbtn">Play</button>
+    <button id="pausebtn">Pause</button>
+    <button id="nextbtn">Next</button>
+    <input id="volslider" type="range" min="0" max="100" value="50">
+</div>
+
+<ul id="audiolist"></ul>
+
+<script src="https://w.soundcloud.com/player/api.js"></script>
+<script type="module">
+    import * as jukebox from "./jukebox.js";
+    daycategory.onclick = ()=>{jukebox.setCategory("day")};
+    nightcategory.onclick = ()=>{jukebox.setCategory("night")};
+    wincategory.onclick = ()=>{jukebox.setCategory("win")};
+    losecategory.onclick = ()=>{jukebox.setCategory("lose")};
+    
+    addbtn.onclick = ()=>{jukebox.addTrack(urlInput.value);};
+    playbtn.onclick = jukebox.play;
+    pausebtn.onclick = jukebox.pause;
+    nextbtn.onclick = jukebox.next;
+    volslider.onchange=()=>{jukebox.setVolume(volslider.value);};
+
+    
+    jukebox.loadFromStorage();
+    jukebox.UpdateAudioList();
+</script>
+</body>
+</html>

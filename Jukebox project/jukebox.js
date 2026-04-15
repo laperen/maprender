@@ -1,165 +1,296 @@
+const audioA = new Audio();
+const audioB = new Audio();
 
-let playlist = [];
-let currentIndex = 0;
-let currentPlayer = null;
+let activePlayer = null;
+let currentAudioEl = audioA;
 
-const audio = document.getElementById("audio-player");
-let ytPlayer;
-let ytReady = false;
-
-const scIframe = document.getElementById("soundcloud-player");
 let scWidget = null;
+let scIframe = null;
+
+let isPlaying = false;
+
+const categories = {
+    day: [],
+    night: [],
+    win: [],
+    lose: []
+};
+
+let currentCategory = "day";
+let currentIndex = 0;
+let currentVolume = 0.5; // 0–1
+
+const audiolist = document.getElementById("audiolist");
+
+const STORAGE_KEY = "jukebox_playlists";
+
+function clampVolume(v) {
+    return Math.max(0, Math.min(1, v));
+}
+/* ================= STORAGE ================= */
+
+function saveToStorage() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        categories,
+        volume: currentVolume
+    }));
+}
+
+function loadFromStorage() {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return;
+
+    const parsed = JSON.parse(saved);
+
+    if (parsed.categories) {
+        Object.assign(categories, parsed.categories);
+    }
+
+    if (parsed.volume !== undefined) {
+        currentVolume = parsed.volume;
+    }
+}
+
+/* ================= CATEGORY ================= */
+
+function setCategory(cat) {
+    currentCategory = cat;
+    currentIndex = 0;
+    UpdateAudioList();
+}
+
+/* ================= LIST UI ================= */
+
+function UpdateAudioList() {
+    const list = categories[currentCategory];
+    audiolist.innerHTML = "";
+
+    list.forEach((entry, index) => {
+        const li = document.createElement("li");
+
+        li.draggable = true;
+        li.innerHTML = `
+            <span>${entry.url}</span>
+            <button>X</button>
+        `;
+
+        li.querySelector("button").onclick = () => {
+            list.splice(index, 1);
+            saveToStorage();
+            UpdateAudioList();
+        };
+
+        li.ondragstart = e => e.dataTransfer.setData("i", index);
+        li.ondragover = e => e.preventDefault();
+
+        li.ondrop = e => {
+            const from = +e.dataTransfer.getData("i");
+            const moved = list.splice(from, 1)[0];
+            list.splice(index, 0, moved);
+
+            saveToStorage();
+            UpdateAudioList();
+        };
+
+        audiolist.appendChild(li);
+    });
+}
+
+/* ================= TRACK ================= */
 
 function detectSource(url) {
     try {
-      const u = new URL(url);
-  
-        if (u.hostname.includes("audius.co")) return "audius";
+        const u = new URL(url);
         if (u.hostname.includes("soundcloud.com")) return "soundcloud";
-        if (url.match(/\.(mp3|ogg|wav)$/i)) return "audio";
-  
+        if (u.hostname.includes("audius.co")) return "audius";
+        if (url.match(/\.(mp3|wav|ogg)$/i)) return "audio";
         return "unknown";
     } catch {
         return "unknown";
     }
-  }
-function normalizeArchiveUrl(url) {
-    if (url.includes("archive.org/details/")) {
-        return url.replace("details", "download").replace(/\+/g, "%20");
-    }
-    return url;
 }
-function UpdateAudioList(){
-    audiolist.innerHTML = "";
-    for(let i = 0, max = playlist.length; i < max; i++){
-        let entry = playlist[i];
-        let li = document.createElement("li");
-        li.innerText = `${entry.url}, type: ${entry.type}`;
-        audiolist.appendChild(li);
-    }
-}
+
 function addTrack(rawUrl) {
-    //const rawUrl = document.getElementById("urlInput").value;
-    const url = normalizeArchiveUrl(rawUrl);
-
-    const type = detectSource(url);
-
-    playlist.push({ url, type });
+    const type = detectSource(rawUrl);
+    if (rawUrl.includes("archive.org/details/")) {
+        rawUrl = rawUrl.replace("details", "download").replace(/\+/g, "%20");
+    }
+    categories[currentCategory].push({ url: rawUrl, type });
+    saveToStorage();
     UpdateAudioList();
 }
-//Soundcloud
-function loadSoundCloud(url) {
-    const embedUrl = `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}`;
 
-    if (!scWidget) {
-        scIframe.src = embedUrl;
+/* ================= PLAYER FACTORY ================= */
 
-        scWidget = SC.Widget(scIframe);
+function createAudioPlayer(url) {
+    const el = currentAudioEl === audioA ? audioB : audioA;
+    currentAudioEl = el;
 
-        scWidget.bind(SC.Widget.Events.READY, () => {
-        scWidget.play();
-        });
+    el.src = url;
+    el.volume = currentVolume; // 🔥 apply saved volume
 
-        scWidget.bind(SC.Widget.Events.FINISH, () => next());
-    } else {
-        scWidget.load(url, { auto_play: true });
-    }
+    return {
+        play: () => el.play(),
+        pause: () => el.pause(),
+        setVolume: v => el.volume = clampVolume(v),
 
-    currentPlayer = {
-        pause: () => scWidget?.pause(),
-        play: () => scWidget?.play(),
-        setVolume: (v) => scWidget?.setVolume(v)
+        onEnd: cb => {
+            el.onended = null;
+            el.addEventListener("ended", cb, { once: true });
+        }
     };
 }
-//Audius
-async function loadAudius(url) {
-    try {
-        const res = await fetch(
+
+function createSoundCloudPlayer(url) {
+    if (scIframe) scIframe.remove();
+
+    scIframe = document.createElement("iframe");
+    scIframe.className = "hidden-player";
+    document.body.appendChild(scIframe);
+
+    scIframe.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}`;
+
+    scWidget = SC.Widget(scIframe);
+
+    let endCallback = null;
+    let duration = null;
+
+    function fallbackTimer() {
+        if (!duration) return;
+
+        setTimeout(() => {
+            console.log("SC fallback next()");
+            endCallback?.();
+        }, duration);
+    }
+
+    return {
+        play: () => scWidget.play(),
+        pause: () => scWidget.pause(),
+        setVolume: v => scWidget.setVolume(clampVolume(v) * 100),
+
+        onEnd: cb => {
+            endCallback = cb;
+
+            scWidget.bind(SC.Widget.Events.READY, () => {
+                scWidget.play();
+                scWidget.setVolume(currentVolume * 100);
+                scWidget.getDuration(d => {
+                    duration = d;
+                    fallbackTimer();
+                });
+
+                scWidget.bind(SC.Widget.Events.FINISH, () => {
+                    console.log("SC FINISH");
+                    cb();
+                });
+
+                // 🔥 retry if FINISH fails
+                setTimeout(() => {
+                    console.log("SC retry bind");
+                    scWidget.bind(SC.Widget.Events.FINISH, cb);
+                }, 2000);
+            });
+        }
+    };
+}
+
+async function createAudiusPlayer(url) {
+    const res = await fetch(
         `https://discoveryprovider.audius.co/v1/resolve?url=${encodeURIComponent(url)}`
-        );
-        const data = await res.json();
+    );
+    const data = await res.json();
 
-        const trackId = data.data.id;
+    const stream =
+        `https://discoveryprovider.audius.co/v1/tracks/${data.data.id}/stream`;
 
-        const streamUrl = `https://discoveryprovider.audius.co/v1/tracks/${trackId}/stream`;
-
-        loadAudio(streamUrl);
-    } catch (e) {
-        console.error("Audius load failed", e);
-    }
+    return createAudioPlayer(stream);
 }
-//Direct audio
 
-function loadAudio(url) {
-    audio.src = url;
-    audio.play();
+/* ================= LOAD TRACK ================= */
 
-    audio.onended = next;
-
-    currentPlayer = audio;
-    console.log("load regular audio");
-}
-//Unified player
-function loadTrack(track) {
-    stopAll();
-
+async function createPlayer(track) {
     switch (track.type) {
-        case "soundcloud":
-            loadSoundCloud(track.url);
-            break;
         case "audio":
-            loadAudio(track.url);
-            break;
+            return createAudioPlayer(track.url);
+
+        case "soundcloud":
+            return createSoundCloudPlayer(track.url);
+
         case "audius":
-            loadAudius(track.url);
-            break;
-        default:
-            console.warn("Unsupported source");
+            return await createAudiusPlayer(track.url);
     }
 }
-  
+
+/* ================= CROSSFADE ================= */
+
+function crossfade(oldP, newP) {
+    let v = 0;
+
+    newP.setVolume(0);
+    newP.play();
+
+    const interval = setInterval(() => {
+        v += 0.05;
+
+        const newVol = clampVolume(v);
+        const oldVol = clampVolume(1 - v);
+
+        oldP?.setVolume(oldVol * currentVolume);
+        newP.setVolume(newVol * currentVolume);
+
+        if (v >= 1) {
+            clearInterval(interval);
+            oldP?.pause();
+        }
+    }, 40);
+}
+
+/* ================= PLAYBACK ================= */
+
+async function loadTrack(track) {
+    const newPlayer = await createPlayer(track);
+
+    newPlayer.onEnd(() => next());
+
+    crossfade(activePlayer, newPlayer);
+
+    activePlayer = newPlayer;
+    isPlaying = true;
+}
+
 function play() {
-    if (!playlist.length) return;
+    const list = categories[currentCategory];
+    if (!list.length) return;
 
-    const track = playlist[currentIndex];
-    loadTrack(track);
+    if (activePlayer && !isPlaying) {
+        activePlayer.play();
+        isPlaying = true;
+    } else if (!activePlayer) {
+        loadTrack(list[currentIndex]);
+    }
 }
-function userPlay() {
-    play(); // your existing logic
-}
-  
+
 function pause() {
-    if (!currentPlayer) return;
-
-    if (currentPlayer.pause) currentPlayer.pause();
-    if (currentPlayer.pauseVideo) currentPlayer.pauseVideo();
+    activePlayer?.pause();
+    isPlaying = false;
 }
-  
-function resume() {
-    if (!currentPlayer) return;
 
-    if (currentPlayer.play) currentPlayer.play();
-    if (currentPlayer.playVideo) currentPlayer.playVideo();
-}
-  
 function next() {
-    currentIndex = (currentIndex + 1) % playlist.length;
-    loadTrack(playlist[currentIndex]);
+    const list = categories[currentCategory];
+    if (!list.length) return;
+
+    currentIndex = (currentIndex + 1) % list.length;
+    loadTrack(list[currentIndex]);
 }
-//volume control
+
+/* ================= CONTROLS ================= */
 function setVolume(v) {
-    const volume = v / 100;
+    currentVolume = clampVolume(v / 100);
 
-    if (scWidget && currentPlayer !== audio) {
-        scWidget.setVolume(v);
-    }
+    activePlayer?.setVolume(currentVolume);
 
-    if (audio && currentPlayer === audio) {
-        audio.volume = volume; // 0–1
-    }
+    saveToStorage(); // persist immediately
 }
-function stopAll() {
-    if (scWidget) scWidget.pause();
-    if (audio) audio.pause();
-}
-export{addTrack,userPlay,pause,next, setVolume}
+
+export { addTrack, play, pause, next, setCategory, setVolume, loadFromStorage, UpdateAudioList};
