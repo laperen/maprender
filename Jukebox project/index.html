@@ -25,7 +25,7 @@
             <button id="playbtn">Play</button>
             <button id="pausebtn">Pause</button>
             <button id="nextbtn">Next</button>
-            <input type="range" min="0" max="100" value="50" onchange="setVolume(this.value)">
+            <input id="volslider" type="range" min="0" max="100" value="50">
         </div>
         List:
         <ul id="audiolist"></ul>
@@ -37,5 +37,6 @@
         playbtn.onclick = jukebox.userPlay;
         pausebtn.onclick = jukebox.pause;
         nextbtn.onclick = jukebox.next;
+        volslider.onchange=()=>{setVolume(volslider.value);};
     </script>
 </html>

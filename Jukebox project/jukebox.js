@@ -150,11 +150,7 @@ function next() {
 function setVolume(v) {
     const volume = v / 100;
 
-    if (ytPlayer && currentPlayer === ytPlayer) {
-        ytPlayer.setVolume(v); // 0–100
-    }
-
-    if (scWidget && currentPlayer !== ytPlayer && currentPlayer !== audio) {
+    if (scWidget && currentPlayer !== audio) {
         scWidget.setVolume(v);
     }
 
@@ -163,8 +159,7 @@ function setVolume(v) {
     }
 }
 function stopAll() {
-    if (ytPlayer) ytPlayer.stopVideo();
     if (scWidget) scWidget.pause();
     if (audio) audio.pause();
 }
-export{addTrack,userPlay,pause,next}
+export{addTrack,userPlay,pause,next, setVolume}
