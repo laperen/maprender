@@ -207,6 +207,9 @@
         </div>
       </div>
       <button id="generate-btn">Generate 3D World</button>
+      <button id="enter-selection-btn" disabled>
+        <span class="btn-icon">⬡</span> Explore World
+      </button>
     </div>
     <section id="info-panel">
       <div id="status">Ready. Configure settings and click Generate.</div>
@@ -229,6 +232,52 @@
 
   <!-- Tooltip -->
   <div id="tooltip" class="hidden"></div>
+
+  <!-- ── Location Selection Panel ─────────────────────────────── -->
+  <div id="selection-panel" class="panel-hidden">
+    <div class="sel-panel-inner">
+      <div class="sel-header">
+        <div class="sel-logo">
+          <span class="logo-mark">⬡</span>
+          <span class="sel-title">Choose Spawn Point</span>
+        </div>
+        <button id="sel-back-btn" class="sel-icon-btn" title="Back to map creation">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+          Map Editor
+        </button>
+      </div>
+
+      <div class="sel-hint-box">
+        <div id="selection-hint" class="sel-hint-text">🎯 Click anywhere on the map to set your spawn point</div>
+      </div>
+
+      <div class="sel-actions">
+        <button id="enter-world-btn" class="enter-world-btn" disabled>
+          <span class="btn-glyph">▶</span>
+          Enter World
+        </button>
+      </div>
+
+      <div class="sel-footer">
+        <span class="sel-tip">Tip: Click near a road or open area for best results</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Roaming HUD ─────────────────────────────────────────── -->
+  <div id="roaming-panel" class="panel-hidden">
+    <div class="roam-hud-bar">
+      <div class="roam-logo">
+        <span class="logo-mark">⬡</span>
+        <span class="roam-mode-label">Explore Mode</span>
+      </div>
+      <div class="roam-hint">Movement controls coming soon</div>
+      <button id="roam-back-btn" class="roam-back-btn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+        Change Spawn
+      </button>
+    </div>
+  </div>
 
   <script type="module" src="./main.js"></script>
 </body>

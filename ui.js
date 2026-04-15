@@ -22,6 +22,15 @@ export class UIController {
     this._windSpeed      = 18;     // world-units/sec
     this._windAngleDeg   = 13;     // degrees (0=east, CCW)
     this._cloudAltitude  = 380;    // metres
+
+    // App mode: 'map-creation' | 'location-selection' | 'roaming'
+    this._appMode = 'map-creation';
+
+    // Beacon / spawn state
+    this._beaconX = null;
+    this._beaconY = null;
+    this._beaconZ = null;
+    this._worldGenerated = false;
   }
 
   init() {
@@ -33,6 +42,21 @@ export class UIController {
     this.minimap.update(this.lng, this.lat, this.radius);
     this._applyTimeOfDay(this.timeOfDay);
     this._applyCloudProperties();
+
+    // Register beacon placement callback
+    this.scene.onBeaconPlaced((x, y, z) => {
+      this._beaconX = x;
+      this._beaconY = y;
+      this._beaconZ = z;
+      // Enable the "Enter World" button once a beacon is placed
+      if (this.$enterWorldBtn) {
+        this.$enterWorldBtn.disabled = false;
+        this.$enterWorldBtn.classList.add('beacon-ready');
+      }
+      if (this.$selectionHint) {
+        this.$selectionHint.textContent = '📍 Spawn point set — click Enter World or reposition';
+      }
+    });
   }
 
   _bindElements() {
@@ -64,6 +88,16 @@ export class UIController {
     this.$cloudToggle = document.getElementById('cloud-toggle');
     this.$cloudBody   = document.getElementById('cloud-body');
     this.$cloudMeta   = document.getElementById('cloud-meta');
+
+    // Mode panels
+    this.$uiPanel        = document.getElementById('ui');
+    this.$selectionPanel = document.getElementById('selection-panel');
+    this.$roamingPanel   = document.getElementById('roaming-panel');
+    this.$enterSelBtn    = document.getElementById('enter-selection-btn');
+    this.$enterWorldBtn  = document.getElementById('enter-world-btn');
+    this.$selBackBtn     = document.getElementById('sel-back-btn');
+    this.$roamBackBtn    = document.getElementById('roam-back-btn');
+    this.$selectionHint  = document.getElementById('selection-hint');
   }
 
   // ── Build the time-of-day panel HTML ──────────────────────────
@@ -595,6 +629,113 @@ export class UIController {
     this.$generateBtn.addEventListener('click', () => this._generate());
     this.$canvas.addEventListener('mousemove', e => this._onMouseMove(e));
     this.$canvas.addEventListener('mouseleave', () => this.$tooltip.classList.add('hidden'));
+
+    // ── Mode transition buttons ───────────────────────────────
+    if (this.$enterSelBtn) {
+      this.$enterSelBtn.addEventListener('click', () => this._enterSelectionMode());
+    }
+    if (this.$selBackBtn) {
+      this.$selBackBtn.addEventListener('click', () => this._exitSelectionMode());
+    }
+    if (this.$enterWorldBtn) {
+      this.$enterWorldBtn.addEventListener('click', () => this._enterRoamingMode());
+    }
+    if (this.$roamBackBtn) {
+      this.$roamBackBtn.addEventListener('click', () => this._exitRoamingMode());
+    }
+  }
+
+  // ── App Mode State Machine ────────────────────────────────────
+
+  _enterSelectionMode() {
+    if (!this._worldGenerated) return;
+    this._appMode = 'location-selection';
+
+    // Hide main UI panel, show selection panel
+    this.$uiPanel.classList.add('ui-hidden');
+    this.$selectionPanel.classList.remove('panel-hidden');
+    this.$roamingPanel.classList.add('panel-hidden');
+
+    // Reset beacon state UI
+    if (this.$enterWorldBtn) this.$enterWorldBtn.disabled = true;
+    if (this.$enterWorldBtn) this.$enterWorldBtn.classList.remove('beacon-ready');
+    if (this.$selectionHint) this.$selectionHint.textContent = '🎯 Click anywhere on the map to set your spawn point';
+
+    // Remove any existing beacon/character
+    this.scene.removeBeacon();
+    this.scene.removeCharacter();
+    this._beaconX = null;
+    this._beaconY = null;
+    this._beaconZ = null;
+
+    // Tell scene to handle ground clicks
+    this.scene.enterSelectionMode();
+
+    // Crosshair cursor
+    document.body.classList.add('selection-active');
+
+    // Tooltip off
+    this.$tooltip.classList.add('hidden');
+  }
+
+  _exitSelectionMode() {
+    this._appMode = 'map-creation';
+
+    this.$uiPanel.classList.remove('ui-hidden');
+    this.$selectionPanel.classList.add('panel-hidden');
+    this.$roamingPanel.classList.add('panel-hidden');
+
+    document.body.classList.remove('selection-active');
+
+    this.scene.exitSelectionMode();
+    this.scene.removeBeacon();
+  }
+
+  _enterRoamingMode() {
+    if (this._beaconX === null) return;
+
+    this._appMode = 'roaming';
+
+    // Hide selection panel, show roaming panel
+    this.$selectionPanel.classList.add('panel-hidden');
+    this.$roamingPanel.classList.remove('panel-hidden');
+
+    // Disable ground-click selection
+    this.scene.exitSelectionMode();
+    this.scene.removeBeacon();
+    document.body.classList.remove('selection-active');
+
+    // Spawn character at beacon position
+    this.scene.spawnCharacter(this._beaconX, this._beaconY, this._beaconZ);
+
+    // Animate camera to 3rd-person behind character
+    this.scene.transitionToRoaming(() => {
+      // Camera transition complete — future controller hooks in here
+    });
+  }
+
+  _exitRoamingMode() {
+    this._appMode = 'location-selection';
+
+    this.$roamingPanel.classList.add('panel-hidden');
+    this.$selectionPanel.classList.remove('panel-hidden');
+    this.$uiPanel.classList.add('ui-hidden');
+
+    // Reset beacon state UI
+    if (this.$enterWorldBtn) this.$enterWorldBtn.disabled = true;
+    if (this.$enterWorldBtn) this.$enterWorldBtn.classList.remove('beacon-ready');
+    if (this.$selectionHint) this.$selectionHint.textContent = '🎯 Click anywhere on the map to set your spawn point';
+
+    // Remove character, transition camera back to orbit
+    this.scene.removeCharacter();
+    this.scene.transitionToOrbit(0, 0, this.radius);
+
+    // Re-enter selection mode
+    this._beaconX = null;
+    this._beaconY = null;
+    this._beaconZ = null;
+    document.body.classList.add('selection-active');
+    this.scene.enterSelectionMode();
   }
 
   // ── Device time mode ──────────────────────────────────────────
@@ -713,6 +854,13 @@ export class UIController {
       this.$statTris.textContent      = `${Math.round(result.triangleCount).toLocaleString()} triangles`;
       this.$stats.classList.remove('hidden');
 
+      // Mark world as generated — enables the Explore button
+      this._worldGenerated = true;
+      if (this.$enterSelBtn) {
+        this.$enterSelBtn.disabled = false;
+        this.$enterSelBtn.classList.add('world-ready');
+      }
+
       const cloudDesc = this._cloudCover < 20 ? 'clear skies' :
                         this._cloudCover < 50 ? 'partly cloudy' :
                         this._cloudCover < 80 ? 'mostly cloudy' : 'overcast';
@@ -756,6 +904,11 @@ export class UIController {
   }
 
   _onMouseMove(e) {
+    // In selection/roaming modes, suppress building tooltip
+    if (this._appMode !== 'map-creation') {
+      this.$tooltip.classList.add('hidden');
+      return;
+    }
     const hit = this.scene.pick(e.clientX, e.clientY);
     if (hit && hit.object.userData.kind) {
       const d = hit.object.userData;

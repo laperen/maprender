@@ -695,6 +695,8 @@ export class SceneManager {
       const dt = this._timer.getDelta();
       this._tickNight(dt);
       this._tickLampLOD();
+      this._tickBeacon(dt);
+      if (this._transitionTick) this._transitionTick(dt);
       this._clouds.tick(dt, this.camera.position);
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
@@ -786,5 +788,303 @@ export class SceneManager {
     this.camera.position.set(x, dist * 0.8, z + dist);
     this.controls.target.set(x, 0, z);
     this.controls.update();
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // LOCATION SELECTION MODE
+  // ═══════════════════════════════════════════════════════════════
+
+  enterSelectionMode() {
+    this._selectionMode = true;
+    this.controls.enabled = true;
+    // Attach click handler for ground picking
+    this._selectionHandler = (e) => this._onSelectionClick(e);
+    this.renderer.domElement.addEventListener('click', this._selectionHandler);
+  }
+
+  exitSelectionMode() {
+    this._selectionMode = false;
+    if (this._selectionHandler) {
+      this.renderer.domElement.removeEventListener('click', this._selectionHandler);
+      this._selectionHandler = null;
+    }
+  }
+
+  _onSelectionClick(e) {
+    if (!this._selectionMode) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndx  =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+    const ndy  = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+    const mouse = new THREE.Vector2(ndx, ndy);
+
+    this.raycaster.setFromCamera(mouse, this.camera);
+
+    // Pick against ground and all scene objects
+    const allMeshes = [];
+    this.scene.traverse(child => { if (child.isMesh) allMeshes.push(child); });
+    const hits = this.raycaster.intersectObjects(allMeshes, false);
+    if (!hits.length) return;
+
+    const pt = hits[0].point;
+    this.placeBeacon(pt.x, pt.y, pt.z);
+
+    // Fire callback if set
+    if (this._onBeaconPlaced) this._onBeaconPlaced(pt.x, pt.y, pt.z);
+  }
+
+  // Called by UIController to be notified when beacon is placed
+  onBeaconPlaced(cb) {
+    this._onBeaconPlaced = cb;
+  }
+
+  // ── Beacon ────────────────────────────────────────────────────
+  placeBeacon(x, y, z) {
+    this.removeBeacon();
+
+    this._beaconPos = new THREE.Vector3(x, y, z);
+    this._beaconGroup = new THREE.Group();
+    this._beaconGroup.name = 'beacon';
+
+    // Ground ring (flat cylinder)
+    const ringGeo = new THREE.CylinderGeometry(3.5, 3.5, 0.25, 48, 1, true);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x47d7ff, transparent: true, opacity: 0.85,
+      side: THREE.DoubleSide, depthWrite: false,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.position.set(x, y + 0.15, z);
+    this._beaconGroup.add(ring);
+
+    // Filled disc glow under beacon
+    const discGeo = new THREE.CircleGeometry(3.5, 48);
+    const discMat = new THREE.MeshBasicMaterial({
+      color: 0x47d7ff, transparent: true, opacity: 0.18,
+      side: THREE.DoubleSide, depthWrite: false,
+    });
+    const disc = new THREE.Mesh(discGeo, discMat);
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.set(x, y + 0.1, z);
+    this._beaconGroup.add(disc);
+
+    // Vertical beam (thin cylinder, very tall, additive)
+    const beamGeo = new THREE.CylinderGeometry(0.22, 1.8, 600, 12, 1, true);
+    const beamMat = new THREE.MeshBasicMaterial({
+      color: 0x47d7ff, transparent: true, opacity: 0.10,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const beam = new THREE.Mesh(beamGeo, beamMat);
+    beam.position.set(x, y + 300, z);
+    this._beaconGroup.add(beam);
+
+    // Diamond marker at eye level
+    const diamondGeo = new THREE.OctahedronGeometry(1.4, 0);
+    const diamondMat = new THREE.MeshBasicMaterial({
+      color: 0x47d7ff, wireframe: false, transparent: true, opacity: 0.92,
+    });
+    const diamond = new THREE.Mesh(diamondGeo, diamondMat);
+    diamond.position.set(x, y + 12, z);
+    diamond.userData.isBeaconDiamond = true;
+    this._beaconGroup.add(diamond);
+
+    // Diamond wireframe outline
+    const diamondWF = new THREE.Mesh(diamondGeo.clone(), new THREE.MeshBasicMaterial({
+      color: 0xffffff, wireframe: true, transparent: true, opacity: 0.4,
+    }));
+    diamondWF.position.copy(diamond.position);
+    this._beaconGroup.add(diamondWF);
+
+    this.scene.add(this._beaconGroup);
+    this._beaconTime = 0;
+  }
+
+  removeBeacon() {
+    if (this._beaconGroup) {
+      this.scene.remove(this._beaconGroup);
+      this._beaconGroup.traverse(c => {
+        if (c.isMesh) { c.geometry.dispose(); c.material.dispose(); }
+      });
+      this._beaconGroup = null;
+    }
+    this._beaconPos = null;
+  }
+
+  // ── Animate beacon ────────────────────────────────────────────
+  _tickBeacon(dt) {
+    if (!this._beaconGroup) return;
+    this._beaconTime = (this._beaconTime || 0) + dt;
+    const t = this._beaconTime;
+
+    // Pulse ring opacity
+    this._beaconGroup.children.forEach(c => {
+      if (c.userData.isBeaconDiamond) {
+        c.rotation.y = t * 1.8;
+        c.position.y = this._beaconPos.y + 12 + Math.sin(t * 2.5) * 1.5;
+      }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // CHARACTER
+  // ═══════════════════════════════════════════════════════════════
+
+  spawnCharacter(x, y, z) {
+    this.removeCharacter();
+
+    const group = new THREE.Group();
+    group.name = 'character';
+
+    // Body (capsule approximated as cylinder + two hemispheres)
+    const bodyH  = 1.2;
+    const capR   = 0.38;
+    const totalH = bodyH + capR * 2;
+
+    // Main body cylinder
+    const bodyGeo = new THREE.CylinderGeometry(capR, capR * 0.88, bodyH, 16, 1);
+    const bodyMat = new THREE.MeshToonMaterial({ color: 0x3d8eff });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = capR + bodyH / 2;
+    body.castShadow = true;
+    group.add(body);
+
+    // Top cap
+    const topCapGeo = new THREE.SphereGeometry(capR, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+    const cap = new THREE.Mesh(topCapGeo, bodyMat);
+    cap.position.y = capR + bodyH;
+    cap.castShadow = true;
+    group.add(cap);
+
+    // Bottom cap
+    const botCapGeo = new THREE.SphereGeometry(capR * 0.88, 16, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+    const botCap = new THREE.Mesh(botCapGeo, bodyMat);
+    botCap.position.y = capR;
+    botCap.castShadow = true;
+    group.add(botCap);
+
+    // Head
+    const headGeo = new THREE.SphereGeometry(capR * 0.72, 16, 12);
+    const headMat = new THREE.MeshToonMaterial({ color: 0xf5c9a0 });
+    const head = new THREE.Mesh(headGeo, headMat);
+    head.position.y = capR + bodyH + capR * 0.9;
+    head.castShadow = true;
+    group.add(head);
+
+    group.position.set(x, y, z);
+    this._characterGroup = group;
+    this._characterPos   = new THREE.Vector3(x, y, z);
+    // Store character height so camera can offset above feet
+    this._characterHeight = totalH;
+
+    this.scene.add(group);
+    return group;
+  }
+
+  removeCharacter() {
+    if (this._characterGroup) {
+      this.scene.remove(this._characterGroup);
+      this._characterGroup.traverse(c => {
+        if (c.isMesh) { c.geometry.dispose(); c.material.dispose(); }
+      });
+      this._characterGroup = null;
+    }
+    this._characterPos = null;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // CAMERA TRANSITION TO ROAMING
+  // Smoothly animates camera from current orbit position to a
+  // 3rd-person position behind and above the character.
+  // ═══════════════════════════════════════════════════════════════
+
+  transitionToRoaming(onComplete) {
+    if (!this._characterPos) { if (onComplete) onComplete(); return; }
+
+    // Disable orbit controls during transition
+    this.controls.enabled = false;
+
+    const charPos   = this._characterPos.clone();
+    const charH     = this._characterHeight || 2.0;
+
+    // Target: behind character (positive Z = "south"), slightly elevated
+    const targetCamPos = new THREE.Vector3(
+      charPos.x,
+      charPos.y + charH + 4.0,   // eye height above character
+      charPos.z + 10.0            // behind character
+    );
+    const targetLookAt = new THREE.Vector3(
+      charPos.x,
+      charPos.y + charH * 0.6,   // look at mid-chest
+      charPos.z
+    );
+
+    const startCamPos  = this.camera.position.clone();
+    const startLookAt  = this.controls.target.clone();
+
+    const duration = 1.2; // seconds
+    let   elapsed  = 0;
+
+    this._transitionActive = true;
+    this._transitionTick = (dt) => {
+      elapsed += dt;
+      const t = Math.min(1, elapsed / duration);
+      // Smooth ease-in-out
+      const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+
+      this.camera.position.lerpVectors(startCamPos, targetCamPos, ease);
+      const lookAt = new THREE.Vector3().lerpVectors(startLookAt, targetLookAt, ease);
+      this.camera.lookAt(lookAt);
+
+      if (t >= 1) {
+        this._transitionActive = false;
+        this._transitionTick   = null;
+        this._roamingCamPos    = targetCamPos.clone();
+        this._roamingLookAt    = targetLookAt.clone();
+        if (onComplete) onComplete();
+      }
+    };
+  }
+
+  transitionToOrbit(x, z, radius, onComplete) {
+    this.controls.enabled = false;
+
+    const dist = radius * 2.5;
+    const targetCamPos = new THREE.Vector3(x, dist * 0.8, z + dist);
+    const targetLookAt = new THREE.Vector3(x, 0, z);
+
+    const startCamPos = this.camera.position.clone();
+    const startLookAt = this._roamingLookAt
+      ? this._roamingLookAt.clone()
+      : new THREE.Vector3(x, 0, z);
+
+    const duration = 1.0;
+    let elapsed = 0;
+
+    this._transitionActive = true;
+    this._transitionTick = (dt) => {
+      elapsed += dt;
+      const t = Math.min(1, elapsed / duration);
+      const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+
+      this.camera.position.lerpVectors(startCamPos, targetCamPos, ease);
+      const lookAt = new THREE.Vector3().lerpVectors(startLookAt, targetLookAt, ease);
+      this.camera.lookAt(lookAt);
+      this.controls.target.lerpVectors(startLookAt, targetLookAt, ease);
+
+      if (t >= 1) {
+        this._transitionActive = false;
+        this._transitionTick   = null;
+        this.controls.enabled  = true;
+        this.controls.update();
+        if (onComplete) onComplete();
+      }
+    };
+  }
+
+  getBeaconPosition() {
+    return this._beaconPos ? this._beaconPos.clone() : null;
+  }
+
+  getCharacterPosition() {
+    return this._characterPos ? this._characterPos.clone() : null;
   }
 }
