@@ -39,6 +39,7 @@ export class SceneManager {
 
     // Current hour (0–24) cached for re-use
     this._currentHour  = 12;
+    this._lodFrame     = 0;
 
     // Cloud layer
     this._clouds = new CloudLayer();
@@ -667,6 +668,25 @@ export class SceneManager {
     this._groundMesh.material.needsUpdate = true;
   }
 
+  // ── Lamp LOD — hide lamps too far from camera to be visible ──
+  // Runs every 15 frames (~4×/sec at 60fps) to amortise the cost
+  // of iterating _lampMeshes. Y is included because the camera can
+  // be high above the scene during top-down views.
+  _tickLampLOD() {
+    this._lodFrame++;
+    if (this._lodFrame % 15 !== 0) return;
+
+    const camPos  = this.camera.position;
+    const THRESH2 = 600 * 600;
+
+    for (const mesh of this._lampMeshes) {
+      const dx = mesh.position.x - camPos.x;
+      const dy = mesh.position.y - camPos.y;
+      const dz = mesh.position.z - camPos.z;
+      mesh.visible = (dx * dx + dy * dy + dz * dz) < THRESH2;
+    }
+  }
+
   start() {
     this.init();
     const animate = () => {
@@ -674,6 +694,7 @@ export class SceneManager {
       this._timer.update();
       const dt = this._timer.getDelta();
       this._tickNight(dt);
+      this._tickLampLOD();
       this._clouds.tick(dt, this.camera.position);
       this.controls.update();
       this.renderer.render(this.scene, this.camera);

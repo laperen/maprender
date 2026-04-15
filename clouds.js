@@ -116,6 +116,16 @@ export class CloudLayer {
       Math.cos(DEFAULT_WIND_ANGLE) * DEFAULT_WIND_SPEED,
       Math.sin(DEFAULT_WIND_ANGLE) * DEFAULT_WIND_SPEED,
     );
+
+    // Reusable math objects (NO allocations per frame)
+    this._pos = new THREE.Vector3();
+    this._quat = new THREE.Quaternion();
+    this._scale = new THREE.Vector3();
+    this._matrix = new THREE.Matrix4();
+    this._euler = new THREE.Euler();
+
+    // Precompute constants
+    this._wrap = CLOUD_FIELD * 2;
   }
 
   // ── setProperties — called by SceneManager ─────────────────
@@ -221,46 +231,78 @@ export class CloudLayer {
 
   // ── tick ───────────────────────────────────────────────────
   tick(dt, cameraPosition) {
-    if (!this._mesh) return;
-
+    const mesh = this._mesh;
+    if (!mesh) return;
+  
     this._time += dt;
-
+  
+    // Smooth transitions
     const lerpK = 1 - Math.pow(0.02, dt);
-    this._currentOpacity = THREE.MathUtils.lerp(this._currentOpacity, this._targetOpacity, lerpK);
+    this._currentOpacity = THREE.MathUtils.lerp(
+      this._currentOpacity,
+      this._targetOpacity,
+      lerpK
+    );
     this._currentColor.lerp(this._targetColor, lerpK);
-
-    this._mesh.material.opacity = this._currentOpacity;
-    this._mesh.material.color.copy(this._currentColor);
-    this._mesh.count = this._count;
-
+  
+    // ✅ Avoid unnecessary GPU updates
+    const mat = mesh.material;
+  
+    if (Math.abs(mat.opacity - this._currentOpacity) > 0.001) {
+      mat.opacity = this._currentOpacity;
+    }
+  
+    if (!mat.color.equals(this._currentColor)) {
+      mat.color.copy(this._currentColor);
+    }
+  
+    mesh.count = this._count;
     if (this._count === 0) return;
-
-    const dummy  = new THREE.Object3D();
-    const dx     = this._windVec.x * dt;
-    const dz     = this._windVec.y * dt;
-    const wrap   = CLOUD_FIELD * 2;
-
+  
+    const positions = this._positions;
+  
+    const dx = this._windVec.x * dt;
+    const dz = this._windVec.y * dt;
+    const wrap = this._wrap;
+  
+    // Reused objects
+    const pos = this._pos;
+    const quat = this._quat;
+    const scale = this._scale;
+    const matrix = this._matrix;
+    const euler = this._euler;
+  
     for (let i = 0; i < this._count; i++) {
-      const p = this._positions[i];
+      const p = positions[i];
+  
+      // Move cloud
       p.x += dx;
       p.z += dz;
-
-      if (p.x >  CLOUD_FIELD) p.x -= wrap;
+  
+      // Wrap around bounds (keep your readable version)
+      if (p.x > CLOUD_FIELD) p.x -= wrap;
       if (p.x < -CLOUD_FIELD) p.x += wrap;
-      if (p.z >  CLOUD_FIELD) p.z -= wrap;
+      if (p.z > CLOUD_FIELD) p.z -= wrap;
       if (p.z < -CLOUD_FIELD) p.z += wrap;
-
-      dummy.position.set(
+  
+      // Build transform manually (FASTER than Object3D)
+      pos.set(
         cameraPosition.x + p.x,
         p.y,
-        cameraPosition.z + p.z,
+        cameraPosition.z + p.z
       );
-      dummy.rotation.y = p.rotY;
-      dummy.scale.set(p.scaleX, 1, p.scaleZ);
-      dummy.updateMatrix();
-      this._mesh.setMatrixAt(i, dummy.matrix);
+  
+      euler.set(0, p.rotY, 0);
+      quat.setFromEuler(euler);
+  
+      scale.set(p.scaleX, 1, p.scaleZ);
+  
+      matrix.compose(pos, quat, scale);
+  
+      mesh.setMatrixAt(i, matrix);
     }
-    this._mesh.instanceMatrix.needsUpdate = true;
+  
+    mesh.instanceMatrix.needsUpdate = true;
   }
 
   setDayBrightness(factor) {

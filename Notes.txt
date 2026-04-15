@@ -1,14 +1,5 @@
 WIP
 
-csm shadows
-p:
-I have the ThreeJS cascading shadow map(csm) example in my instance of ThreeJS, import path "three\examples\jsm\csm". Since the only real shadows being cast are by sun.shadow, will replacing shadowing casting with csm increase performance?
-replace current shadow implementation with csm.
-
-performance
-p:
-When street lamps and aviation obstruction lights are too small for the camera to render, What is a good way to hide them? 
-
 state transition between map creation and ground level roam
 p:
 Map creation is complete. After generating a map, the user should be able to enter it in a 3rd-person roaming mode.
