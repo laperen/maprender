@@ -1045,3 +1045,306 @@ body.selection-active #canvas-container {
   max-height: 2000px;
   transition: max-height 0.5s ease;
 }
+/* ── Jukebox-specific additions ─────────────────────────── */
+
+.hidden-player {
+  width: 0; height: 0; opacity: 0; position: absolute;
+}
+
+body { overflow: hidden; }
+
+/* ── Category tabs ─────────────────────────────────────── */
+#tabs {
+  display: flex;
+  gap: 4px;
+  padding: 14px 20px 0;
+  flex-shrink: 0;
+}
+
+.cat-btn {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 7px 4px;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  border-radius: var(--radius);
+  font-family: 'Space Mono', monospace;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cat-btn:hover:not(.active) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.cat-btn.active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+
+/* ── Add track row ─────────────────────────────────────── */
+#add-row {
+  display: flex;
+  gap: 6px;
+  padding: 14px 20px 0;
+  flex-shrink: 0;
+}
+
+#add-row input { flex: 1; }
+
+#addbtn {
+  background: var(--border);
+  color: var(--text);
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+
+#addbtn:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* ── Playback controls ─────────────────────────────────── */
+#playback {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 20px 0;
+  flex-shrink: 0;
+}
+
+.play-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.play-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#playbtn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  width: 38px;
+  height: 38px;
+  font-size: 16px;
+}
+
+#playbtn:hover { opacity: 0.85; }
+
+#vol-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+#vol-row label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+/* ── Track list ────────────────────────────────────────── */
+#list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px 6px;
+  flex-shrink: 0;
+}
+
+#list-header label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+#track-count {
+  font-size: 9px;
+  color: var(--muted);
+}
+
+#list-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 20px 20px;
+}
+
+#list-scroll::-webkit-scrollbar { width: 4px; }
+#list-scroll::-webkit-scrollbar-track { background: transparent; }
+#list-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+#audiolist {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0;
+  margin: 0;
+}
+
+/* Override default li styles from jukebox.js render */
+#audiolist li {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 8px 10px !important;
+  background: var(--bg) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  cursor: grab !important;
+  transition: border-color 0.15s, background 0.15s !important;
+  min-width: 0 !important;
+  justify-content: flex-start !important;
+}
+
+#audiolist li:active { cursor: grabbing !important; }
+
+#audiolist li:hover {
+  border-color: var(--muted) !important;
+  background: rgba(255,255,255,0.02) !important;
+}
+
+#audiolist li.drag-over {
+  border-color: var(--accent) !important;
+  background: rgba(71, 215, 255, 0.05) !important;
+}
+
+/* The url span from jukebox.js */
+#audiolist li > span.track-url {
+  flex: 1;
+  font-size: 10px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'Space Mono', monospace;
+  min-width: 0;
+}
+
+/* Type badge */
+.track-badge {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  font-weight: 700;
+}
+
+.badge-audio      { background: rgba(71,215,255,0.12); color: var(--accent); border: 1px solid rgba(71,215,255,0.25); }
+.badge-soundcloud { background: rgba(255,102,0,0.12); color: #ff6600; border: 1px solid rgba(255,102,0,0.25); }
+.badge-audius     { background: rgba(204,84,255,0.12); color: #cc54ff; border: 1px solid rgba(204,84,255,0.25); }
+.badge-unknown    { background: rgba(74,82,112,0.2); color: var(--muted); border: 1px solid var(--border); }
+
+/* Remove button from jukebox.js */
+#audiolist li > button {
+  width: 22px !important;
+  height: 22px !important;
+  min-width: 22px !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  border-radius: 3px !important;
+  color: var(--muted) !important;
+  font-size: 11px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  cursor: pointer !important;
+  flex-shrink: 0 !important;
+  transition: all 0.15s !important;
+  padding: 0 !important;
+}
+
+#audiolist li > button:hover {
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
+  background: rgba(255,79,107,0.08) !important;
+}
+
+/* Empty state */
+#empty-state {
+  text-align: center;
+  padding: 32px 20px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.9;
+  display: none;
+}
+
+#empty-state .empty-icon {
+  font-size: 30px;
+  display: block;
+  margin-bottom: 8px;
+  opacity: 0.3;
+}
+
+/* Now playing footer */
+#now-playing {
+  flex-shrink: 0;
+  padding: 10px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+
+#np-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+  transition: background 0.3s, box-shadow 0.3s;
+}
+
+#np-dot.playing {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: np-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes np-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+
+#np-label {
+  font-size: 10px;
+  color: var(--muted);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#np-label.active { color: var(--accent); }
