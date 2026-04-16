@@ -38,7 +38,7 @@ export class UIController {
     this._buildTimePanel();
     this._buildCloudPanel();
     this._bindEvents();
-    this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
+    //this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
     this.minimap.update(this.lng, this.lat, this.radius);
     this._applyTimeOfDay(this.timeOfDay);
     this._applyCloudProperties();
@@ -546,11 +546,12 @@ export class UIController {
       document.getElementById('radius-val').textContent = `${this.radius}m`;
       this._updateMinimap();
     });
-
+    /*
     this.$heightSlider.addEventListener('input', () => {
       this.heightScale = parseInt(this.$heightSlider.value) / 2;
       this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
     });
+    */
 
     // Manual time slider
     if (this.$todSlider) {
