@@ -116,38 +116,50 @@ export class SceneManager {
 
   // Compute sun world-space direction from hour (0–24) and push to sky shader
   _setSkyPosition(hour) {
-    // Map 0–24h to an elevation angle:
-    // Noon (12h) = 75° elevation; sunrise/sunset (~6/18h) = 0°; night = below horizon
-    const normalised = (hour - 6) / 12; // 0 at 6am, 1 at noon, 2 at 6pm
-    const elevDeg    = Math.max(-20, 75 * Math.sin(normalised * Math.PI));
-
-    // Azimuth: sun travels from east (90°) at sunrise to west (270°) at sunset
-    const aziFrac  = THREE.MathUtils.clamp(normalised, 0, 2) / 2; // 0..1 (E→W)
-    const aziDeg   = 90 + aziFrac * 180;
-
+    // ── 1. Normalize time (0–24 → 0–1) ───────────────
+    const t = ((hour % 24) + 24) % 24;
+    const phase = t / 24;
+  
+    // ── 2. Smooth orbital angles (NO clamping, NO max()) ───────
+    // Elevation: full sinusoidal orbit (-1..1)
+    const elev = Math.sin(phase * Math.PI * 2 - Math.PI / 2);
+  
+    // Map elevation to sky angle (no hard cutoffs)
+    const elevDeg = elev * 75; // ±75° smooth arc
+  
+    // Azimuth: full 360° rotation
+    const aziDeg = phase * 360;
+  
     const phi   = THREE.MathUtils.degToRad(90 - elevDeg);
     const theta = THREE.MathUtils.degToRad(aziDeg);
-
+  
     const sunPos = new THREE.Vector3();
     sunPos.setFromSphericalCoords(1, phi, theta);
-
+  
     this._skyUniforms['sunPosition'].value.copy(sunPos);
+  
     this._sunDirection = sunPos.clone().normalize();
+  
+    // ── 3. Moon is always exact inverse (stable now) ───────────
     this._moonDirection = this._sunDirection.clone().negate();
-
-    // Update Sky atmosphere tint for different times
-    const isDay = elevDeg > 0;
-    // Golden-hour turbidity bump
-    const goldenHour = 1 - Math.abs(normalised - 1); // peaks at 1 near 6/18h
-    const turbidity  = isDay
-      ? THREE.MathUtils.lerp(8, 18, Math.pow(Math.max(0, goldenHour - 0.7) / 0.3, 2))
+  
+    // ── 4. Atmosphere tuning (based on elevation, not clamped sin) ─
+    const isDay = elev > 0;
+  
+    const nightFactor = THREE.MathUtils.smoothstep(-0.1, 0.1, elev);
+    const dayFactor   = 1 - nightFactor;
+  
+    const turbidity = isDay
+      ? THREE.MathUtils.lerp(6, 14, dayFactor)
       : 2;
-    const rayleigh   = isDay
-      ? THREE.MathUtils.lerp(1.5, 4, Math.pow(Math.max(0, goldenHour - 0.7) / 0.3, 2))
-      : 0.1;
+  
+    const rayleigh = isDay
+      ? THREE.MathUtils.lerp(1.5, 3.5, dayFactor)
+      : 0.2;
+  
     this._skyUniforms['turbidity'].value = turbidity;
-    this._skyUniforms['rayleigh'].value  = rayleigh;
-
+    this._skyUniforms['rayleigh'].value   = rayleigh;
+  
     return sunPos;
   }
 
@@ -407,106 +419,122 @@ export class SceneManager {
     //points.material.depthWrite = false;
     return points;
   }
-
-  // ── setTimeOfDay — THE main integration point ─────────────────
-  // hour: 0–24 (float). Drives sky, sun, moon, stars, lamps, fog.
   setTimeOfDay(hour) {
-    this._currentHour = hour;
-
-    // ── Sun elevation for this hour ───────────────────────────
-    //const sunPos = 
-    this._setSkyPosition(hour);
-
-    // sunElevation: 1 = noon, 0 = horizon, negative = below
-    const normalised  = (hour - 6) / 12; // 0 at 6am, 2 at 6pm
-    const elevDeg     = Math.max(-20, 75 * Math.sin(normalised * Math.PI));
-    const elevNorm    = THREE.MathUtils.clamp(elevDeg / 75, -0.267, 1); // -1..1 range clamped
-
-    // sunDayPhase: 1 = full bright day, 0 = below horizon, smooth twilight band
+    // ── 1. Normalize time to cyclic 24h domain ───────────────
+    const t = ((hour % 24) + 24) % 24;
+    this._currentHour = t;
+  
+    const phase = t / 24;              // 0..1 cyclic
+    const angle = phase * Math.PI * 2; // full circular driver
+  
+    // ── 2. Core sun model (continuous cycle, no seams) ───────
+    // Sun height: smooth periodic curve
+    const elevDeg = -20 + 95 * Math.max(0, Math.sin(angle - Math.PI / 2));
+  
+    const elevNorm = THREE.MathUtils.clamp(elevDeg / 75, -0.267, 1);
+  
+    // Smooth day/night split (stable across wrap)
     const sunDayPhase = THREE.MathUtils.clamp(
-      THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.18), 0, 1
+      THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.18),
+      0,
+      1
     );
-
-    // nightPhase: 1 = full night, 0 = full day
+  
     const nightPhase = 1 - sunDayPhase;
     this._nightPhase = nightPhase;
-
-    // ── Update sun directional light ──────────────────────────
+  
+    // ── 3. Update sun direction via Sky system ───────────────
+    this._setSkyPosition(t);
+  
     const dist = 1000;
+  
     this.sun.position.set(
       this._sunDirection.x * dist,
       this._sunDirection.y * dist,
-      this._sunDirection.z * dist,
+      this._sunDirection.z * dist
     );
+  
+    // ── 4. Sun color (golden hour smoothing stays stable) ────
+    const sunColor = new THREE.Color();
+    // Better golden hour factor: strongest near horizon, fades upward
+    const horizonFactor = 1.0 - Math.abs(elevDeg) / 75;
+    const golden = THREE.MathUtils.clamp(horizonFactor, 0, 1);
 
-    // Colour transition: blue-white at noon → warm orange at golden hour → off at night
-    const goldenFrac = THREE.MathUtils.clamp(1 - Math.abs(normalised - 1) / 0.3, 0, 1);
-    const isGolden   = elevDeg > 0 && elevDeg < 22;
-    const sunColor   = new THREE.Color();
-    if (isGolden) {
-      sunColor.lerpColors(new THREE.Color(0xff8830), new THREE.Color(0xfff5e0), elevDeg / 22);
+    // smooth curve so it "blooms" instead of snapping
+    const goldenSoft = Math.pow(golden, 2.2);
+  
+    if (goldenSoft > 0.01) {
+      sunColor.lerpColors(
+        new THREE.Color(0xff8830),
+        new THREE.Color(0xfff5e0),
+        THREE.MathUtils.clamp(elevDeg / 22, 0, 1)
+      );
     } else {
       sunColor.set(0xfff5e0);
     }
+  
     this.sun.color.copy(sunColor);
     this.sun.intensity = sunDayPhase * 3.0;
-
-    // Day ambient fades with sun
+  
+    // ── 5. Ambient & rim light ───────────────────────────────
     if (this._dayAmbient) {
       this._dayAmbient.intensity = sunDayPhase * 0.5;
     }
+  
     if (this._rimLight) {
       this._rimLight.intensity = sunDayPhase * 0.4;
     }
-
-    // ── Night sky background ──────────────────────────────────
-    // The Sky shader goes near-black when sun is below horizon. We layer a
-    // deep navy scene.background that crossfades in as the sky goes dark,
-    // giving a proper deep-blue night sky behind the stars and moon.
+  
+    // ── 6. Night sky background (stable cyclic fade) ─────────
     if (nightPhase > 0.3) {
       const nightSkyColor = new THREE.Color().lerpColors(
-        new THREE.Color(0x0a1428),  // deep midnight navy
-        new THREE.Color(0x040810),  // near-black at full night
+        new THREE.Color(0x0a1428),
+        new THREE.Color(0x040810),
         Math.max(0, nightPhase - 0.5) * 2
       );
-      // Blend from sky-shader to night colour
+  
       this.scene.background = nightSkyColor;
-      // Hide the Sky mesh so it doesn't occlude moon/stars through tone mapping
+  
       if (this._sky) this._sky.visible = false;
     } else {
-      this.scene.background = null; // let Sky shader render normally
+      this.scene.background = null;
       if (this._sky) this._sky.visible = true;
     }
-
-    // ── Moon light & ambient ───────────────────────────────────
-    // Moonlight intensity must be meaningful against a dark scene.
-    // toneMappingExposure at night is kept at 0.45 (see below) so
-    // these raw intensities translate to visible illumination.
+  
+    // ── 7. Moon light + ambient ──────────────────────────────
     if (this._moonLight) {
-      this._moonLight.intensity = nightPhase * 1.2;   // blue-white directional
+      this._moonLight.intensity = nightPhase * 1.2;
       this._moonLight.position.copy(this._moonDirection).multiplyScalar(1000);
     }
+  
     if (this._nightAmbient) {
-      // Colour: mid-blue so night scenes have a cool ambient fill
       this._nightAmbient.color.set(0x1a3a6a);
       this._nightAmbient.intensity = nightPhase * 0.8;
     }
-    // Moon mesh and halo fade in with night
-    if (this._moonMesh) this._moonMesh.material.opacity = nightPhase;
-    if (this._moonHalo) this._moonHalo.material.opacity = nightPhase * 0.8;
-
-    // ── Stars ─────────────────────────────────────────────────
+  
+    if (this._moonMesh) {
+      this._moonMesh.material.opacity = nightPhase;
+    }
+  
+    if (this._moonHalo) {
+      this._moonHalo.material.opacity = nightPhase * 0.8;
+    }
+  
+    // ── 8. Stars ─────────────────────────────────────────────
     if (this._starPoints) {
       this._starPoints.material.uniforms.uNightPhase.value = nightPhase;
     }
-
-    // ── Street lamps ──────────────────────────────────────────
-    // Lamps turn on when nightPhase > 0.25 (dusk), full at nightPhase > 0.6
+  
+    // ── 9. Lamps ─────────────────────────────────────────────
     const lampPhase = THREE.MathUtils.clamp(
-      THREE.MathUtils.smoothstep(nightPhase, 0.25, 0.65), 0, 1
+      THREE.MathUtils.smoothstep(nightPhase, 0.25, 0.65),
+      0,
+      1
     );
+  
     for (const mesh of this._lampMeshes) {
       const mat = mesh.material;
+  
       if (mesh.userData.isLampGlobe) {
         mat.emissiveIntensity = lampPhase;
       } else if (mesh.userData.isLampHalo) {
@@ -514,32 +542,38 @@ export class SceneManager {
         mat.needsUpdate = true;
       }
     }
-
-    // ── Fog ───────────────────────────────────────────────────
+  
+    // ── 10. Fog ──────────────────────────────────────────────
     if (nightPhase > 0.01) {
       if (!this.scene.fog) {
         this.scene.fog = new THREE.Fog(0x050a18, 3000, 14000);
       }
+  
       const fogColor = new THREE.Color().lerpColors(
-        new THREE.Color(0x000000), new THREE.Color(0x050a18), nightPhase
+        new THREE.Color(0x000000),
+        new THREE.Color(0x050a18),
+        nightPhase
       );
+  
       this.scene.fog.color.copy(fogColor);
-      this.scene.fog.near = THREE.MathUtils.lerp(5000, 600,  nightPhase);
+      this.scene.fog.near = THREE.MathUtils.lerp(5000, 600, nightPhase);
       this.scene.fog.far  = THREE.MathUtils.lerp(14000, 5000, nightPhase);
     } else {
       this.scene.fog = null;
     }
-
-    // ── Tone mapping exposure ─────────────────────────────────
-    // Day: 0.5 (standard). Night: 0.45 — NOT very low, because all
-    // scene lights are already dim; crushing exposure further makes
-    // moonlight and ambient invisible. A near-constant exposure lets
-    // the light intensities themselves control the perceived brightness.
-    this.renderer.toneMappingExposure = THREE.MathUtils.lerp(0.45, 0.5, sunDayPhase);
-
-    // ── Cloud brightness — darken at night ────────────────────
+  
+    // ── 11. Tone mapping ─────────────────────────────────────
+    this.renderer.toneMappingExposure = THREE.MathUtils.lerp(
+      0.45,
+      0.5,
+      sunDayPhase
+    );
+  
+    // ── 12. Clouds ───────────────────────────────────────────
     if (this._clouds) {
-      this._clouds.setDayBrightness(THREE.MathUtils.lerp(0.25, 1.0, sunDayPhase));
+      this._clouds.setDayBrightness(
+        THREE.MathUtils.lerp(0.25, 1.0, sunDayPhase)
+      );
     }
   }
 
