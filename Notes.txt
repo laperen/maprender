@@ -1,15 +1,10 @@
 WIP
 
+manual edit:
+move overlay.js injections out into html and css.
+
 merge juke box in
 p:
-I want an overlay window, opened by a persistent button in the top-right. 
-In the overlay is supposed to be several categories. 
-Clicking on the categories changes the main window showing the category details
-
-First category is "explore mode", which isn't visible unless in explore-mode. 
-The existing menu for explore-mode, explaining the missing feature is coming soon, and the button to exit explore-mode, will be moved into the main window of this category.
-
-Second category is "Juke Box".
 jukebox.js and jukebox.html were from a different project, brought here for reference.
 The menu from jukebox.html goes into the main window of this category.
 startup process in jukebox.html should be moved into existing scripts
