@@ -73,16 +73,15 @@ export class WorldBuilder {
     ctx.fillRect(0, 0, size, size);
     return new THREE.CanvasTexture(canvas);
   }
-
   async build(ways, heightScale = 1, lat = 0, lng = 0, radiusMeters = 500) {
     let buildings = 0, roads = 0, water = 0, parks = 0, tris = 0;
-
+  
     const gridSize = 64;
     let elevGrid   = null;
     try {
       elevGrid = await fetchElevationGrid(lat, lng, radiusMeters, gridSize);
     } catch (_) {}
-
+  
     const rawElev = (x, z) => {
       if (!elevGrid) return 0;
       const halfR = radiusMeters;
@@ -97,73 +96,134 @@ export class WorldBuilder {
            + elevGrid[r1*gridSize+c0]*(1-tc)*   tr
            + elevGrid[r1*gridSize+c1]*   tc *   tr;
     };
-
+  
     const centreElev = rawElev(0, 0);
-    const elev       = (x, z) => rawElev(x, z) - centreElev;
-
+    const elev = (x, z) => rawElev(x, z) - centreElev;
+  
     const buildingFootprints = [];
     const rawRoadTris = [];
-    const watPos = [], watIdx = [], watNrm = []; let watBase = 0;
-
-    const buildingGroup = new THREE.Group();
-    buildingGroup.name  = 'buildings';
-
-    const roadWays     = [];
-    const tallBuildings = [];   // { verts, topY } for aviation lights
-
-    // placedFootprints is passed into _buildingMesh so each successive building
-    // can check whether it overlaps any already-built footprint and erode itself
-    // inward to prevent coplanar wall z-fighting (e.g. Tokyo Tower red/white bands).
+    const roadWays = [];
+    const tallBuildings = [];
+  
     const placedFootprints = [];
-
+  
+    // 🔥 MERGED BUFFERS
+    const pos = [];
+    const nrm = [];
+    const col = [];
+    const idx = [];
+  
+    let indexOffset = 0;
+  
     for (const way of ways) {
       try {
         if (way.kind === 'building' && way.closed) {
           const result = this._buildingMesh(way, heightScale, elev, placedFootprints);
-          if (result) {
-            buildingGroup.add(result.mesh);
-            buildingFootprints.push({ verts: result.verts, baseY: result.baseY });
-            placedFootprints.push({ verts: result.verts });
-            // Collect tall buildings (≥ 30 m scaled) for aviation lights
-            if (result.topY - result.baseY >= 30) {
-              tallBuildings.push({ verts: result.verts, topY: result.topY });
-            }
-            buildings++;
+          if (!result) continue;
+  
+          const geom = result.mesh.geometry;
+          const positions = geom.attributes.position.array;
+          const normals   = geom.attributes.normal.array;
+          const indices   = geom.index.array;
+  
+          const colorWall = new THREE.Color(buildingPalette(way.tags));
+          const colorRoof = new THREE.Color(roofColour(way.tags));
+  
+          // push vertices
+          for (let i = 0; i < positions.length; i += 3) {
+            pos.push(positions[i], positions[i+1], positions[i+2]);
+            nrm.push(normals[i], normals[i+1], normals[i+2]);
           }
-        } else if (way.kind === 'road') {
+  
+          // SIMPLE + FAST: assign per-vertex (no index lookup)
+          const vertexCount = positions.length / 3;
+
+          // group split point (walls first, then roof)
+          const roofStart = geom.groups[1].start;
+
+          // convert index offset → vertex offset
+          const roofVertexStart = indices
+            .slice(0, roofStart)
+            .reduce((max, i) => Math.max(max, i), 0) + 1;
+
+          for (let i = 0; i < vertexCount; i++) {
+            const c = (i < roofVertexStart) ? colorWall : colorRoof;
+            col.push(c.r, c.g, c.b);
+          }
+  
+          // indices
+          for (let i = 0; i < indices.length; i++) {
+            idx.push(indices[i] + indexOffset);
+          }
+  
+          indexOffset += positions.length / 3;
+  
+          buildingFootprints.push({ verts: result.verts, baseY: result.baseY });
+          placedFootprints.push({ verts: result.verts });
+  
+          if (result.topY - result.baseY >= 30) {
+            tallBuildings.push({ verts: result.verts, topY: result.topY });
+          }
+  
+          buildings++;
+        }
+  
+        else if (way.kind === 'road') {
           const ts = this._roadTriangles(way);
           if (ts) {
             ts.forEach(t => rawRoadTris.push(t));
             roads++;
             if (LAMP_ROAD_TYPES.has(way.tags.highway)) roadWays.push(way);
           }
-        } else if (way.kind === 'water' && way.closed) {
+        }
+  
+        else if (way.kind === 'water' && way.closed) {
           const r = this._waterPolyGeom(way, elev);
           if (r) {
-            r.pos.forEach(v => watPos.push(v));
-            r.nrm.forEach(v => watNrm.push(v));
-            r.idx.forEach(i => watIdx.push(watBase + i));
-            watBase += r.pos.length / 3;
+            this._appendGeom(r, water);
             water++;
           }
         }
+  
       } catch (_) {}
     }
-
+  
+    // 🌍 terrain
     this.scene.buildElevationGround(elev, gridSize, radiusMeters, buildingFootprints);
-
+  
     const terrainMesh = this.scene.getTerrainMesh();
-    let   bvh         = null;
+    let bvh = null;
+  
     if (terrainMesh) {
       try {
         terrainMesh.geometry.boundsTree = new MeshBVH(terrainMesh.geometry);
         bvh = terrainMesh.geometry.boundsTree;
-      } catch (e) { console.warn('BVH build failed:', e); }
+      } catch (e) {}
     }
-
-    this.scene.addObject(buildingGroup, true);
-    tris += buildingGroup.children.reduce((s, m) => s + this._triCount(m), 0);
-
+  
+    // 🏢 BUILDING MESH (SINGLE)
+    if (idx.length) {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      geom.setAttribute('normal',   new THREE.Float32BufferAttribute(nrm, 3));
+      geom.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+      geom.setIndex(idx);
+  
+      const mat = new THREE.MeshToonMaterial({
+        vertexColors: true,
+        gradientMap: this._toonGradient,
+      });
+  
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+  
+      this.scene.addObject(mesh, true);
+  
+      tris += idx.length / 3;
+    }
+  
+    // 🛣 ROADS (unchanged)
     if (rawRoadTris.length) {
       const draped = this._drapeTriangles(rawRoadTris, terrainMesh, bvh, elev, DRAPE_BIAS);
       const mesh = new THREE.Mesh(
@@ -176,57 +236,40 @@ export class WorldBuilder {
         })
       );
       mesh.receiveShadow = true;
-      mesh.userData      = { kind: 'road' };
       this.scene.addObject(mesh);
       tris += draped.idx.length / 3;
     }
-
+  
+    // 💡 lamps
     if (roadWays.length) {
       const lampGroup = this._buildStreetLamps(roadWays, elev, terrainMesh);
       if (lampGroup) {
         this.scene.addObject(lampGroup);
         const lampMeshes = [];
-        lampGroup.traverse(child => {
-          if (child.isMesh && child.userData.isLampGlobe) lampMeshes.push(child);
-          if (child.isMesh && child.userData.isLampHalo)  lampMeshes.push(child);
+        lampGroup.traverse(c => {
+          if (c.isMesh && (c.userData.isLampGlobe || c.userData.isLampHalo)) lampMeshes.push(c);
         });
         this.scene.registerLampMeshes(lampMeshes);
       }
     }
-
+  
+    // ✈️ aviation lights
     if (tallBuildings.length) {
       const aviatGroup = this._buildAviationLights(tallBuildings);
       if (aviatGroup) {
         this.scene.addObject(aviatGroup);
         const aviatMeshes = [];
-        aviatGroup.traverse(child => {
-          if (child.isMesh && child.userData.isLampGlobe) aviatMeshes.push(child);
+        aviatGroup.traverse(c => {
+          if (c.isMesh && c.userData.isLampGlobe) aviatMeshes.push(c);
         });
         this.scene.registerLampMeshes(aviatMeshes);
       }
     }
-
-    if (watIdx.length) {
-      const mesh = new THREE.Mesh(
-        this._buildGeom(watPos, watIdx, watNrm),
-        new THREE.MeshLambertMaterial({
-          color: 0x2878b0,
-          transparent: true,
-          opacity: 0.85,
-          polygonOffset: true,
-          polygonOffsetFactor: -2,
-          polygonOffsetUnits: -2,
-        })
-      );
-      mesh.userData = { kind: 'water', isWater: true };
-      this.scene.addObject(mesh);
-      tris += watIdx.length / 3;
-    }
-
+  
     fetchSatelliteTexture(lat, lng, radiusMeters)
       .then(tex => this.scene.setGroundTexture(tex))
       .catch(() => {});
-
+  
     return { buildings, roads, water, parks, triangleCount: Math.round(tris) };
   }
 

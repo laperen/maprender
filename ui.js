@@ -31,6 +31,9 @@ export class UIController {
     this._beaconY = null;
     this._beaconZ = null;
     this._worldGenerated = false;
+
+    this._lastMapKey = null;
+    this._lastWays = null;
   }
 
   init() {
@@ -804,7 +807,9 @@ export class UIController {
       this._setStatus(`Geocoding failed: ${err.message}`, 'error');
     }
   }
-
+  _getMapKey() {
+    return `${this.lat.toFixed(5)}|${this.lng.toFixed(5)}|${this.radius}`;
+  }
   async _generate() {
     this.$generateBtn.disabled = true;
     this.$stats.classList.add('hidden');
@@ -824,13 +829,23 @@ export class UIController {
           weatherCode: wmoCode,
         });
       }
+      const mapKey = this._getMapKey();
 
+      let waysPromise;
+      
+      if (this._lastMapKey === mapKey && this._lastWays) {
+        waysPromise = Promise.resolve(this._lastWays);
+      } else {
+        waysPromise = this._fetchWithRetry(this.lat, this.lng, this.radius);
+      }
       const [ways, weather] = await Promise.all([
-        this._fetchWithRetry(this.lat, this.lng, this.radius),
+        waysPromise,
         weatherPromise,
       ]);
 
       if (!ways.length) throw new Error('No map features found in this area.');
+      this._lastWays = ways;
+      this._lastMapKey = mapKey;
 
       // Apply weather (cover + condition)
       this.scene.setWeather(weather.cloudCover, weather.weatherCode);
