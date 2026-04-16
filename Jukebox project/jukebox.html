@@ -1,24 +1,10 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Jukebox</title>
-    <style>
-        .hidden-player {
-            width: 0;
-            height: 0;
-            opacity: 0;
-            position: absolute;
-        }
-
-        li {
-            padding: 6px;
-            cursor: grab;
-            display: flex;
-            justify-content: space-between;
-        }
-
-        li:active { cursor: grabbing; }
-    </style>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jukebox — AirTreck</title>
+    <link rel="stylesheet" href="../style.css" />
 </head>
 
 <body>
@@ -26,41 +12,171 @@
 <iframe id="soundcloud-player" class="hidden-player"></iframe>
 <audio id="audio-player" class="hidden-player"></audio>
 
-<div id="tabs">
-    <button id="daycategory">Day</button>
-    <button id="nightcategory">Night</button>
-    <button id="wincategory">Win</button>
-    <button id="losecategory">Lose</button>
-</div>
+<div id="ui">
 
-<div id="controls">
-    <input id="urlInput" placeholder="Paste link here">
-    <button id="addbtn">Add</button>
-    <button id="playbtn">Play</button>
-    <button id="pausebtn">Pause</button>
-    <button id="nextbtn">Next</button>
-    <input id="volslider" type="range" min="0" max="100" value="50">
-</div>
+    <header>
+        <div class="logo">
+            <span class="logo-mark">♫</span>
+            <span class="logo-text">Juke<em>box</em></span>
+        </div>
+    </header>
 
-<ul id="audiolist"></ul>
+    <!-- Category tabs -->
+    <div id="tabs">
+        <button class="cat-btn active" id="daycategory">Day</button>
+        <button class="cat-btn" id="nightcategory">Night</button>
+        <button class="cat-btn" id="wincategory">Win</button>
+        <button class="cat-btn" id="losecategory">Lose</button>
+    </div>
+
+    <!-- Add track -->
+    <div id="add-row">
+        <input id="urlInput" type="text" placeholder="SoundCloud, Audius, or .mp3 link" title="Paste SoundCloud, Audius, or .mp3 link" />
+        <button id="addbtn">Add</button>
+    </div>
+
+    <!-- Playback controls -->
+    <div id="playback">
+        <button class="play-btn" id="playbtn" title="Play">▶</button>
+        <button class="play-btn" id="pausebtn" title="Pause">⏸</button>
+        <button class="play-btn" id="nextbtn" title="Next">⏭</button>
+        <div id="vol-row">
+            <label for="volslider">Vol</label>
+            <input id="volslider" type="range" min="0" max="100" value="50" />
+        </div>
+    </div>
+
+    <!-- List header -->
+    <div id="list-header">
+        <label>Playlist</label>
+        <span id="track-count">0 tracks</span>
+    </div>
+
+    <!-- Scrollable track list -->
+    <div id="list-scroll">
+        <ul id="audiolist"></ul>
+        <div id="empty-state">
+            <span class="empty-icon">♪</span>
+            No tracks yet.<br>Paste a link above and hit Add.
+        </div>
+    </div>
+
+    <!-- Now playing footer -->
+    <div id="now-playing">
+        <div id="np-dot"></div>
+        <span id="np-label">Nothing playing</span>
+    </div>
+
+</div>
 
 <script src="https://w.soundcloud.com/player/api.js"></script>
 <script type="module">
     import * as jukebox from "./jukebox.js";
-    daycategory.onclick = ()=>{jukebox.setCategory("day")};
-    nightcategory.onclick = ()=>{jukebox.setCategory("night")};
-    wincategory.onclick = ()=>{jukebox.setCategory("win")};
-    losecategory.onclick = ()=>{jukebox.setCategory("lose")};
-    
-    addbtn.onclick = ()=>{jukebox.addTrack(urlInput.value);};
-    playbtn.onclick = jukebox.play;
-    pausebtn.onclick = jukebox.pause;
-    nextbtn.onclick = jukebox.next;
-    volslider.onchange=()=>{jukebox.setVolume(volslider.value);};
 
-    
+    /* ── Helpers ─────────────────────────────────────────────── */
+
+    function detectBadge(url) {
+        if (url.includes('soundcloud.com')) return ['soundcloud', 'SC'];
+        if (url.includes('audius.co'))      return ['audius', 'AU'];
+        if (/\.(mp3|wav|ogg)/i.test(url))   return ['audio', 'MP3'];
+        return ['unknown', '?'];
+    }
+
+    function syncMeta() {
+        const items = document.querySelectorAll('#audiolist li');
+        const count = items.length;
+        document.getElementById('track-count').textContent =
+            count === 1 ? '1 track' : `${count} tracks`;
+        document.getElementById('empty-state').style.display =
+            count === 0 ? 'block' : 'none';
+    }
+
+    /* Upgrade plain <li> elements written by jukebox.js ──────── */
+    function upgradeLis() {
+        document.querySelectorAll('#audiolist li:not([data-up])').forEach(li => {
+            li.dataset.up = '1';
+
+            // jukebox.js puts a <span> (url) and <button> (X) inside
+            const spanEl = li.querySelector('span');
+            const url    = spanEl?.textContent?.trim() || '';
+
+            // Replace the raw span with a classed one
+            if (spanEl) spanEl.className = 'track-url';
+            if (spanEl) spanEl.title = url;
+
+            // Inject badge before the span
+            const [type, label] = detectBadge(url);
+            const badge = document.createElement('span');
+            badge.className = `track-badge badge-${type}`;
+            badge.textContent = label;
+            li.insertBefore(badge, spanEl);
+
+            // Drag-over highlight
+            li.addEventListener('dragenter', () => li.classList.add('drag-over'));
+            li.addEventListener('dragleave', () => li.classList.remove('drag-over'));
+            li.addEventListener('drop',      () => li.classList.remove('drag-over'));
+        });
+
+        syncMeta();
+    }
+
+    const observer = new MutationObserver(upgradeLis);
+    observer.observe(document.getElementById('audiolist'), { childList: true });
+
+    /* ── Now-playing helpers ─────────────────────────────────── */
+
+    function getCurrentUrl() {
+        const li = document.querySelector('#audiolist li');
+        return li?.querySelector('.track-url')?.textContent?.trim()
+            || li?.querySelector('span')?.textContent?.trim()
+            || '';
+    }
+
+    function setPlaying(active, url) {
+        const dot   = document.getElementById('np-dot');
+        const label = document.getElementById('np-label');
+        dot.classList.toggle('playing', active);
+        label.classList.toggle('active', active);
+        label.textContent = active ? (url || 'Playing…') : 'Paused';
+    }
+
+    /* ── Category buttons ─────────────────────────────────────── */
+
+    const catBtns = document.querySelectorAll('.cat-btn');
+    catBtns.forEach(btn => btn.addEventListener('click', () => {
+        catBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }));
+
+    daycategory.onclick   = () => jukebox.setCategory('day');
+    nightcategory.onclick = () => jukebox.setCategory('night');
+    wincategory.onclick   = () => jukebox.setCategory('win');
+    losecategory.onclick  = () => jukebox.setCategory('lose');
+
+    /* ── Controls ─────────────────────────────────────────────── */
+
+    addbtn.onclick = () => {
+        const val = urlInput.value.trim();
+        if (!val) return;
+        jukebox.addTrack(val);
+        urlInput.value = '';
+    };
+
+    urlInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') addbtn.onclick();
+    });
+
+    playbtn.onclick  = () => { jukebox.play();  setPlaying(true,  getCurrentUrl()); };
+    pausebtn.onclick = () => { jukebox.pause(); setPlaying(false, '');              };
+    nextbtn.onclick  = () => { jukebox.next();  setTimeout(() => setPlaying(true, getCurrentUrl()), 80); };
+
+    volslider.onchange = () => jukebox.setVolume(volslider.value);
+
+    /* ── Init ─────────────────────────────────────────────────── */
     jukebox.loadFromStorage();
     jukebox.UpdateAudioList();
+    upgradeLis();
 </script>
+
 </body>
 </html>
