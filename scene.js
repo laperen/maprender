@@ -162,7 +162,25 @@ export class SceneManager {
   
     return sunPos;
   }
-
+  _getAtmosphereColors(sunDayPhase, elevDeg, goldenSoft) {
+    const daySky   = new THREE.Color(0x87b7ff);
+    const sunset   = new THREE.Color(0xffa060);
+    const nightSky = new THREE.Color(0x050816);
+  
+    const sky = new THREE.Color();
+  
+    if (sunDayPhase > 0.01) {
+      // bias toward warm tones during golden hour
+      sky.lerpColors(daySky, sunset, THREE.MathUtils.clamp(goldenSoft * 1.2, 0, 1));
+    } else {
+      sky.copy(nightSky);
+    }
+  
+    return {
+      sky,
+      fog: sunDayPhase > 0.01 ? sky.clone() : nightSky.clone()
+    };
+  }
   // ── Day lights ────────────────────────────────────────────────
   _addLights() {
     const dist = 1000;
@@ -434,12 +452,7 @@ export class SceneManager {
     const elevNorm = THREE.MathUtils.clamp(elevDeg / 75, -0.267, 1);
   
     // Smooth day/night split (stable across wrap)
-    const sunDayPhase = THREE.MathUtils.clamp(
-      THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.18),
-      0,
-      1
-    );
-  
+    const sunDayPhase = THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.18);
     const nightPhase = 1 - sunDayPhase;
     this._nightPhase = nightPhase;
   
@@ -476,6 +489,29 @@ export class SceneManager {
     this.sun.color.copy(sunColor);
     this.sun.intensity = sunDayPhase * 3.0;
   
+    const atmos = this._getAtmosphereColors(
+      sunDayPhase,
+      elevDeg,
+      goldenSoft
+    );
+    // Skybox / scene background
+    this.scene.background = atmos.sky;
+
+    // Sky shader still used (kept intact)
+    if (this._sky) this._sky.visible = true;
+
+    // Fog now matches atmosphere exactly
+    if (sunDayPhase > 0.01) {
+      if (!this.scene.fog) {
+        this.scene.fog = new THREE.Fog(atmos.fog, 2000, 14000);
+      }
+      this.scene.fog.color.copy(atmos.fog);
+    } else {
+      if (!this.scene.fog) {
+        this.scene.fog = new THREE.Fog(atmos.fog, 3000, 14000);
+      }
+      this.scene.fog.color.copy(atmos.fog);
+    }
     // ── 5. Ambient & rim light ───────────────────────────────
     if (this._dayAmbient) {
       this._dayAmbient.intensity = sunDayPhase * 0.5;
@@ -483,22 +519,6 @@ export class SceneManager {
   
     if (this._rimLight) {
       this._rimLight.intensity = sunDayPhase * 0.4;
-    }
-  
-    // ── 6. Night sky background (stable cyclic fade) ─────────
-    if (nightPhase > 0.3) {
-      const nightSkyColor = new THREE.Color().lerpColors(
-        new THREE.Color(0x0a1428),
-        new THREE.Color(0x040810),
-        Math.max(0, nightPhase - 0.5) * 2
-      );
-  
-      this.scene.background = nightSkyColor;
-  
-      if (this._sky) this._sky.visible = false;
-    } else {
-      this.scene.background = null;
-      if (this._sky) this._sky.visible = true;
     }
   
     // ── 7. Moon light + ambient ──────────────────────────────
@@ -542,26 +562,6 @@ export class SceneManager {
         mat.needsUpdate = true;
       }
     }
-  
-    // ── 10. Fog ──────────────────────────────────────────────
-    if (nightPhase > 0.01) {
-      if (!this.scene.fog) {
-        this.scene.fog = new THREE.Fog(0x050a18, 3000, 14000);
-      }
-  
-      const fogColor = new THREE.Color().lerpColors(
-        new THREE.Color(0x000000),
-        new THREE.Color(0x050a18),
-        nightPhase
-      );
-  
-      this.scene.fog.color.copy(fogColor);
-      this.scene.fog.near = THREE.MathUtils.lerp(5000, 600, nightPhase);
-      this.scene.fog.far  = THREE.MathUtils.lerp(14000, 5000, nightPhase);
-    } else {
-      this.scene.fog = null;
-    }
-  
     // ── 11. Tone mapping ─────────────────────────────────────
     this.renderer.toneMappingExposure = THREE.MathUtils.lerp(
       0.45,
