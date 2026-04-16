@@ -934,7 +934,7 @@ export class UIController {
   }
 
   _updateMinimap() {
-    this.minimap.update(this.lng, this.lat, this.radius, this.$styleSelect.value);
+    this.minimap.update(this.lng, this.lat, this.radius, "streets"/*this.$styleSelect.value*/);
   }
 
   _nextFrame() { return new Promise(r => requestAnimationFrame(r)); }
