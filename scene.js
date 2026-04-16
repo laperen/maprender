@@ -631,7 +631,7 @@ export class SceneManager {
     const el = document.createElement('div');
     el.id = 'fps-counter';
     Object.assign(el.style, {
-      position: 'fixed', bottom: '0', right: '0',
+      position: 'fixed', top: '0', right: '0',
       background: 'rgba(8,9,12,0.75)', color: '#4fffb0',
       fontFamily: "'Space Mono', monospace", fontSize: '12px',
       fontWeight: '700', padding: '4px 10px', borderRadius: '4px',
