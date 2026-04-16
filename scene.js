@@ -742,7 +742,7 @@ export class SceneManager {
       this._tickBeacon(dt);
       if (this._transitionTick) this._transitionTick(dt);
       this._clouds.tick(dt, this.camera.position);
-      this.controls.update();
+      this.controls.update(dt);
       this.renderer.render(this.scene, this.camera);
       this._updateFPS();
     };
