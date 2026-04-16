@@ -73,72 +73,10 @@
 <script type="module">
     import * as jukebox from "./jukebox.js";
 
-    /* ── Helpers ─────────────────────────────────────────────── */
 
-    function detectBadge(url) {
-        if (url.includes('soundcloud.com')) return ['soundcloud', 'SC'];
-        if (url.includes('audius.co'))      return ['audius', 'AU'];
-        if (/\.(mp3|wav|ogg)/i.test(url))   return ['audio', 'MP3'];
-        return ['unknown', '?'];
-    }
-
-    function syncMeta() {
-        const items = document.querySelectorAll('#audiolist li');
-        const count = items.length;
-        document.getElementById('track-count').textContent =
-            count === 1 ? '1 track' : `${count} tracks`;
-        document.getElementById('empty-state').style.display =
-            count === 0 ? 'block' : 'none';
-    }
-
-    /* Upgrade plain <li> elements written by jukebox.js ──────── */
-    function upgradeLis() {
-        document.querySelectorAll('#audiolist li:not([data-up])').forEach(li => {
-            li.dataset.up = '1';
-
-            // jukebox.js puts a <span> (url) and <button> (X) inside
-            const spanEl = li.querySelector('span');
-            const url    = spanEl?.textContent?.trim() || '';
-
-            // Replace the raw span with a classed one
-            if (spanEl) spanEl.className = 'track-url';
-            if (spanEl) spanEl.title = url;
-
-            // Inject badge before the span
-            const [type, label] = detectBadge(url);
-            const badge = document.createElement('span');
-            badge.className = `track-badge badge-${type}`;
-            badge.textContent = label;
-            li.insertBefore(badge, spanEl);
-
-            // Drag-over highlight
-            li.addEventListener('dragenter', () => li.classList.add('drag-over'));
-            li.addEventListener('dragleave', () => li.classList.remove('drag-over'));
-            li.addEventListener('drop',      () => li.classList.remove('drag-over'));
-        });
-
-        syncMeta();
-    }
-
-    const observer = new MutationObserver(upgradeLis);
+    const observer = new MutationObserver(jukebox.upgradeLis);
     observer.observe(document.getElementById('audiolist'), { childList: true });
 
-    /* ── Now-playing helpers ─────────────────────────────────── */
-
-    function getCurrentUrl() {
-        const li = document.querySelector('#audiolist li');
-        return li?.querySelector('.track-url')?.textContent?.trim()
-            || li?.querySelector('span')?.textContent?.trim()
-            || '';
-    }
-
-    function setPlaying(active, url) {
-        const dot   = document.getElementById('np-dot');
-        const label = document.getElementById('np-label');
-        dot.classList.toggle('playing', active);
-        label.classList.toggle('active', active);
-        label.textContent = active ? (url || 'Playing…') : 'Paused';
-    }
 
     /* ── Category buttons ─────────────────────────────────────── */
 
@@ -166,16 +104,16 @@
         if (e.key === 'Enter') addbtn.onclick();
     });
 
-    playbtn.onclick  = () => { jukebox.play();  setPlaying(true,  getCurrentUrl()); };
-    pausebtn.onclick = () => { jukebox.pause(); setPlaying(false, '');              };
-    nextbtn.onclick  = () => { jukebox.next();  setTimeout(() => setPlaying(true, getCurrentUrl()), 80); };
+    playbtn.onclick  = () => { jukebox.play();  jukebox.setPlaying(true,  jukebox.getCurrentUrl()); };
+    pausebtn.onclick = () => { jukebox.pause(); jukebox.setPlaying(false, '');              };
+    nextbtn.onclick  = () => { jukebox.next();  setTimeout(() => jukebox.setPlaying(true, jukebox.getCurrentUrl()), 80); };
 
     volslider.onchange = () => jukebox.setVolume(volslider.value);
 
     /* ── Init ─────────────────────────────────────────────────── */
     jukebox.loadFromStorage();
     jukebox.UpdateAudioList();
-    upgradeLis();
+    jukebox.upgradeLis();
 </script>
 
 </body>

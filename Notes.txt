@@ -1,13 +1,5 @@
 WIP
 
-jukebox
-p:
-"next" does not seem to update current played track, which gets in the way of track switch on track end.
-
-day night cycle
-p:
-The moon position does not loop between the start and end of the day, night cycle. Might it be easier to start and end at 12 noon to 12 noon rather than 12am?
-
 collision, physics, and character movement
 p:
 ???

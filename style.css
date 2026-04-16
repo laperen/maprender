@@ -744,20 +744,6 @@ button {
   gap: 10px;
 }
 
-.sel-logo {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.sel-title {
-  font-family: 'Syne', sans-serif;
-  font-weight: 800;
-  font-size: 15px;
-  color: #fff;
-  letter-spacing: -0.3px;
-}
-
 .sel-icon-btn {
   display: flex;
   align-items: center;

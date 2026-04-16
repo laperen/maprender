@@ -51,7 +51,10 @@ export class OrbitControlsImpl {
     this.update();
   }
 
-  update() {
+  update(deltaTime = 1/60) {
+    const damping = this.enableDamping
+      ? Math.pow(1 - this.dampingFactor, deltaTime * 60)
+      : 0;
     const offset   = this._offset;
     const position = this.camera.position;
     offset.copy(position).sub(this.target);
@@ -73,9 +76,9 @@ export class OrbitControlsImpl {
     this.camera.lookAt(this.target);
 
     if (this.enableDamping) {
-      this._sphericalDelta.theta *= 1 - this.dampingFactor;
-      this._sphericalDelta.phi   *= 1 - this.dampingFactor;
-      this._panOffset.multiplyScalar(1 - this.dampingFactor);
+      this._sphericalDelta.theta *= damping;
+      this._sphericalDelta.phi   *= damping;
+      this._panOffset.multiplyScalar(damping);
     } else {
       this._sphericalDelta.set(0, 0, 0);
       this._panOffset.set(0, 0, 0);

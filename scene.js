@@ -150,35 +150,49 @@ export class SceneManager {
     const dayFactor   = 1 - nightFactor;
   
     const turbidity = isDay
-      ? THREE.MathUtils.lerp(6, 14, dayFactor)
-      : 2;
-  
+      ? THREE.MathUtils.lerp(0.6, 1.4, dayFactor)
+      : 0.5;
+
     const rayleigh = isDay
-      ? THREE.MathUtils.lerp(1.5, 3.5, dayFactor)
-      : 0.2;
-  
+      ? THREE.MathUtils.lerp(0.15, 0.3, dayFactor)  // balanced blue
+      : 0.1;
+
+    const mieCoefficient = isDay ? 0.0025 : 0.0008;  // reduce haze
+    const mieDirectionalG = 0.75; // slightly less forward scattering
+
     this._skyUniforms['turbidity'].value = turbidity;
-    this._skyUniforms['rayleigh'].value   = rayleigh;
+    this._skyUniforms['rayleigh'].value = rayleigh;
+    this._skyUniforms['mieCoefficient'].value = mieCoefficient;
+    this._skyUniforms['mieDirectionalG'].value = mieDirectionalG;
   
     return sunPos;
   }
-  _getAtmosphereColors(sunDayPhase, elevDeg, goldenSoft) {
-    const daySky   = new THREE.Color(0x87b7ff);
+  _getAtmosphereColors(elevDeg) {
+    const daySky   = new THREE.Color(0x4da6ff);  // richer blue
     const sunset   = new THREE.Color(0xffa060);
     const nightSky = new THREE.Color(0x050816);
   
     const sky = new THREE.Color();
   
-    if (sunDayPhase > 0.01) {
-      // bias toward warm tones during golden hour
-      sky.lerpColors(daySky, sunset, THREE.MathUtils.clamp(goldenSoft * 1.2, 0, 1));
+    // ── 1. Compute golden factor DIRECTLY from elevation ──
+    // Peak golden at horizon (0°), fade out above ~20°
+    const goldenFactor = 1.0 - THREE.MathUtils.smoothstep(0, 20, elevDeg);
+  
+    // Optional: include below-horizon glow slightly
+    const twilightBoost = THREE.MathUtils.smoothstep(-6, 2, elevDeg);
+  
+    const finalGolden = goldenFactor * twilightBoost;
+  
+    // ── 2. Blend sky colors ──
+    if (elevDeg > -6) {
+      sky.lerpColors(daySky, sunset, finalGolden);
     } else {
       sky.copy(nightSky);
     }
   
     return {
       sky,
-      fog: sunDayPhase > 0.01 ? sky.clone() : nightSky.clone()
+      fog: elevDeg > -6 ? sky.clone() : nightSky.clone()
     };
   }
   // ── Day lights ────────────────────────────────────────────────
@@ -489,11 +503,7 @@ export class SceneManager {
     this.sun.color.copy(sunColor);
     this.sun.intensity = sunDayPhase * 3.0;
   
-    const atmos = this._getAtmosphereColors(
-      sunDayPhase,
-      elevDeg,
-      goldenSoft
-    );
+    const atmos = this._getAtmosphereColors(elevDeg);
     // Skybox / scene background
     this.scene.background = atmos.sky;
 

@@ -8,6 +8,8 @@ let scWidget = null;
 let scIframe = null;
 
 let isPlaying = false;
+let isTransitioning = false;
+let playbackToken = 0;
 
 const categories = {
     day: [],
@@ -152,44 +154,29 @@ function createSoundCloudPlayer(url) {
 
     scWidget = SC.Widget(scIframe);
 
-    let endCallback = null;
-    let duration = null;
-
-    function fallbackTimer() {
-        if (!duration) return;
-
-        setTimeout(() => {
-            console.log("SC fallback next()");
-            endCallback?.();
-        }, duration);
-    }
-
     return {
         play: () => scWidget.play(),
         pause: () => scWidget.pause(),
         setVolume: v => scWidget.setVolume(clampVolume(v) * 100),
 
         onEnd: cb => {
-            endCallback = cb;
-
+            let called = false;
+        
+            const safeCall = () => {
+                if (called) return;
+                called = true;
+                cb();
+            };
+        
             scWidget.bind(SC.Widget.Events.READY, () => {
                 scWidget.play();
                 scWidget.setVolume(currentVolume * 100);
+        
                 scWidget.getDuration(d => {
-                    duration = d;
-                    fallbackTimer();
+                    setTimeout(safeCall, d);
                 });
-
-                scWidget.bind(SC.Widget.Events.FINISH, () => {
-                    console.log("SC FINISH");
-                    cb();
-                });
-
-                // 🔥 retry if FINISH fails
-                setTimeout(() => {
-                    console.log("SC retry bind");
-                    scWidget.bind(SC.Widget.Events.FINISH, cb);
-                }, 2000);
+        
+                scWidget.bind(SC.Widget.Events.FINISH, safeCall);
             });
         }
     };
@@ -224,7 +211,7 @@ async function createPlayer(track) {
 
 /* ================= CROSSFADE ================= */
 
-function crossfade(oldP, newP) {
+function crossfade(oldP, newP, url) {
     let v = 0;
 
     newP.setVolume(0);
@@ -243,20 +230,34 @@ function crossfade(oldP, newP) {
             clearInterval(interval);
             oldP?.pause();
         }
+        setPlaying(true, url);
     }, 40);
 }
 
 /* ================= PLAYBACK ================= */
 
+
 async function loadTrack(track) {
+    if (isTransitioning) return;
+    isTransitioning = true;
+
+    const token = ++playbackToken; // 🔥 unique ID for this track
+
     const newPlayer = await createPlayer(track);
 
-    newPlayer.onEnd(() => next());
+    newPlayer.onEnd(() => {
+        // 🔥 ignore stale players
+        if (token !== playbackToken) return;
 
-    crossfade(activePlayer, newPlayer);
+        isTransitioning = false;
+        next();
+    });
+
+    crossfade(activePlayer, newPlayer, track.url);
 
     activePlayer = newPlayer;
     isPlaying = true;
+
 }
 
 function play() {
@@ -266,6 +267,7 @@ function play() {
     if (activePlayer && !isPlaying) {
         activePlayer.play();
         isPlaying = true;
+        setPlaying(true, list[currentIndex]?.url);
     } else if (!activePlayer) {
         loadTrack(list[currentIndex]);
     }
@@ -274,13 +276,16 @@ function play() {
 function pause() {
     activePlayer?.pause();
     isPlaying = false;
+    setPlaying(false);
 }
 
 function next() {
+    isTransitioning = false; // reset guard
     const list = categories[currentCategory];
     if (!list.length) return;
 
     currentIndex = (currentIndex + 1) % list.length;
+    console.log("NEXT → index:", currentIndex);
     loadTrack(list[currentIndex]);
 }
 
@@ -293,4 +298,74 @@ function setVolume(v) {
     saveToStorage(); // persist immediately
 }
 
-export { addTrack, play, pause, next, setCategory, setVolume, loadFromStorage, UpdateAudioList};
+/* ── Helpers ─────────────────────────────────────────────── */
+
+function detectBadge(url) {
+    if (url.includes('soundcloud.com')) return ['soundcloud', 'SC'];
+    if (url.includes('audius.co'))      return ['audius', 'AU'];
+    if (/\.(mp3|wav|ogg)/i.test(url))   return ['audio', 'MP3'];
+    return ['unknown', '?'];
+}
+
+function syncMeta() {
+    const items = document.querySelectorAll('#audiolist li');
+    const count = items.length;
+    document.getElementById('track-count').textContent =
+        count === 1 ? '1 track' : `${count} tracks`;
+    document.getElementById('empty-state').style.display =
+        count === 0 ? 'block' : 'none';
+}
+
+/* Upgrade plain <li> elements written by jukebox.js ──────── */
+function upgradeLis() {
+    document.querySelectorAll('#audiolist li:not([data-up])').forEach(li => {
+        li.dataset.up = '1';
+
+        // jukebox.js puts a <span> (url) and <button> (X) inside
+        const spanEl = li.querySelector('span');
+        const url    = spanEl?.textContent?.trim() || '';
+
+        // Replace the raw span with a classed one
+        if (spanEl) spanEl.className = 'track-url';
+        if (spanEl) spanEl.title = url;
+
+        // Inject badge before the span
+        const [type, label] = detectBadge(url);
+        const badge = document.createElement('span');
+        badge.className = `track-badge badge-${type}`;
+        badge.textContent = label;
+        li.insertBefore(badge, spanEl);
+
+        // Drag-over highlight
+        li.addEventListener('dragenter', () => li.classList.add('drag-over'));
+        li.addEventListener('dragleave', () => li.classList.remove('drag-over'));
+        li.addEventListener('drop',      () => li.classList.remove('drag-over'));
+    });
+
+    syncMeta();
+}
+/* ── Now-playing helpers ─────────────────────────────────── */
+
+function getCurrentUrl() {
+    const li = document.querySelector('#audiolist li');
+    return li?.querySelector('.track-url')?.textContent?.trim()
+        || li?.querySelector('span')?.textContent?.trim()
+        || '';
+}
+function formatTrackLabel(url) {
+    try {
+        const u = new URL(url);
+        return decodeURIComponent(u.pathname.split('/').pop());
+    } catch {
+        return url;
+    }
+}
+function setPlaying(active, url) {
+    const dot   = document.getElementById('np-dot');
+    const label = document.getElementById('np-label');
+    dot.classList.toggle('playing', active);
+    label.classList.toggle('active', active);
+    label.textContent = active ? (formatTrackLabel(url) || 'Playing…') : 'Paused';
+}
+
+export { addTrack, play, pause, next, setCategory, setVolume, loadFromStorage, UpdateAudioList, upgradeLis, getCurrentUrl, setPlaying};
