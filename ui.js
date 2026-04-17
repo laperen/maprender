@@ -903,71 +903,42 @@ export class UIController {
       this.$generateBtn.disabled = false;
     }
   }
-
-  async _fetchWithRetry(lat, lng, radius, maxAttempts = 3) {
-    const MIRRORS = [
-      'https://overpass-api.de/api/interpreter',
-      'https://overpass.kumi.systems/api/interpreter',
-      'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
-    ];
+  async _fetchWithRetry(lat, lng, radius) {
+    try {
+      this._setStatus('Fetching map data…', 'active loading');
   
-    let lastError;
+      const result = await this.fetcher.fetchArea(lat, lng, radius);
   
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const mirror = MIRRORS[attempt % MIRRORS.length];
-  
-      try {
-        this._setStatus(
-          attempt === 0
-            ? 'Fetching map data…'
-            : `Retrying (attempt ${attempt + 1} of ${maxAttempts})…`,
-          'active loading'
-        );
-  
-        const result = await this.fetcher.fetchArea(lat, lng, radius, mirror);
-  
-        // 🔒 Step 7: VALIDATION GATE
-        if (!result || !result.ways || result.ways.length === 0) {
-          throw new Error('Empty map data');
-        }
-  
-        const hasCoreData = result.ways.some(
-          w => w.kind === 'building' || w.kind === 'road'
-        );
-  
-        if (!hasCoreData) {
-          throw new Error('Incomplete map data');
-        }
-  
-        // ✅ SUCCESS — stop retrying immediately
-        if (result.source === 'cache') {
-          this._setStatus('Loaded cached map data', 'warning');
-        } else {
-          this._setStatus('Map data loaded', 'success');
-        }
-  
-        return result.ways;
-  
-      } catch (err) {
-        lastError = err;
-  
-        // ❗ IMPORTANT: If cache fallback already failed, don't retry forever
-        const retryable =
-          err.message.includes('504') ||
-          err.message.includes('429') ||
-          err.message.includes('Overpass error');
-  
-        if (!retryable) {
-          break; // hard failure → stop retry loop
-        }
-  
-        await this._sleep(1500 * (attempt + 1));
+      // 🔒 Step 7 — HARD VALIDATION
+      if (!result || !result.ways || result.ways.length === 0) {
+        throw new Error('Empty map data');
       }
-    }
   
-    // 🚫 FINAL FAIL → guarantees Step 7
-    this._setStatus('Failed to load map data', 'error');
-    throw lastError;
+      const hasCoreData = result.ways.some(
+        w => w.kind === 'building' || w.kind === 'road'
+      );
+  
+      if (!hasCoreData) {
+        throw new Error('Incomplete map data');
+      }
+  
+      // ✅ Status update based on source
+      if (result.source === 'cache') {
+        this._setStatus('Loaded cached map data', 'warning');
+      } else {
+        this._setStatus('Map data loaded', 'success');
+      }
+  
+      return result.ways;
+  
+    } catch (err) {
+      console.error('Map load failed:', err);
+  
+      this._setStatus('Failed to load map data', 'error');
+  
+      // 🚫 CRITICAL: propagate failure
+      throw err;
+    }
   }
 
   _onMouseMove(e) {

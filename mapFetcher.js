@@ -124,33 +124,39 @@ export class MapFetcher {
    */
   async fetchArea(lat, lng, radiusMeters = 500) {
     const key = this._getGridKey(lat, lng);
-  
-    // 1. Check cache first
     const cached = await this._getChunk(key);
   
-    // 2. Try network fetch
-    try {
-      const freshData = await this._fetchFromOverpass(lat, lng, radiusMeters);
+    const endpoints = this._shuffleEndpoints();
+    let lastError;
   
-      // 3. Always update cache if fetch succeeds
-      await this._setChunk(key, freshData);
+    // 🔁 Try ALL endpoints first
+    for (const endpoint of endpoints) {
+      try {
+        const data = await this._retry(() =>
+          this._fetchFromOverpass(lat, lng, radiusMeters, endpoint)
+        );
   
-      return { ways: freshData, source: 'network' };;
+        // ✅ Success → update cache
+        await this._setChunk(key, data);
   
-    } catch (err) {
-      console.warn('Fetch failed, checking cache...', err);
+        return { ways: data, source: 'network' };
   
-      // 4. If fetch fails → fallback to cache ONLY if it exists
-      if (cached && cached.data) {
-        console.warn('Using cached map data');
-        return { ways: cached.data, source: 'cache' };
+      } catch (err) {
+        lastError = err;
+        console.warn(`Endpoint failed: ${endpoint}`, err);
       }
-  
-      // 5. No data → hard fail (do NOT proceed)
-      throw new Error('Map data unavailable (no network + no cache)');
     }
+  
+    // 💾 ONLY after all endpoints fail → fallback to cache
+    if (cached && cached.data) {
+      console.warn('All endpoints failed, using cached data');
+      return { ways: cached.data, source: 'cache' };
+    }
+  
+    // ❌ Nothing worked
+    throw lastError || new Error('Map data unavailable');
   }
-  async _fetchFromOverpass(lat, lng, radiusMeters = 500) {
+  async _fetchFromOverpass(lat, lng, radiusMeters, endpoint) {
     const r = radiusMeters;
   
     const query = `
@@ -168,39 +174,18 @@ export class MapFetcher {
   out skel qt;
     `.trim();
   
-    let lastError;
-  
-    // rotate through endpoints
-    const endpoints = this._shuffleEndpoints();
-
-    for (let i = 0; i < endpoints.length; i++) {
-      const endpoint = endpoints[i];
-  
-      try {
-        const res = await this._retry(() =>
-          this._fetchWithTimeout(endpoint, {
-            method: 'POST',
-            body: `data=${encodeURIComponent(query)}`,
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded'
-            }
-          }, 8000)
-        );
-  
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-  
-        const json = await res.json();
-        return this._parse(json, lat, lng);
-  
-      } catch (err) {
-        console.warn(`Overpass failed (${endpoint}):`, err);
-        lastError = err;
+    const res = await this._fetchWithTimeout(endpoint, {
+      method: 'POST',
+      body: `data=${encodeURIComponent(query)}`,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
       }
-    }
+    });
   
-    throw lastError || new Error('All Overpass endpoints failed');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  
+    const json = await res.json();
+    return this._parse(json, lat, lng);
   }
 
   // ── Parse OSM JSON → structured data ────────────────────────
