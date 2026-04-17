@@ -510,7 +510,6 @@ export class SceneManager {
 
     // Sky shader still used (kept intact)
     if (this._sky) this._sky.visible = true;
-    console.log(this._sky);
     // Fog now matches atmosphere exactly
     if (sunDayPhase > 0.01) {
       if (!this.scene.fog) {
