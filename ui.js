@@ -910,21 +910,63 @@ export class UIController {
       'https://overpass.kumi.systems/api/interpreter',
       'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
     ];
+  
     let lastError;
+  
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const mirror = MIRRORS[attempt % MIRRORS.length];
+  
       try {
         this._setStatus(
-          attempt === 0 ? 'Fetching map data…' : `Retrying (attempt ${attempt + 1} of ${maxAttempts})…`,
+          attempt === 0
+            ? 'Fetching map data…'
+            : `Retrying (attempt ${attempt + 1} of ${maxAttempts})…`,
           'active loading'
         );
-        return await this.fetcher.fetchArea(lat, lng, radius, mirror);
+  
+        const result = await this.fetcher.fetchArea(lat, lng, radius, mirror);
+  
+        // 🔒 Step 7: VALIDATION GATE
+        if (!result || !result.ways || result.ways.length === 0) {
+          throw new Error('Empty map data');
+        }
+  
+        const hasCoreData = result.ways.some(
+          w => w.kind === 'building' || w.kind === 'road'
+        );
+  
+        if (!hasCoreData) {
+          throw new Error('Incomplete map data');
+        }
+  
+        // ✅ SUCCESS — stop retrying immediately
+        if (result.source === 'cache') {
+          this._setStatus('Loaded cached map data', 'warning');
+        } else {
+          this._setStatus('Map data loaded', 'success');
+        }
+  
+        return result.ways;
+  
       } catch (err) {
         lastError = err;
-        if (!err.message.includes('504') && !err.message.includes('429') && !err.message.includes('Overpass error')) throw err;
+  
+        // ❗ IMPORTANT: If cache fallback already failed, don't retry forever
+        const retryable =
+          err.message.includes('504') ||
+          err.message.includes('429') ||
+          err.message.includes('Overpass error');
+  
+        if (!retryable) {
+          break; // hard failure → stop retry loop
+        }
+  
         await this._sleep(1500 * (attempt + 1));
       }
     }
+  
+    // 🚫 FINAL FAIL → guarantees Step 7
+    this._setStatus('Failed to load map data', 'error');
     throw lastError;
   }
 

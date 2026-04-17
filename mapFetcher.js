@@ -3,10 +3,103 @@
 
 export class MapFetcher {
   constructor() {
-    this.overpassUrl = 'https://overpass-api.de/api/interpreter';
+    this.overpassEndpoints = [
+      'https://overpass-api.de/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://lz4.overpass-api.de/api/interpreter'
+    ];
     this.photonUrl   = 'https://photon.komoot.io/api/';
   }
-
+  async _initDB() {
+    if (this._db) return this._db;
+  
+    this._db = await new Promise((resolve, reject) => {
+      const req = indexedDB.open('MapCacheDB', 1);
+  
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('chunks')) {
+          db.createObjectStore('chunks', { keyPath: 'key' });
+        }
+      };
+  
+      req.onsuccess = () => resolve(req.result);
+      req.onerror   = () => reject(req.error);
+    });
+  
+    return this._db;
+  }
+  _getGridKey(lat, lng) {
+    const size = 0.01;//1000m
+    const latKey = Math.floor(lat / size);
+    const lngKey = Math.floor(lng / size);
+    return `${latKey}:${lngKey}`;
+  }
+  async _getChunk(key) {
+    const db = await this._initDB();
+  
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('chunks', 'readonly');
+      const store = tx.objectStore('chunks');
+      const req = store.get(key);
+  
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror   = () => reject(req.error);
+    });
+  }
+  
+  async _setChunk(key, data) {
+    const db = await this._initDB();
+  
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('chunks', 'readwrite');
+      const store = tx.objectStore('chunks');
+  
+      store.put({
+        key,
+        data,
+        timestamp: Date.now()
+      });
+  
+      tx.oncomplete = () => resolve();
+      tx.onerror    = () => reject(tx.error);
+    });
+  }
+  _isFresh(chunk, maxAgeMs = 86400000) { // 1 day
+    if (!chunk) return false;
+    return (Date.now() - chunk.timestamp) < maxAgeMs;
+  }
+  _shuffleEndpoints() {
+    return [...this.overpassEndpoints].sort(() => Math.random() - 0.5);
+  }
+  async _fetchWithTimeout(url, options, timeout = 8000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+  
+    try {
+      const res = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      return res;
+    } finally {
+      clearTimeout(id);
+    }
+  }
+  async _retry(fn, attempts = 3) {
+    let delay = 500;
+  
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (i === attempts - 1) throw err;
+  
+        await new Promise(r => setTimeout(r, delay));
+        delay *= 2; // exponential backoff
+      }
+    }
+  }
   // ── Geocoding (Photon) ───────────────────────────────────────
   async geocode(placeName) {
     const url = `${this.photonUrl}?q=${encodeURIComponent(placeName)}&limit=1&lang=en`;
@@ -29,33 +122,85 @@ export class MapFetcher {
    * @param {string} [overpassUrl] — optional mirror URL, falls back to default
    * @returns {Array} parsed way objects
    */
-  async fetchArea(lat, lng, radiusMeters = 500, overpassUrl) {
-    const endpoint = overpassUrl || this.overpassUrl;
-    const r        = radiusMeters;
-    const query    = `
-[out:json][timeout:25];
-(
-  way["building"](around:${r},${lat},${lng});
-  way["highway"](around:${r},${lat},${lng});
-  way["waterway"](around:${r},${lat},${lng});
-  way["natural"="water"](around:${r},${lat},${lng});
-  way["leisure"="park"](around:${r},${lat},${lng});
-  way["landuse"="grass"](around:${r},${lat},${lng});
-);
-out body;
->;
-out skel qt;
+  async fetchArea(lat, lng, radiusMeters = 500) {
+    const key = this._getGridKey(lat, lng);
+  
+    // 1. Check cache first
+    const cached = await this._getChunk(key);
+  
+    // 2. Try network fetch
+    try {
+      const freshData = await this._fetchFromOverpass(lat, lng, radiusMeters);
+  
+      // 3. Always update cache if fetch succeeds
+      await this._setChunk(key, freshData);
+  
+      return { ways: freshData, source: 'network' };;
+  
+    } catch (err) {
+      console.warn('Fetch failed, checking cache...', err);
+  
+      // 4. If fetch fails → fallback to cache ONLY if it exists
+      if (cached && cached.data) {
+        console.warn('Using cached map data');
+        return { ways: cached.data, source: 'cache' };
+      }
+  
+      // 5. No data → hard fail (do NOT proceed)
+      throw new Error('Map data unavailable (no network + no cache)');
+    }
+  }
+  async _fetchFromOverpass(lat, lng, radiusMeters = 500) {
+    const r = radiusMeters;
+  
+    const query = `
+  [out:json][timeout:25];
+  (
+    way["building"](around:${r},${lat},${lng});
+    way["highway"](around:${r},${lat},${lng});
+    way["waterway"](around:${r},${lat},${lng});
+    way["natural"="water"](around:${r},${lat},${lng});
+    way["leisure"="park"](around:${r},${lat},${lng});
+    way["landuse"="grass"](around:${r},${lat},${lng});
+  );
+  out body;
+  >;
+  out skel qt;
     `.trim();
+  
+    let lastError;
+  
+    // rotate through endpoints
+    const endpoints = this._shuffleEndpoints();
 
-    const res = await fetch(endpoint, {
-      method:  'POST',
-      body:    `data=${encodeURIComponent(query)}`,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    });
-
-    if (!res.ok) throw new Error(`Overpass error: ${res.status}`);
-    const json = await res.json();
-    return this._parse(json, lat, lng);
+    for (let i = 0; i < endpoints.length; i++) {
+      const endpoint = endpoints[i];
+  
+      try {
+        const res = await this._retry(() =>
+          this._fetchWithTimeout(endpoint, {
+            method: 'POST',
+            body: `data=${encodeURIComponent(query)}`,
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            }
+          }, 8000)
+        );
+  
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+  
+        const json = await res.json();
+        return this._parse(json, lat, lng);
+  
+      } catch (err) {
+        console.warn(`Overpass failed (${endpoint}):`, err);
+        lastError = err;
+      }
+    }
+  
+    throw lastError || new Error('All Overpass endpoints failed');
   }
 
   // ── Parse OSM JSON → structured data ────────────────────────
