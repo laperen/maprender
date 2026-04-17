@@ -21,14 +21,14 @@ export class OverlayPanel {
   _updateMapPreviewVisibility() {
     if (!this.$mapPreview) return;
   
-    const hide = this._appMode === 'roaming';
+    const hide = this._appMode !== 'map-creation';
     this.$mapPreview.classList.toggle('hidden', hide);
   }
   // Called by UIController when app mode changes
   setAppMode(mode) {
     this._appMode = mode;
     this._updateCategoryVisibility();
-
+    this._updateMapPreviewVisibility();
     // If leaving roaming while explore category is active, collapse it
     if (mode !== 'roaming' && this._activeCategory === 'explore') {
       this._setCategory(null);
