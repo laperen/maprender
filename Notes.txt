@@ -1,12 +1,5 @@
 WIP
 
-merge juke box in
-p:
-jukebox.js and jukebox.html were from a different project, brought here for reference.
-The menu from jukebox.html goes into the main window of this category.
-startup process in jukebox.html should be moved into existing scripts
-jukebox.js will need to be included into this project to work alongside the new ui elements for the juke box.
-
 collision, physics, and character movement
 p:
 ???

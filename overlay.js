@@ -1,40 +1,53 @@
 // overlay.js — Persistent overlay panel with category navigation
 // Categories: Explore Mode (roaming only), Jukebox
 
+import { Jukebox } from './jukebox.js';
+
 export class OverlayPanel {
   constructor({ uiController }) {
     this.ui = uiController;
     this._open = false;
     this._activeCategory = null;
     this._appMode = 'map-creation'; // tracked externally via setAppMode()
+    this._jukebox = null;           // lazy-initialised on first open
+    this._jukeboxReady = false;
+    this.$mapPreview = document.getElementById('map-preview');
   }
 
   init() {
     this._cacheDOM();
     this._bindEvents();
   }
-
+  _updateMapPreviewVisibility() {
+    if (!this.$mapPreview) return;
+  
+    const hide = this._appMode === 'roaming';
+    this.$mapPreview.classList.toggle('hidden', hide);
+  }
   // Called by UIController when app mode changes
   setAppMode(mode) {
     this._appMode = mode;
     this._updateCategoryVisibility();
 
-    // If entering explore mode and overlay is open on explore category, keep it
-    // If leaving explore mode and explore category is active, switch or close
+    // If leaving roaming while explore category is active, collapse it
     if (mode !== 'roaming' && this._activeCategory === 'explore') {
       this._setCategory(null);
       this._close();
     }
   }
+
   _cacheDOM() {
     this._toggleBtn = document.getElementById('overlay-toggle-btn');
-    this._panel = document.getElementById('overlay-panel');
-    this._backdrop = document.getElementById('overlay-backdrop');
+    this._panel     = document.getElementById('overlay-panel');
+    this._backdrop  = document.getElementById('overlay-backdrop');
+    // Jukebox content container inside the overlay view
+    this._jukeboxContainer = document.getElementById('jukebox-mount');
   }
+
   // ── Events ────────────────────────────────────────────────────
   _bindEvents() {
     this._toggleBtn.addEventListener('click', () => this._toggle());
-    this._backdrop.addEventListener('click', () => this._close());
+    this._backdrop.addEventListener('click',  () => this._close());
     document.getElementById('overlay-close-btn').addEventListener('click', () => this._close());
 
     // Category buttons
@@ -42,7 +55,6 @@ export class OverlayPanel {
       btn.addEventListener('click', () => {
         const cat = btn.dataset.cat;
         if (this._activeCategory === cat) {
-          // Clicking active category collapses content
           this._setCategory(null);
         } else {
           this._setCategory(cat);
@@ -50,18 +62,15 @@ export class OverlayPanel {
       });
     });
 
-    // Explore: exit button wired to roam-back-btn logic
+    // Explore: exit button → delegate to roam-back-btn
     const overlayRoamBack = document.getElementById('overlay-roam-back-btn');
     if (overlayRoamBack) {
       overlayRoamBack.addEventListener('click', () => {
-        // Delegate to original roam-back-btn
-        const originalBtn = document.getElementById('roam-back-btn');
-        if (originalBtn) originalBtn.click();
+        document.getElementById('roam-back-btn')?.click();
         this._close();
       });
     }
 
-    // Initial visibility
     this._updateCategoryVisibility();
   }
 
@@ -74,10 +83,18 @@ export class OverlayPanel {
       this._toggleBtn.classList.add('active');
       this._backdrop.classList.add('active');
       // Default: open to first available category
+      /*
       if (!this._activeCategory) {
         const firstAvail = this._appMode === 'roaming' ? 'explore' : 'jukebox';
         this._setCategory(firstAvail);
       }
+      */
+      if (this._appMode === 'roaming') {
+        this._setCategory('explore');
+      } else {
+        this._setCategory(this._activeCategory || 'jukebox');
+      }
+      this._updateCategoryVisibility();
     }
   }
 
@@ -109,6 +126,20 @@ export class OverlayPanel {
     document.querySelectorAll('.overlay-view').forEach(v => v.classList.remove('active'));
     const view = document.getElementById(`view-${cat}`);
     if (view) view.classList.add('active');
+
+    // Lazily init the Jukebox the first time the jukebox view is opened
+    if (cat === 'jukebox' && !this._jukeboxReady) {
+      this._initJukebox();
+    }
+  }
+
+  // ── Jukebox lazy init ─────────────────────────────────────────
+  _initJukebox() {
+    const mount = document.getElementById('jukebox-mount');
+    if (!mount) return;
+    this._jukebox      = new Jukebox();
+    this._jukebox.init(mount);
+    this._jukeboxReady = true;
   }
 
   _updateCategoryVisibility() {

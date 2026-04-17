@@ -650,7 +650,7 @@ export class UIController {
   }
 
   // ── App Mode State Machine ────────────────────────────────────
-
+  
   _enterSelectionMode() {
     if (!this._worldGenerated) return;
     this._appMode = 'location-selection';
@@ -813,6 +813,10 @@ export class UIController {
   }
   async _generate() {
     this.$generateBtn.disabled = true;
+    if (this.$enterSelBtn) {
+      this.$enterSelBtn.disabled = true;
+      this.$enterSelBtn.classList.remove('world-ready');
+    }
     this.$stats.classList.add('hidden');
     this.scene.clearWorld();
     this._setStatus('Fetching map data…', 'active loading');
@@ -890,6 +894,10 @@ export class UIController {
       }, 6000);
     } catch (err) {
       this._setStatus(`Error: ${err.message}`, 'error');
+      if (this.$enterSelBtn) {
+        this.$enterSelBtn.disabled = true;
+        this.$enterSelBtn.classList.remove('world-ready');
+      }
       console.error(err);
     } finally {
       this.$generateBtn.disabled = false;

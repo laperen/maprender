@@ -43,6 +43,7 @@ export class SceneManager {
 
     // Cloud layer
     this._clouds = new CloudLayer();
+    this.$enterWorldBtn  = document.getElementById('enter-world-btn');
   }
 
   init() {
@@ -509,7 +510,7 @@ export class SceneManager {
 
     // Sky shader still used (kept intact)
     if (this._sky) this._sky.visible = true;
-
+    console.log(this._sky);
     // Fog now matches atmosphere exactly
     if (sunDayPhase > 0.01) {
       if (!this.scene.fog) {
@@ -867,8 +868,11 @@ export class SceneManager {
     const allMeshes = [];
     this.scene.traverse(child => { if (child.isMesh) allMeshes.push(child); });
     const hits = this.raycaster.intersectObjects(allMeshes, false);
-    if (!hits.length) return;
-
+    if(!hits.length || hits[0].object.uuid === this._sky.uuid){
+      this.removeBeacon();
+      if (this.$enterWorldBtn) this.$enterWorldBtn.disabled = true;
+      return;
+    }
     const pt = hits[0].point;
     this.placeBeacon(pt.x, pt.y, pt.z);
 

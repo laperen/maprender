@@ -14,6 +14,331 @@
           }
       }
   </script>
+
+  <style>
+    /* ── Jukebox panel (scoped to .jukebox-root inside overlay) ── */
+
+    #jukebox-mount {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .jukebox-root {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+      font-family: 'Space Mono', monospace;
+    }
+
+    /* Category tabs */
+    .jk-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 14px 16px 0;
+      flex-shrink: 0;
+    }
+
+    .jk-cat {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 7px 4px;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      border-radius: var(--radius);
+      font-family: 'Space Mono', monospace;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .jk-cat:hover:not(.active) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .jk-cat.active {
+      background: var(--accent);
+      color: var(--bg);
+      border-color: var(--accent);
+    }
+
+    /* Add-track row */
+    .jk-add-row {
+      display: flex;
+      gap: 6px;
+      padding: 12px 16px 0;
+      flex-shrink: 0;
+    }
+
+    .jk-url-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'Space Mono', monospace;
+      font-size: 12px;
+      padding: 8px 10px;
+      border-radius: var(--radius);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .jk-url-input:focus { border-color: var(--accent); }
+
+    .jk-add-btn {
+      background: var(--border);
+      color: var(--text);
+      padding: 8px 14px;
+      white-space: nowrap;
+      border-radius: var(--radius);
+      font-family: 'Space Mono', monospace;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      border: none;
+      transition: all 0.15s;
+    }
+
+    .jk-add-btn:hover {
+      background: var(--accent);
+      color: var(--bg);
+    }
+
+    /* Playback controls */
+    .jk-playback {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 16px 0;
+      flex-shrink: 0;
+    }
+
+    .jk-play-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      color: var(--muted);
+      font-size: 14px;
+      cursor: pointer;
+      font-family: 'Space Mono', monospace;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+
+    .jk-play-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .jk-btn-play {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--bg);
+      width: 38px;
+      height: 38px;
+      font-size: 16px;
+    }
+
+    .jk-btn-play:hover { opacity: 0.85; }
+
+    .jk-vol-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+    }
+
+    .jk-vol-row label {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      white-space: nowrap;
+      font-weight: 700;
+    }
+
+    .jk-vol-slider {
+      flex: 1;
+      height: 4px;
+      border-radius: 2px;
+      border: none;
+      appearance: none;
+      background: var(--border);
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .jk-vol-slider::-webkit-slider-thumb {
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 6px var(--accent);
+      cursor: pointer;
+    }
+
+    /* List header */
+    .jk-list-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px 6px;
+      flex-shrink: 0;
+    }
+
+    .jk-list-header label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .jk-track-count {
+      font-size: 9px;
+      color: var(--muted);
+    }
+
+    /* Scrollable list */
+    .jk-list-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 0 16px 16px;
+    }
+
+    .jk-list-scroll::-webkit-scrollbar { width: 4px; }
+    .jk-list-scroll::-webkit-scrollbar-track { background: transparent; }
+    .jk-list-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .jk-audiolist {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 0;
+      margin: 0;
+    }
+
+    .jk-audiolist li {
+      display: flex !important;
+      align-items: center !important;
+      gap: 8px !important;
+      padding: 8px 10px !important;
+      background: var(--bg) !important;
+      border: 1px solid var(--border) !important;
+      border-radius: var(--radius) !important;
+      cursor: grab !important;
+      transition: border-color 0.15s, background 0.15s !important;
+      min-width: 0 !important;
+    }
+
+    .jk-audiolist li:active  { cursor: grabbing !important; }
+    .jk-audiolist li:hover   { border-color: var(--muted) !important; background: rgba(255,255,255,0.02) !important; }
+    .jk-audiolist li.drag-over { border-color: var(--accent) !important; background: rgba(71,215,255,0.05) !important; }
+
+    .jk-audiolist li > span.track-url {
+      flex: 1;
+      font-size: 10px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: 'Space Mono', monospace;
+      min-width: 0;
+    }
+
+    .jk-audiolist li > button {
+      width: 22px !important;
+      height: 22px !important;
+      min-width: 22px !important;
+      background: transparent !important;
+      border: 1px solid transparent !important;
+      border-radius: 3px !important;
+      color: var(--muted) !important;
+      font-size: 11px !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      cursor: pointer !important;
+      flex-shrink: 0 !important;
+      transition: all 0.15s !important;
+      padding: 0 !important;
+    }
+
+    .jk-audiolist li > button:hover {
+      border-color: var(--danger) !important;
+      color: var(--danger) !important;
+      background: rgba(255,79,107,0.08) !important;
+    }
+
+    /* Empty state */
+    .jk-empty-state {
+      text-align: center;
+      padding: 32px 20px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.9;
+      display: none;
+    }
+
+    .jk-empty-state .empty-icon {
+      font-size: 30px;
+      display: block;
+      margin-bottom: 8px;
+      opacity: 0.3;
+    }
+
+    /* Now-playing footer */
+    .jk-now-playing {
+      flex-shrink: 0;
+      padding: 10px 16px;
+      border-top: 1px solid var(--border);
+      background: var(--panel);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+    }
+
+    .jk-np-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+
+    .jk-np-dot.playing {
+      background: var(--accent);
+      box-shadow: 0 0 6px var(--accent);
+      animation: np-pulse 1.2s ease-in-out infinite;
+    }
+
+    .jk-np-label {
+      font-size: 10px;
+      color: var(--muted);
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .jk-np-label.active { color: var(--accent); }
+  </style>
 </head>
 <body>
 
@@ -24,7 +349,6 @@
         <span class="logo-mark">⬡</span>
         <span class="logo-text"><em>A.T.</em> Sim</span>
       </div>
-      <!--p class="tagline">Map data → 3D world</p-->
     </header>
 
     <div id="ui-scroll">
@@ -45,25 +369,10 @@
         </div>
       </div>
 
-      <!--div class="control-group">
-        <label for="style-select">Map Style</label>
-        <select id="style-select">
-          <option value="streets">Streets</option>
-          <option value="satellite">Satellite</option>
-          <option value="terrain">Terrain</option>
-          <option value="dark">Dark Matter</option>
-        </select>
-      </div-->
-
       <div class="control-group">
         <label for="radius-slider">Area Radius <span id="radius-val">500m</span></label>
         <input type="range" id="radius-slider" min="200" max="1200" step="100" value="500" />
       </div>
-
-      <!--div class="control-group">
-        <label for="height-slider">Building Height Scale <span id="height-val">1.0×</span></label>
-        <input type="range" id="height-slider" min="1" max="10" step="1" value="2" />
-      </div-->
 
       <!-- Collapsible: Time of Day -->
       <div class="collapsible-section">
@@ -78,7 +387,6 @@
         <div class="collapsible-body" id="tod-body">
           <div id="time-panel-host">
             <div class="tod-panel">
-              <!-- Mode toggle row -->
               <div class="tod-mode-row">
                 <button class="tod-mode-btn active" id="tod-manual-btn" title="Set time manually">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -93,22 +401,16 @@
                   Device Time
                 </button>
               </div>
-      
-              <!-- Sky arc visualiser -->
               <div class="tod-arc-wrap">
                 <canvas id="tod-arc" width="240" height="110"></canvas>
                 <div class="tod-time-label" id="tod-time-label">☀ 12:00</div>
               </div>
-      
-              <!-- Manual slider (hidden in device mode) -->
               <div class="tod-slider-wrap" id="tod-slider-wrap">
                 <div class="tod-tick-row">
                   <span>00</span><span>06</span><span>12</span><span>18</span><span>24</span>
                 </div>
                 <input type="range" id="tod-slider" min="0" max="24" step="0.25" value="12" />
               </div>
-      
-              <!-- Indicator pills -->
               <div class="tod-indicators" id="tod-indicators"></div>
             </div>
           </div>
@@ -128,7 +430,6 @@
         <div class="collapsible-body" id="cloud-body">
           <div id="cloud-panel-host">
             <div class="tod-panel">
-              <!-- Mode toggle row -->
               <div class="tod-mode-row">
                 <button class="tod-mode-btn" id="cloud-manual-btn" title="Set clouds manually">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -143,16 +444,11 @@
                   Live Weather
                 </button>
               </div>
-      
-              <!-- Cloud preview canvas -->
               <div class="tod-arc-wrap">
                 <canvas id="cloud-arc" width="240" height="80"></canvas>
                 <div class="tod-time-label" id="cloud-label">⛅ 40% cover</div>
               </div>
-      
-              <!-- Manual controls (disabled in auto mode) -->
               <div class="tod-slider-wrap" id="cloud-manual-wrap" style="opacity:0.35;pointer-events:none;">
-      
                 <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">Condition</label>
                 <select id="cloud-condition-select" style="margin-bottom:8px;">
                   <option value="0">☀ Clear</option>
@@ -162,30 +458,23 @@
                   <option value="4">🌧 Rain</option>
                   <option value="5">⛈ Storm</option>
                 </select>
-      
                 <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
                   Cloud Cover <span id="cloud-cover-val">40%</span>
                 </label>
                 <input type="range" id="cloud-cover-slider" min="0" max="100" step="5" value="40" style="margin-bottom:8px;" />
-      
                 <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
                   Wind Speed <span id="cloud-wind-speed-val">18 u/s</span>
                 </label>
                 <input type="range" id="cloud-wind-speed-slider" min="0" max="80" step="2" value="18" style="margin-bottom:8px;" />
-      
                 <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
                   Wind Direction <span id="cloud-wind-angle-val">13°</span>
                 </label>
                 <input type="range" id="cloud-wind-angle-slider" min="0" max="359" step="1" value="13" style="margin-bottom:8px;" />
-      
                 <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
                   Altitude <span id="cloud-altitude-val">380m</span>
                 </label>
                 <input type="range" id="cloud-altitude-slider" min="100" max="1000" step="20" value="380" />
-      
               </div>
-      
-              <!-- Cloud indicator pills -->
               <div class="tod-indicators" id="cloud-indicators"></div>
             </div>
           </div>
@@ -195,21 +484,11 @@
     </section>
     </div><!-- /#ui-scroll -->
 
-
     <!-- Sticky bottom: always visible -->
     <div id="sticky-bottom">
-      <div class="sticky-mode-row">
-        <!--label class="sticky-label">Render Mode</label>
-        <div class="toggle-row">
-          <button class="mode-btn active" data-mode="solid">Solid</button>
-          <button class="mode-btn" data-mode="wireframe">Wireframe</button>
-          <button class="mode-btn" data-mode="xray">X-Ray</button>
-        </div-->
-      </div>
+      <div class="sticky-mode-row"></div>
       <button id="generate-btn">Generate 3D World</button>
-      <button id="enter-selection-btn" disabled>
-        <!--span class="btn-icon">⬡</span--> Explore World
-      </button>
+      <button id="enter-selection-btn" disabled>Explore World</button>
     </div>
     <section id="info-panel">
       <div id="status">Ready. Configure settings and click Generate.</div>
@@ -245,18 +524,15 @@
           Map Editor
         </button>
       </div>
-
       <div class="sel-hint-box">
         <div id="selection-hint" class="sel-hint-text">🎯 Click anywhere on the map to set your spawn point</div>
       </div>
-
       <div class="sel-actions">
         <button id="enter-world-btn" class="enter-world-btn" disabled>
           <span class="btn-glyph">▶</span>
           Enter World
         </button>
       </div>
-
       <div class="sel-footer">
         <span class="sel-tip">Tip: Click near a road or open area for best results</span>
       </div>
@@ -276,6 +552,7 @@
       </button>
     </div>
   </div>
+
   <button id="overlay-toggle-btn">
     <svg id="overlay-toggle-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
       <rect x="3" y="3" width="7" height="7" rx="1"/>
@@ -315,6 +592,7 @@
       </div>
     </div>
     <div id="overlay-content">
+
       <!-- Explore Mode -->
       <div class="overlay-view" id="view-explore">
         <div class="overlay-view-header">
@@ -324,9 +602,7 @@
           </span>
           <div class="overlay-view-badge">Active</div>
         </div>
-
         <div class="overlay-view-body">
-          <!-- Movement hint -->
           <div class="explore-hint-card">
             <div class="explore-hint-icon">🕹</div>
             <div class="explore-hint-text">
@@ -334,10 +610,7 @@
               <div class="explore-hint-sub">Coming soon — first-person navigation is in development.</div>
             </div>
           </div>
-
           <div class="explore-divider"></div>
-
-          <!-- Exit -->
           <div class="explore-section-label">Session</div>
           <button id="overlay-roam-back-btn" class="explore-exit-btn">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
@@ -346,25 +619,23 @@
         </div>
       </div>
 
-      <!-- Jukebox -->
+      <!-- Jukebox — mount point for Jukebox class -->
       <div class="overlay-view" id="view-jukebox">
         <div class="overlay-view-header">
           <span class="overlay-view-title">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
             Jukebox
           </span>
-        </div id="overlay-backdrop">
-        <div class="overlay-view-body">
-          <div class="jukebox-placeholder">
-            <div class="jukebox-placeholder-icon">♫</div>
-            <div class="jukebox-placeholder-text">Music player coming soon</div>
-          </div>
+        </div>
+        <div class="overlay-view-body" style="padding:0;overflow:hidden;">
+          <!-- Jukebox class renders its UI here -->
+          <div id="jukebox-mount"></div>
         </div>
       </div>
+
     </div>
   </div>
+
   <script type="module" src="./main.js"></script>
 </body>
-
 </html>
-
