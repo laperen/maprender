@@ -926,6 +926,7 @@ export class UIController {
       this.$tooltip.classList.add('hidden');
       return;
     }
+    /*
     const hit = this.scene.pick(e.clientX, e.clientY);
     if (hit && hit.object.userData.kind) {
       const d = hit.object.userData;
@@ -943,6 +944,7 @@ export class UIController {
     } else {
       this.$tooltip.classList.add('hidden');
     }
+    */
   }
 
   _setStatus(msg, cls) {
