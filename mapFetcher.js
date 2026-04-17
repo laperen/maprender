@@ -9,17 +9,70 @@ export class MapFetcher {
       'https://lz4.overpass-api.de/api/interpreter'
     ];
     this.photonUrl   = 'https://photon.komoot.io/api/';
+    this.MAX_CHUNKS = 20; // tune this
+  }
+  async _countChunks() {
+    const db = await this._initDB();
+  
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('chunks', 'readonly');
+      const store = tx.objectStore('chunks');
+      const req = store.count();
+  
+      req.onsuccess = () => resolve(req.result);
+      req.onerror   = () => reject(req.error);
+    });
+  }
+  async _evictOldestChunks(countToRemove) {
+    const db = await this._initDB();
+  
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('chunks', 'readwrite');
+      const store = tx.objectStore('chunks');
+      const index = store.index('timestamp');
+  
+      let deleted = 0;
+  
+      // 🔁 Cursor starts from OLDEST automatically
+      const req = index.openCursor();
+  
+      req.onsuccess = (event) => {
+        const cursor = event.target.result;
+  
+        if (!cursor || deleted >= countToRemove) {
+          resolve();
+          return;
+        }
+  
+        store.delete(cursor.primaryKey);
+        deleted++;
+  
+        cursor.continue();
+      };
+  
+      req.onerror = () => reject(req.error);
+    });
   }
   async _initDB() {
     if (this._db) return this._db;
   
     this._db = await new Promise((resolve, reject) => {
-      const req = indexedDB.open('MapCacheDB', 1);
+      const req = indexedDB.open('MapCacheDB', 2); // ⚠️ bump version
   
       req.onupgradeneeded = () => {
         const db = req.result;
+  
+        let store;
+  
         if (!db.objectStoreNames.contains('chunks')) {
-          db.createObjectStore('chunks', { keyPath: 'key' });
+          store = db.createObjectStore('chunks', { keyPath: 'key' });
+        } else {
+          store = req.transaction.objectStore('chunks');
+        }
+  
+        // ✅ Create index on timestamp
+        if (!store.indexNames.contains('timestamp')) {
+          store.createIndex('timestamp', 'timestamp', { unique: false });
         }
       };
   
@@ -39,19 +92,31 @@ export class MapFetcher {
     const db = await this._initDB();
   
     return new Promise((resolve, reject) => {
-      const tx = db.transaction('chunks', 'readonly');
+      const tx = db.transaction('chunks', 'readwrite'); // NOTE: readwrite
       const store = tx.objectStore('chunks');
       const req = store.get(key);
   
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror   = () => reject(req.error);
+      req.onsuccess = () => {
+        const result = req.result;
+  
+        if (result) {
+          // update last-used time
+          result.timestamp = Date.now();
+          store.put(result);
+        }
+  
+        resolve(result || null);
+      };
+  
+      req.onerror = () => reject(req.error);
     });
   }
   
   async _setChunk(key, data) {
     const db = await this._initDB();
   
-    return new Promise((resolve, reject) => {
+    // 1. Insert/update chunk
+    await new Promise((resolve, reject) => {
       const tx = db.transaction('chunks', 'readwrite');
       const store = tx.objectStore('chunks');
   
@@ -64,6 +129,17 @@ export class MapFetcher {
       tx.oncomplete = () => resolve();
       tx.onerror    = () => reject(tx.error);
     });
+  
+    // 2. Check size AFTER insert
+    const count = await this._countChunks();
+  
+    if (count > this.MAX_CHUNKS) {
+      const overflow = count - this.MAX_CHUNKS;
+  
+      console.warn(`Evicting ${overflow} old map chunks`);
+  
+      await this._evictOldestChunks(overflow);
+    }
   }
   _isFresh(chunk, maxAgeMs = 86400000) { // 1 day
     if (!chunk) return false;
