@@ -37,11 +37,6 @@ export class Jukebox {
   init(container) {
     if (!container) return;
 
-    // Render markup if not already present
-    if (!container.querySelector('.jukebox-root')) {
-      container.innerHTML = this._template();
-    }
-
     this._root = container.querySelector('.jukebox-root');
     this._cacheDOM();
     this._bindEvents();
@@ -51,61 +46,6 @@ export class Jukebox {
 
     // Restore volume slider
     if (this._$volSlider) this._$volSlider.value = Math.round(this._currentVolume * 100);
-  }
-
-  // ── HTML template ────────────────────────────────────────────
-
-  _template() {
-    return /* html */`
-<div class="jukebox-root">
-  <!-- hidden SoundCloud iframe injected dynamically -->
-
-  <!-- Category tabs -->
-  <div class="jk-tabs">
-    <button class="jk-cat active" data-cat="day">Day</button>
-    <button class="jk-cat" data-cat="night">Night</button>
-    <button class="jk-cat" data-cat="win">Win</button>
-    <button class="jk-cat" data-cat="lose">Lose</button>
-  </div>
-
-  <!-- Add track -->
-  <div class="jk-add-row">
-    <input class="jk-url-input" type="text" placeholder="SoundCloud, Audius, or .mp3 link" />
-    <button class="jk-add-btn">Add</button>
-  </div>
-
-  <!-- Playback controls -->
-  <div class="jk-playback">
-    <button class="jk-play-btn jk-btn-play"  title="Play">▶</button>
-    <button class="jk-play-btn jk-btn-pause" title="Pause">⏸</button>
-    <button class="jk-play-btn jk-btn-next"  title="Next">⏭</button>
-    <div class="jk-vol-row">
-      <label>Vol</label>
-      <input class="jk-vol-slider" type="range" min="0" max="100" value="50" />
-    </div>
-  </div>
-
-  <!-- List header -->
-  <div class="jk-list-header">
-    <label>Playlist</label>
-    <span class="jk-track-count">0 tracks</span>
-  </div>
-
-  <!-- Track list -->
-  <div class="jk-list-scroll">
-    <ul class="jk-audiolist"></ul>
-    <div class="jk-empty-state">
-      <span class="empty-icon">♪</span>
-      No tracks yet.<br>Paste a link above and hit Add.
-    </div>
-  </div>
-
-  <!-- Now playing footer -->
-  <div class="jk-now-playing">
-    <div class="jk-np-dot"></div>
-    <span class="jk-np-label">Nothing playing</span>
-  </div>
-</div>`;
   }
 
   // ── DOM cache ────────────────────────────────────────────────

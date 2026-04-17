@@ -14,334 +14,8 @@
           }
       }
   </script>
-
-  <style>
-    /* ── Jukebox panel (scoped to .jukebox-root inside overlay) ── */
-
-    #jukebox-mount {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      min-height: 0;
-    }
-
-    .jukebox-root {
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      min-height: 0;
-      font-family: 'Space Mono', monospace;
-    }
-
-    /* Category tabs */
-    .jk-tabs {
-      display: flex;
-      gap: 4px;
-      padding: 14px 16px 0;
-      flex-shrink: 0;
-    }
-
-    .jk-cat {
-      flex: 1;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      color: var(--muted);
-      padding: 7px 4px;
-      text-transform: uppercase;
-      font-size: 10px;
-      letter-spacing: 0.08em;
-      border-radius: var(--radius);
-      font-family: 'Space Mono', monospace;
-      font-weight: 700;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-
-    .jk-cat:hover:not(.active) {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-
-    .jk-cat.active {
-      background: var(--accent);
-      color: var(--bg);
-      border-color: var(--accent);
-    }
-
-    /* Add-track row */
-    .jk-add-row {
-      display: flex;
-      gap: 6px;
-      padding: 12px 16px 0;
-      flex-shrink: 0;
-    }
-
-    .jk-url-input {
-      flex: 1;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      color: var(--text);
-      font-family: 'Space Mono', monospace;
-      font-size: 12px;
-      padding: 8px 10px;
-      border-radius: var(--radius);
-      outline: none;
-      transition: border-color 0.15s;
-    }
-
-    .jk-url-input:focus { border-color: var(--accent); }
-
-    .jk-add-btn {
-      background: var(--border);
-      color: var(--text);
-      padding: 8px 14px;
-      white-space: nowrap;
-      border-radius: var(--radius);
-      font-family: 'Space Mono', monospace;
-      font-size: 11px;
-      font-weight: 700;
-      cursor: pointer;
-      border: none;
-      transition: all 0.15s;
-    }
-
-    .jk-add-btn:hover {
-      background: var(--accent);
-      color: var(--bg);
-    }
-
-    /* Playback controls */
-    .jk-playback {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 10px 16px 0;
-      flex-shrink: 0;
-    }
-
-    .jk-play-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 34px;
-      height: 34px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 50%;
-      color: var(--muted);
-      font-size: 14px;
-      cursor: pointer;
-      font-family: 'Space Mono', monospace;
-      transition: all 0.15s;
-      flex-shrink: 0;
-    }
-
-    .jk-play-btn:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-
-    .jk-btn-play {
-      background: var(--accent);
-      border-color: var(--accent);
-      color: var(--bg);
-      width: 38px;
-      height: 38px;
-      font-size: 16px;
-    }
-
-    .jk-btn-play:hover { opacity: 0.85; }
-
-    .jk-vol-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex: 1;
-    }
-
-    .jk-vol-row label {
-      font-size: 9px;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--muted);
-      white-space: nowrap;
-      font-weight: 700;
-    }
-
-    .jk-vol-slider {
-      flex: 1;
-      height: 4px;
-      border-radius: 2px;
-      border: none;
-      appearance: none;
-      background: var(--border);
-      cursor: pointer;
-      padding: 0;
-    }
-
-    .jk-vol-slider::-webkit-slider-thumb {
-      appearance: none;
-      width: 14px;
-      height: 14px;
-      border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 6px var(--accent);
-      cursor: pointer;
-    }
-
-    /* List header */
-    .jk-list-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 16px 6px;
-      flex-shrink: 0;
-    }
-
-    .jk-list-header label {
-      font-size: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--muted);
-      font-weight: 700;
-    }
-
-    .jk-track-count {
-      font-size: 9px;
-      color: var(--muted);
-    }
-
-    /* Scrollable list */
-    .jk-list-scroll {
-      flex: 1;
-      min-height: 0;
-      overflow-y: auto;
-      padding: 0 16px 16px;
-    }
-
-    .jk-list-scroll::-webkit-scrollbar { width: 4px; }
-    .jk-list-scroll::-webkit-scrollbar-track { background: transparent; }
-    .jk-list-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-
-    .jk-audiolist {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      padding: 0;
-      margin: 0;
-    }
-
-    .jk-audiolist li {
-      display: flex !important;
-      align-items: center !important;
-      gap: 8px !important;
-      padding: 8px 10px !important;
-      background: var(--bg) !important;
-      border: 1px solid var(--border) !important;
-      border-radius: var(--radius) !important;
-      cursor: grab !important;
-      transition: border-color 0.15s, background 0.15s !important;
-      min-width: 0 !important;
-    }
-
-    .jk-audiolist li:active  { cursor: grabbing !important; }
-    .jk-audiolist li:hover   { border-color: var(--muted) !important; background: rgba(255,255,255,0.02) !important; }
-    .jk-audiolist li.drag-over { border-color: var(--accent) !important; background: rgba(71,215,255,0.05) !important; }
-
-    .jk-audiolist li > span.track-url {
-      flex: 1;
-      font-size: 10px;
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      font-family: 'Space Mono', monospace;
-      min-width: 0;
-    }
-
-    .jk-audiolist li > button {
-      width: 22px !important;
-      height: 22px !important;
-      min-width: 22px !important;
-      background: transparent !important;
-      border: 1px solid transparent !important;
-      border-radius: 3px !important;
-      color: var(--muted) !important;
-      font-size: 11px !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      cursor: pointer !important;
-      flex-shrink: 0 !important;
-      transition: all 0.15s !important;
-      padding: 0 !important;
-    }
-
-    .jk-audiolist li > button:hover {
-      border-color: var(--danger) !important;
-      color: var(--danger) !important;
-      background: rgba(255,79,107,0.08) !important;
-    }
-
-    /* Empty state */
-    .jk-empty-state {
-      text-align: center;
-      padding: 32px 20px;
-      color: var(--muted);
-      font-size: 11px;
-      line-height: 1.9;
-      display: none;
-    }
-
-    .jk-empty-state .empty-icon {
-      font-size: 30px;
-      display: block;
-      margin-bottom: 8px;
-      opacity: 0.3;
-    }
-
-    /* Now-playing footer */
-    .jk-now-playing {
-      flex-shrink: 0;
-      padding: 10px 16px;
-      border-top: 1px solid var(--border);
-      background: var(--panel);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-height: 44px;
-    }
-
-    .jk-np-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--muted);
-      flex-shrink: 0;
-      transition: background 0.3s, box-shadow 0.3s;
-    }
-
-    .jk-np-dot.playing {
-      background: var(--accent);
-      box-shadow: 0 0 6px var(--accent);
-      animation: np-pulse 1.2s ease-in-out infinite;
-    }
-
-    .jk-np-label {
-      font-size: 10px;
-      color: var(--muted);
-      flex: 1;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .jk-np-label.active { color: var(--accent); }
-  </style>
 </head>
 <body>
-
   <!-- UI Overlay -->
   <div id="ui">
     <header>
@@ -629,13 +303,61 @@
         </div>
         <div class="overlay-view-body" style="padding:0;overflow:hidden;">
           <!-- Jukebox class renders its UI here -->
-          <div id="jukebox-mount"></div>
+          <div id="jukebox-mount">
+            <div class="jukebox-root">
+              <!-- hidden SoundCloud iframe injected dynamically -->
+            
+              <!-- Category tabs -->
+              <div class="jk-tabs">
+                <button class="jk-cat active" data-cat="day">Day</button>
+                <button class="jk-cat" data-cat="night">Night</button>
+                <button class="jk-cat" data-cat="win">Win</button>
+                <button class="jk-cat" data-cat="lose">Lose</button>
+              </div>
+            
+              <!-- Add track -->
+              <div class="jk-add-row">
+                <input class="jk-url-input" type="text" placeholder="SoundCloud, Audius, or .mp3 link" />
+                <button class="jk-add-btn">Add</button>
+              </div>
+            
+              <!-- Playback controls -->
+              <div class="jk-playback">
+                <button class="jk-play-btn jk-btn-play"  title="Play">▶</button>
+                <button class="jk-play-btn jk-btn-pause" title="Pause">⏸</button>
+                <button class="jk-play-btn jk-btn-next"  title="Next">⏭</button>
+                <div class="jk-vol-row">
+                  <label>Vol</label>
+                  <input class="jk-vol-slider" type="range" min="0" max="100" value="50" />
+                </div>
+              </div>
+            
+              <!-- List header -->
+              <div class="jk-list-header">
+                <label>Playlist</label>
+                <span class="jk-track-count">0 tracks</span>
+              </div>
+            
+              <!-- Track list -->
+              <div class="jk-list-scroll">
+                <ul class="jk-audiolist"></ul>
+                <div class="jk-empty-state">
+                  <span class="empty-icon">♪</span>
+                  No tracks yet.<br>Paste a link above and hit Add.
+                </div>
+              </div>
+            
+              <!-- Now playing footer -->
+              <div class="jk-now-playing">
+                <div class="jk-np-dot"></div>
+                <span class="jk-np-label">Nothing playing</span>
+              </div>
+            </div></div>
         </div>
       </div>
 
     </div>
   </div>
-
   <script type="module" src="./main.js"></script>
 </body>
 </html>
