@@ -1,8 +1,5 @@
 WIP
 
-manual edit:
-move overlay.js injections out into html and css.
-
 merge juke box in
 p:
 jukebox.js and jukebox.html were from a different project, brought here for reference.
