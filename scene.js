@@ -88,6 +88,7 @@ export class SceneManager {
     this._createFPSCounter();
 
     this.raycaster  = new THREE.Raycaster();
+    this.raycaster.firstHitOnly = true;
     this.mouseNDC   = new THREE.Vector2();
     this._pickables = [];
 

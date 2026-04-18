@@ -57,6 +57,11 @@ export class WorldBuilder {
     this._aviatGeo  = new THREE.BoxGeometry(0.6, 0.6, 0.6);
     this._postGeo   = new THREE.CylinderGeometry(0.12, 0.16, 6.5, 6, 1);
     this._haloGeo   = new THREE.PlaneGeometry(14, 14);
+
+    this.raycaster = new THREE.Raycaster();
+    this.raycaster.firstHitOnly = true;
+    this.downVect = new THREE.Vector3(0, -1, 0);
+    this.rayOrigin = new THREE.Vector3();
   }
 
   _makeLampHaloTexture() {
@@ -277,6 +282,13 @@ export class WorldBuilder {
   // STREET LAMPS — with spatial deduplication grid
   // ═══════════════════════════════════════════════════════════════
 
+  _snapY(x, z, elev, terrainMesh, bias) {
+    if (!terrainMesh) return elev(x, z);
+    this.rayOrigin.set(x, RAY_ORIGIN_Y, z);
+    this.raycaster.set(this.rayOrigin, this.downVect);
+    const hits = this.raycaster.intersectObject(terrainMesh, false);
+    return hits.length > 0 ? hits[0].point.y + bias : elev(x, z) + bias;
+  };
   _buildStreetLamps(roadWays, elev, terrainMesh) {
     const group = new THREE.Group();
     group.name  = 'streetLamps';
@@ -285,19 +297,7 @@ export class WorldBuilder {
     const postGeo = this._postGeo;
     const globeGeo = this._globeGeo;   // box, not sphere
     const haloGeo  = this._haloGeo;
-
-    const raycaster = new THREE.Raycaster();
-    const rayDir    = new THREE.Vector3(0, -1, 0);
-    const rayOrigin = new THREE.Vector3();
-
-    const snapY = (x, z) => {
-      if (!terrainMesh) return elev(x, z);
-      rayOrigin.set(x, RAY_ORIGIN_Y, z);
-      raycaster.set(rayOrigin, rayDir);
-      const hits = raycaster.intersectObject(terrainMesh, false);
-      return hits.length > 0 ? hits[0].point.y : elev(x, z);
-    };
-
+    
     // Spatial deduplication: quantise to LAMP_DEDUP_CELL grid.
     // Key encodes cell so that any two positions within LAMP_DEDUP_CELL metres
     // map to the same cell and only the first one wins.
@@ -326,7 +326,7 @@ export class WorldBuilder {
         if (placed.has(k)) continue;
         placed.add(k);
 
-        const baseY = snapY(lx, lz);
+        const baseY = this._snapY(lx, lz, elev, terrainMesh, 0);
 
         // Post
         const post = new THREE.Mesh(postGeo, this._lampPostMat);
@@ -366,18 +366,6 @@ export class WorldBuilder {
 
   _drapeTriangles(inputTris, terrainMesh, bvh, elev, bias) {
     const outPos = [], outIdx = [], outNrm = [];
-
-    const raycaster = new THREE.Raycaster();
-    const rayDir    = new THREE.Vector3(0, -1, 0);
-    const rayOrigin = new THREE.Vector3();
-
-    const snapY = (x, z) => {
-      if (!terrainMesh) return elev(x, z) + bias;
-      rayOrigin.set(x, RAY_ORIGIN_Y, z);
-      raycaster.set(rayOrigin, rayDir);
-      const hits = raycaster.intersectObject(terrainMesh, false);
-      return hits.length > 0 ? hits[0].point.y + bias : elev(x, z) + bias;
-    };
 
     for (const tri of inputTris) {
       const minX = Math.min(tri.a.x, tri.b.x, tri.c.x);
@@ -433,7 +421,7 @@ export class WorldBuilder {
         for (let pi = 0; pi < pts.length - 1; pi++) ring.push(pts[pi]);
       }
       if (ring.length < 3) continue;
-      for (const p of ring) p.y = snapY(p.x, p.z);
+      for (const p of ring) p.y = this._snapY(p.x, p.z, elev, terrainMesh, bias);
 
       const flat    = ring.flatMap(p => [p.x, p.z]);
       const indices = earcut(flat);
