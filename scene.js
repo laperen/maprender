@@ -37,6 +37,8 @@ export class SceneManager {
     this._nightPhase   = 0;
     this._starTime     = 0;
     this._lampMeshes   = [];
+    this._collidables = [];
+    if (this._roamingCam) this._roamingCam.collidables = [];
 
     // Current hour (0–24) cached for re-use
     this._currentHour  = 12;
@@ -806,14 +808,19 @@ export class SceneManager {
   }
   registerCollidable(mesh) {
     this._collidables.push(mesh);
+    if (this._roamingCam && mesh?.geometry?.boundsTree) {
+      this._roamingCam.collidables.push(mesh);
+    }
   }
-  
+  /*
   getCollidables() {
     this._roamingCam.collidables = this._collidables;
     console.log(this._roamingCam.collidables);
   }
+  */
   addObject(obj, collidable = true) {
     this.scene.add(obj);
+    this._objects.push(obj);
     if (collidable) {
       this._collidables.push(obj);
     }

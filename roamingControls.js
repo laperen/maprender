@@ -257,7 +257,6 @@ export class RoamingControls {
     const speedDelta = dt * speed;
 
     if (moving) {
-      console.log(speed);
       _misc.copy(inputDir).multiplyScalar(speedDelta);
       this._accelAccum.add(_misc);
       this._accelAccum.x *= reverseDamping;
@@ -418,58 +417,68 @@ export class RoamingControls {
 
   // ── BVH capsule vs world (mirrors WorldCollision in customCollision.js) ──
   _worldCollision(deltaPosition) {
-    const groundTris   = [];
+    const groundTris    = [];
     const notGroundTris = [];
-    const allTris      = [];
-
+  
     if (!this.collidables || !this.collidables.length) {
       return { intersects: false, delta: new THREE.Vector3(), groundTris, notGroundTris };
     }
+  
+    // Work entirely in world space. Keep a running world-space capsule centre
+    // that accumulates corrections from every collidable in the loop.
+    const colliderPos = this._colliderMesh.position.clone();
+    let anyHit = false;
+  
     for (const mesh of this.collidables) {
       const bvh = mesh.geometry?.boundsTree;
       if (!bvh) continue;
-
-      // Build the capsule segment in LOCAL space of this mesh
+  
+      // Transform capsule segment endpoints to mesh local space
       _tempMat.copy(mesh.matrixWorld).invert();
-
+  
       const segStart = new THREE.Vector3(
-        this._colliderMesh.position.x,
-        this._colliderMesh.position.y - CAPSULE_HEIGHT * 0.5,
-        this._colliderMesh.position.z
+        colliderPos.x,
+        colliderPos.y - CAPSULE_HEIGHT * 0.5,
+        colliderPos.z
       ).applyMatrix4(_tempMat);
-
+  
       const segEnd = new THREE.Vector3(
-        this._colliderMesh.position.x,
-        this._colliderMesh.position.y + CAPSULE_HEIGHT * 0.5,
-        this._colliderMesh.position.z
+        colliderPos.x,
+        colliderPos.y + CAPSULE_HEIGHT * 0.5,
+        colliderPos.z
       ).applyMatrix4(_tempMat);
-
+  
       _tempSeg.set(segStart, segEnd);
-
+  
       _tempBox.makeEmpty();
       _tempBox.expandByPoint(segStart);
       _tempBox.expandByPoint(segEnd);
       _tempBox.min.subScalar(CAPSULE_RADIUS);
       _tempBox.max.addScalar(CAPSULE_RADIUS);
-
+  
+      let meshHit = false;
+  
       bvh.shapecast({
         intersectsBounds: box => box.intersectsBox(_tempBox),
         intersectsTriangle: tri => {
-          const triPt  = _triPoint;
-          const capPt  = _capPoint;
-          const dist   = tri.closestPointToSegment(_tempSeg, triPt, capPt);
-
+          const triPt = _triPoint;
+          const capPt = _capPoint;
+          const dist  = tri.closestPointToSegment(_tempSeg, triPt, capPt);
+  
           if (dist < CAPSULE_RADIUS) {
+            meshHit = true;
+            anyHit  = true;
             const depth     = CAPSULE_RADIUS - dist;
             const direction = capPt.clone().sub(triPt).normalize();
-
+  
             _tempSeg.start.addScaledVector(direction, depth);
             _tempSeg.end.addScaledVector(direction, depth);
-
+  
             tri.getNormal(_triNormal);
+            // Transform normal to world space
+            _triNormal.transformDirection(mesh.matrixWorld).normalize();
             const n = { x: _triNormal.x, y: _triNormal.y, z: _triNormal.z };
-            allTris.push(n);
-
+  
             const angle = _up.angleTo(_triNormal);
             if (angle < SLOPE_LIMIT) {
               if (n.y < 0) notGroundTris.push(n);
@@ -478,24 +487,26 @@ export class RoamingControls {
               if (n.y >= 0) notGroundTris.push(n);
             }
           }
-          return false; // keep iterating all triangles in bounds
+          return false;
         },
       });
-
-      // Convert corrected segment back to world space and derive delta
-      _newPos.copy(_tempSeg.start).applyMatrix4(mesh.matrixWorld);
-      // _newPos is now the corrected collider bottom in world space;
-      // recentre to collider centre
-      _newPos.y += CAPSULE_HEIGHT * 0.5;
+  
+      if (meshHit) {
+        // Convert corrected segment midpoint back to world space to get new collider centre
+        const correctedCentre = new THREE.Vector3()
+          .addVectors(_tempSeg.start, _tempSeg.end)
+          .multiplyScalar(0.5)
+          .applyMatrix4(mesh.matrixWorld);
+  
+        // Accumulate the world-space correction into colliderPos
+        colliderPos.copy(correctedCentre);
+      }
     }
-
-    // Compute total delta: corrected position − current position
-    _delta.subVectors(_newPos, this._colliderMesh.position);
-    const offset = Math.max(0, _delta.length() - 1e-5);
-    _delta.normalize().multiplyScalar(offset);
-
+  
+    _delta.subVectors(colliderPos, this._colliderMesh.position);
+  
     return {
-      intersects:   _delta.lengthSq() > 0,
+      intersects:   anyHit,
       delta:        _delta.clone(),
       groundTris,
       notGroundTris,

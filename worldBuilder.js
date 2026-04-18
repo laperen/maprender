@@ -15,7 +15,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 const MIN_BUILDING_AREA = 5;
 const ROAD_STEP  = 8;
 const POLY_STEP  = 15;
-const DRAPE_BIAS = 0.4;
+const DRAPE_BIAS = 0.1;
 const RAY_ORIGIN_Y = 2000;
 
 // ── Street lamp constants ─────────────────────────────────────
@@ -226,7 +226,8 @@ export class WorldBuilder {
       const mesh = new THREE.Mesh(geom, mat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-      this.scene.addObject(mesh);
+      this.scene.addObject(mesh);          // add to scene/objects
+      this.scene.registerCollidable(mesh); // register NOW that BVH exists
 
       tris += idx.length / 3;
     }
@@ -250,18 +251,28 @@ export class WorldBuilder {
       );
       mesh.receiveShadow = true;
       this.scene.addObject(mesh);
+      this.scene.registerCollidable(mesh);
       tris += draped.idx.length / 3;
     }
 
-    // 💡 lamps — decorative Groups; lamp posts are too thin for meaningful
-    // capsule collision and have no BVH, so mark as non-collidable.
+    // 💡 lamps — globes/halos stay as individual meshes; posts are merged
+    // into a single BVH-accelerated mesh and registered as a collidable.
     if (roadWays.length) {
       const lampGroup = this._buildStreetLamps(roadWays, elev, terrainMesh);
       if (lampGroup) {
+        // Add whole group to scene (non-collidable at group level)
         this.scene.addObject(lampGroup, false);
+
         const lampMeshes = [];
         lampGroup.traverse(c => {
-          if (c.isMesh && (c.userData.isLampGlobe || c.userData.isLampHalo)) lampMeshes.push(c);
+          if (!c.isMesh) return;
+          if (c.userData.isLampGlobe || c.userData.isLampHalo) {
+            lampMeshes.push(c);
+          }
+          // Register the merged post mesh now that its BVH exists
+          if (c.userData.isLampPostMerged && c.geometry?.boundsTree) {
+            this.scene.registerCollidable(c);
+          }
         });
         this.scene.registerLampMeshes(lampMeshes);
       }
@@ -303,13 +314,24 @@ export class WorldBuilder {
     group.name  = 'streetLamps';
 
     // Use shared geometries defined in constructor
-    const postGeo = this._postGeo;
     const globeGeo = this._globeGeo;   // box, not sphere
     const haloGeo  = this._haloGeo;
-    
+
+    // ── Pre-compute the post geometry's raw arrays once ──────────
+    // We'll manually transform each instance into merged buffers.
+    const postGeoIndex    = this._postGeo.index.array;
+    const postGeoPos      = this._postGeo.attributes.position.array;
+    const postGeoNrm      = this._postGeo.attributes.normal.array;
+    const postVertCount   = postGeoPos.length / 3;
+    const postIndexCount  = postGeoIndex.length;
+
+    // Merged post buffers — filled as we place each lamp post.
+    const mergedPos = [];
+    const mergedNrm = [];
+    const mergedIdx = [];
+    let   postBase  = 0;  // running vertex index offset
+
     // Spatial deduplication: quantise to LAMP_DEDUP_CELL grid.
-    // Key encodes cell so that any two positions within LAMP_DEDUP_CELL metres
-    // map to the same cell and only the first one wins.
     const placed = new Set();
     const dedupKey = (x, z) =>
       `${Math.round(x / LAMP_DEDUP_CELL)},${Math.round(z / LAMP_DEDUP_CELL)}`;
@@ -335,21 +357,31 @@ export class WorldBuilder {
         if (placed.has(k)) continue;
         placed.add(k);
 
-        const baseY = this._snapY(lx, lz, elev, terrainMesh, 0);
+        const baseY  = this._snapY(lx, lz, elev, terrainMesh, 0);
+        const postCY = baseY + 3.25;   // CylinderGeometry centre Y (same as before)
 
-        // Post
-        const post = new THREE.Mesh(postGeo, this._lampPostMat);
-        post.position.set(lx, baseY + 3.25, lz);
-        post.castShadow = true;
-        group.add(post);
+        // ── Merge post geometry: translate each vertex into world space ──
+        for (let v = 0; v < postVertCount; v++) {
+          const vi = v * 3;
+          mergedPos.push(
+            postGeoPos[vi]     + lx,
+            postGeoPos[vi + 1] + postCY,
+            postGeoPos[vi + 2] + lz,
+          );
+          mergedNrm.push(postGeoNrm[vi], postGeoNrm[vi + 1], postGeoNrm[vi + 2]);
+        }
+        for (let t = 0; t < postIndexCount; t++) {
+          mergedIdx.push(postGeoIndex[t] + postBase);
+        }
+        postBase += postVertCount;
 
-        // Globe
+        // Globe — unchanged, individual mesh per lamp
         const globe = new THREE.Mesh(globeGeo, this._lampGlobeMat.clone());
         globe.position.set(lx, baseY + 6.8, lz);
         globe.userData.isLampGlobe = true;
         group.add(globe);
 
-        // Ground halo
+        // Ground halo — unchanged, individual mesh per lamp
         const haloMat = new THREE.MeshBasicMaterial({
           map:         this._lampHaloTex,
           transparent: true,
@@ -360,10 +392,26 @@ export class WorldBuilder {
         const halo = new THREE.Mesh(haloGeo, haloMat);
         halo.rotation.x = -Math.PI / 2;
         halo.position.set(lx, baseY + 0.08, lz);
-        halo.renderOrder    = 1;
+        halo.renderOrder     = 1;
         halo.userData.isLampHalo = true;
         group.add(halo);
       }
+    }
+
+    if (!group.children.length && !mergedPos.length) return null;
+
+    // ── Build single merged post mesh with BVH ───────────────────
+    if (mergedIdx.length) {
+      const postGeom = new THREE.BufferGeometry();
+      postGeom.setAttribute('position', new THREE.Float32BufferAttribute(mergedPos, 3));
+      postGeom.setAttribute('normal',   new THREE.Float32BufferAttribute(mergedNrm, 3));
+      postGeom.setIndex(mergedIdx);
+      try { postGeom.boundsTree = new MeshBVH(postGeom); } catch (_) {}
+
+      const postMesh = new THREE.Mesh(postGeom, this._lampPostMat);
+      postMesh.castShadow = true;
+      postMesh.userData.isLampPostMerged = true;
+      group.add(postMesh);
     }
 
     return group.children.length ? group : null;
