@@ -33,7 +33,7 @@ const CHAR_HEIGHT     =  1.7;   // visual / eye height
 const MAX_SPEED       = 20;     // world-units/sec top speed
 const AIR_NUDGE       = 10;     // lateral speed while airborne
 const JUMP_FORCE      =  7;     // upward impulse on jump
-const GRAVITY_ACC     = -20;    // world-units/sec²
+const GRAVITY_ACC     = -9.84;    // world-units/sec²
 const MAX_JUMP_COUNT  =  2;     // allow double-jump
 const WALL_RIDE_THRESH =  2;    // min speed² to initiate wall-ride
 const INERTIA_REFRESH  =  0.5;  // seconds between wall-ride inertia top-ups
@@ -257,6 +257,7 @@ export class RoamingControls {
     const speedDelta = dt * speed;
 
     if (moving) {
+      console.log(speed);
       _misc.copy(inputDir).multiplyScalar(speedDelta);
       this._accelAccum.add(_misc);
       this._accelAccum.x *= reverseDamping;
@@ -424,7 +425,6 @@ export class RoamingControls {
     if (!this.collidables || !this.collidables.length) {
       return { intersects: false, delta: new THREE.Vector3(), groundTris, notGroundTris };
     }
-
     for (const mesh of this.collidables) {
       const bvh = mesh.geometry?.boundsTree;
       if (!bvh) continue;

@@ -46,7 +46,7 @@ export class SceneManager {
     this._clouds = new CloudLayer();
     this._roamingCam = null; // initialised in start() after renderer exists
     this.$enterWorldBtn  = document.getElementById('enter-world-btn');
-
+    this._collidables = [];
   }
 
   init() {
@@ -776,7 +776,11 @@ export class SceneManager {
   }
 
   clearWorld() {
-    this._roamingCam.dispose();
+    // Reset roaming cam state without destroying it — it is reused across builds.
+    if (this._roamingCam) {
+      if (this._roamingCam.isActive) this._roamingCam.deactivate();
+      this._roamingCam.collidables = [];
+    }
     for (const obj of this._objects) {
       this.scene.remove(obj);
       obj.traverse(child => {
@@ -800,15 +804,51 @@ export class SceneManager {
       this._groundMesh.material.needsUpdate = true;
     }
   }
-
+  registerCollidable(mesh) {
+    this._collidables.push(mesh);
+  }
+  
+  getCollidables() {
+    this._roamingCam.collidables = this._collidables;
+    console.log(this._roamingCam.collidables);
+  }
   addObject(obj, collidable = true) {
     this.scene.add(obj);
-    this._objects.push(obj);
-    if(collidable){
-      this._roamingCam.collidables.push(obj);
+    if (collidable) {
+      this._collidables.push(obj);
     }
+    /*
+    this._objects.push(obj);
+    if (collidable && this._roamingCam) {
+      // Only register individual Meshes that carry a BVH boundsTree.
+      // Groups have no geometry — traverse them to find qualifying children.
+      if (obj.isMesh && obj.geometry?.boundsTree) {
+        this._roamingCam.collidables.push(obj);
+      } else if (!obj.isMesh) {
+        obj.traverse(child => {
+          if (child.isMesh && child.geometry?.boundsTree) {
+            this._roamingCam.collidables.push(child);
+          }
+        });
+      }
+    }
+    console.log(this._roamingCam.collidables);
+    */
     //if (pickable) this._pickables.push(obj);
   }
+
+  /**
+   * Register a mesh as a collision target after its BVH has been built.
+   * Use this when the BVH is built after addObject has already been called
+   * (e.g. the terrain mesh whose BVH is built in WorldBuilder).
+   */
+  /*
+  registerCollidable(mesh) {
+    if (this._roamingCam && mesh?.geometry?.boundsTree) {
+      this._roamingCam.collidables.push(mesh);
+    }
+  }
+  */
 
   setRenderMode(mode) {
     this.renderMode = mode;

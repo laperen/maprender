@@ -1,6 +1,10 @@
 WIP
 
-collision, physics, and character movement
+collision
+p:
+The roaming control character is falling through the terrain, and not colliding with buildings.
+
+physics, and character movement
 p:
 ???
 

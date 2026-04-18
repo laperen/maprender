@@ -80,7 +80,6 @@ export class WorldBuilder {
   }
   async build(ways, heightScale = 1, lat = 0, lng = 0, radiusMeters = 500) {
     let buildings = 0, roads = 0, water = 0, parks = 0, tris = 0;
-    this.scene._roamingCam.collidables = [];
     const gridSize = 64;
     let elevGrid   = null;
     try {
@@ -203,6 +202,8 @@ export class WorldBuilder {
       try {
         terrainMesh.geometry.boundsTree = new MeshBVH(terrainMesh.geometry);
         bvh = terrainMesh.geometry.boundsTree;
+        // Register now that BVH exists — addObject ran before BVH was built.
+        this.scene.registerCollidable(terrainMesh);
       } catch (e) {}
     }
   
@@ -213,25 +214,33 @@ export class WorldBuilder {
       geom.setAttribute('normal',   new THREE.Float32BufferAttribute(nrm, 3));
       geom.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
       geom.setIndex(idx);
-  
+
+      // ✅ BVH for player collision against building walls and roofs
+      try { geom.boundsTree = new MeshBVH(geom); } catch (_) {}
+
       const mat = new THREE.MeshToonMaterial({
         vertexColors: true,
         gradientMap: this._toonGradient,
       });
-  
+
       const mesh = new THREE.Mesh(geom, mat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       this.scene.addObject(mesh);
-  
+
       tris += idx.length / 3;
     }
   
-    // 🛣 ROADS (unchanged)
+    // 🛣 ROADS
     if (rawRoadTris.length) {
       const draped = this._drapeTriangles(rawRoadTris, terrainMesh, bvh, elev, DRAPE_BIAS);
+      const roadGeom = this._buildGeom(draped.pos, draped.idx, draped.nrm);
+
+      // ✅ BVH so the player can walk on road surfaces
+      try { roadGeom.boundsTree = new MeshBVH(roadGeom); } catch (_) {}
+
       const mesh = new THREE.Mesh(
-        this._buildGeom(draped.pos, draped.idx, draped.nrm),
+        roadGeom,
         new THREE.MeshLambertMaterial({
           color: 0x505058,
           polygonOffset: true,
@@ -243,12 +252,13 @@ export class WorldBuilder {
       this.scene.addObject(mesh);
       tris += draped.idx.length / 3;
     }
-  
-    // 💡 lamps
+
+    // 💡 lamps — decorative Groups; lamp posts are too thin for meaningful
+    // capsule collision and have no BVH, so mark as non-collidable.
     if (roadWays.length) {
       const lampGroup = this._buildStreetLamps(roadWays, elev, terrainMesh);
       if (lampGroup) {
-        this.scene.addObject(lampGroup);
+        this.scene.addObject(lampGroup, false);
         const lampMeshes = [];
         lampGroup.traverse(c => {
           if (c.isMesh && (c.userData.isLampGlobe || c.userData.isLampHalo)) lampMeshes.push(c);

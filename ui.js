@@ -903,9 +903,9 @@ export class UIController {
 
       this._setStatus('Fetching elevation data and building world…', 'active loading');
       await this._nextFrame();
-
+      this.scene._collidables = [];
       const result = await this.builder.build(ways, this.heightScale, this.lat, this.lng, this.radius);
-
+      this.scene.getCollidables();
       this.scene.setRenderMode(this.renderMode);
       this.scene.flyTo(0, 0, this.radius);
       this._applyTimeOfDay(this.timeOfDay);
