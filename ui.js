@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 // js/ui.js — DOM event wiring, status messages, tooltip
 export class UIController {
   constructor({ scene, fetcher, builder, minimap }) {
@@ -700,9 +701,10 @@ export class UIController {
 
     this._appMode = 'roaming';
     if (this._overlay) this._overlay.setAppMode(this._appMode);
-    // Hide selection panel, show roaming panel
+
+    // Hide selection panel, show roaming HUD
     this.$selectionPanel.classList.add('panel-hidden');
-    //this.$roamingPanel.classList.remove('panel-hidden');
+    this.$roamingPanel.classList.remove('panel-hidden');
 
     // Disable ground-click selection
     this.scene.exitSelectionMode();
@@ -712,11 +714,37 @@ export class UIController {
     // Spawn character at beacon position
     this.scene.spawnCharacter(this._beaconX, this._beaconY, this._beaconZ);
 
-    // Animate camera to 3rd-person behind character
+    // Show crosshair
+    const crosshair = document.getElementById('roam-crosshair');
+    if (crosshair) crosshair.classList.remove('hidden');
+
+    // Visual roaming state
+    document.body.classList.add('roaming-active');
+    /*
+    // Show pointer-lock prompt briefly, then hide once lock is acquired
+    const plOverlay = document.getElementById('pointer-lock-overlay');
+    if (plOverlay) {
+      plOverlay.classList.remove('hidden');
+      const hidePL = () => {
+        plOverlay.classList.add('hidden');
+        document.removeEventListener('pointerlockchange', hidePL);
+      };
+      document.addEventListener('pointerlockchange', hidePL);
+      // Auto-hide after 4s as fallback
+      setTimeout(() => plOverlay.classList.add('hidden'), 4000);
+    }
+    */
+
+    // Start the third-person roaming camera
+    // Uses a smooth transition first, then hands off to RoamingCamera on arrival
+    const spawnVec = new THREE.Vector3(this._beaconX, this._beaconY, this._beaconZ);
     this.scene.transitionToRoaming(() => {
-      // Camera transition complete — future controller hooks in here
+      // Transition complete — activate the interactive roaming camera
+      this.scene.startRoamingCamera(spawnVec, () => {
+        // Called when player presses Escape inside roaming mode
+        this._exitRoamingMode();
+      });
     });
-    
   }
 
   _exitRoamingMode() {
@@ -725,6 +753,18 @@ export class UIController {
     this.$roamingPanel.classList.add('panel-hidden');
     this.$selectionPanel.classList.remove('panel-hidden');
     this.$uiPanel.classList.add('ui-hidden');
+
+    // Hide crosshair and remove roaming body class
+    const crosshair = document.getElementById('roam-crosshair');
+    if (crosshair) crosshair.classList.add('hidden');
+    document.body.classList.remove('roaming-active');
+    /*
+    // Hide pointer-lock overlay if still showing
+    const plOverlay = document.getElementById('pointer-lock-overlay');
+    if (plOverlay) plOverlay.classList.add('hidden');
+    */
+    // Stop the roaming camera first (releases pointer lock, re-enables orbit)
+    this.scene.stopRoamingCamera();
 
     // Reset beacon state UI
     if (this.$enterWorldBtn) this.$enterWorldBtn.disabled = true;

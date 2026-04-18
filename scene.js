@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { OrbitControlsImpl } from './orbitControls.js';
 import { CloudLayer }        from './clouds.js';
+import { RoamingCamera }     from './roamingCamera.js';
 
 // ── Night-sky constants ───────────────────────────────────────
 const STAR_COUNT    = 3000;
@@ -43,7 +44,9 @@ export class SceneManager {
 
     // Cloud layer
     this._clouds = new CloudLayer();
+    this._roamingCam = null; // initialised in start() after renderer exists
     this.$enterWorldBtn  = document.getElementById('enter-world-btn');
+
   }
 
   init() {
@@ -90,7 +93,7 @@ export class SceneManager {
     this.raycaster  = new THREE.Raycaster();
     this.raycaster.firstHitOnly = true;
     this.mouseNDC   = new THREE.Vector2();
-    this._pickables = [];
+    //this._pickables = [];
 
     // Clouds sit above the scene — init after scene exists
     this._clouds.init(this.scene);
@@ -698,7 +701,8 @@ export class SceneManager {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow     = true;
     mesh.userData.isGround = true;
-    this.scene.add(mesh);
+    //this.scene.add(mesh);
+    this.addObject(mesh);
     this._groundMesh = mesh;
     this._fitShadowFrustum(radiusMeters);
   }
@@ -734,6 +738,14 @@ export class SceneManager {
 
   start() {
     this.init();
+
+    // Roaming camera shares the scene's existing camera + canvas
+    this._roamingCam = new RoamingCamera(
+      this.camera,
+      this.scene,
+      this.renderer.domElement
+    );
+
     const animate = () => {
       requestAnimationFrame(animate);
       this._timer.update();
@@ -742,8 +754,21 @@ export class SceneManager {
       this._tickLampLOD();
       this._tickBeacon(dt);
       if (this._transitionTick) this._transitionTick(dt);
+
+      // Roaming camera takes over movement when active
+      if (this._roamingCam?.isActive) {
+        const charPos = this._roamingCam.tick(dt);
+        // Sync the character mesh to the physics position
+        if (this._characterGroup) {
+          this._characterGroup.position.copy(charPos);
+          // Face the direction the camera is looking (yaw only)
+          this._characterGroup.rotation.y = -this._roamingCam._yaw + Math.PI;
+        }
+      } else {
+        this.controls.update(dt);
+      }
+
       this._clouds.tick(dt, this.camera.position);
-      this.controls.update(dt);
       this.renderer.render(this.scene, this.camera);
       this._updateFPS();
     };
@@ -762,7 +787,7 @@ export class SceneManager {
       });
     }
     this._objects    = [];
-    this._pickables  = [];
+    //this._pickables  = [];
     this._lampMeshes = [];
 
     if (this._groundMesh) {
@@ -775,10 +800,13 @@ export class SceneManager {
     }
   }
 
-  addObject(obj, pickable = false) {
+  addObject(obj, collidable = true) {
     this.scene.add(obj);
     this._objects.push(obj);
-    if (pickable) this._pickables.push(obj);
+    if(collidable){
+      this._roamingCam.collidables.push(obj);
+    }
+    //if (pickable) this._pickables.push(obj);
   }
 
   setRenderMode(mode) {
@@ -801,7 +829,7 @@ export class SceneManager {
       });
     });
   }
-
+  /*
   pick(clientX, clientY) {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.mouseNDC.x =  ((clientX - rect.left) / rect.width)  * 2 - 1;
@@ -810,6 +838,7 @@ export class SceneManager {
     const hits = this.raycaster.intersectObjects(this._pickables, true);
     return hits.length ? hits[0] : null;
   }
+  */
 
   _onResize() {
     const w = this.container.clientWidth, h = this.container.clientHeight;
@@ -1134,5 +1163,41 @@ export class SceneManager {
 
   getCharacterPosition() {
     return this._characterPos ? this._characterPos.clone() : null;
+  }
+
+  // NOTE: methods appended by roaming camera integration patch
+
+  // ═══════════════════════════════════════════════════════════════
+  // ROAMING CAMERA — public activation interface
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Start the third-person roaming camera.
+   * Disables OrbitControls and hands full control to RoamingCamera.
+   * @param {THREE.Vector3} spawnPos  — world position to spawn at
+   * @param {function}      [onExit]  — called when Escape pressed
+   */
+  startRoamingCamera(spawnPos, onExit) {
+    if (!this._roamingCam) return;
+    this.controls.enabled = false;
+
+    this._roamingCam.onExit = () => {
+      this.stopRoamingCamera();
+      if (typeof onExit === 'function') onExit();
+    };
+    this._roamingCam.activate(spawnPos, 0);
+  }
+
+  /** Stop the roaming camera and re-enable OrbitControls. */
+  stopRoamingCamera() {
+    if (!this._roamingCam) return;
+    this._roamingCam.deactivate();
+    this.controls.enabled = true;
+    this.controls.update();
+  }
+
+  /** True while the roaming camera controls the scene. */
+  get roamingActive() {
+    return this._roamingCam?.isActive ?? false;
   }
 }

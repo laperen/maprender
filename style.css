@@ -1971,3 +1971,103 @@ body { overflow: hidden; }
   text-overflow: ellipsis;
 }
 .jk-np-label.active { color: var(--accent); }
+/* ═══════════════════════════════════════════════════════════════
+   ROAMING CAMERA — crosshair, key badges, HUD updates
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Crosshair — fixed dead-centre of viewport */
+#roam-crosshair {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 30;
+  pointer-events: none;
+  mix-blend-mode: difference;
+  filter: drop-shadow(0 0 3px rgba(0,0,0,0.8));
+}
+
+/* Key badge pills inside the HUD hint */
+.roam-key {
+  display: inline-block;
+  padding: 1px 5px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 3px;
+  font-family: 'Space Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  font-style: normal;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* Override italic on roam-hint when it contains key badges */
+.roam-hint {
+  font-style: normal;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Pointer-lock overlay — shown briefly when entering roaming */
+#pointer-lock-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+  animation: pl-fade 0.3s ease;
+}
+
+#pointer-lock-overlay.hidden {
+  display: none;
+}
+
+@keyframes pl-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.pl-title {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.pl-sub {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-align: center;
+  line-height: 1.7;
+}
+
+/* Subtle vignette while in roaming mode */
+body.roaming-active::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 55%,
+    rgba(0,0,0,0.35) 100%
+  );
+}

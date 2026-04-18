@@ -80,7 +80,7 @@ export class WorldBuilder {
   }
   async build(ways, heightScale = 1, lat = 0, lng = 0, radiusMeters = 500) {
     let buildings = 0, roads = 0, water = 0, parks = 0, tris = 0;
-  
+    this.scene._roamingCam.collidables = [];
     const gridSize = 64;
     let elevGrid   = null;
     try {
@@ -222,8 +222,7 @@ export class WorldBuilder {
       const mesh = new THREE.Mesh(geom, mat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-  
-      this.scene.addObject(mesh, true);
+      this.scene.addObject(mesh);
   
       tris += idx.length / 3;
     }
@@ -262,7 +261,7 @@ export class WorldBuilder {
     if (tallBuildings.length) {
       const aviatGroup = this._buildAviationLights(tallBuildings);
       if (aviatGroup) {
-        this.scene.addObject(aviatGroup);
+        this.scene.addObject(aviatGroup, false);
         const aviatMeshes = [];
         aviatGroup.traverse(c => {
           if (c.isMesh && c.userData.isLampGlobe) aviatMeshes.push(c);

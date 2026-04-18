@@ -214,13 +214,31 @@
   </div>
 
   <!-- ── Roaming HUD ─────────────────────────────────────────── -->
+  <!-- ── Crosshair ──────────────────────────────────────────────── -->
+  <div id="roam-crosshair" class="hidden">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <line x1="12" y1="2" x2="12" y2="8"  stroke="rgba(255,255,255,0.85)" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="12" y1="16" x2="12" y2="22" stroke="rgba(255,255,255,0.85)" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="2"  y1="12" x2="8"  y2="12" stroke="rgba(255,255,255,0.85)" stroke-width="1.5" stroke-linecap="round"/>
+      <line x1="16" y1="12" x2="22" y2="12" stroke="rgba(255,255,255,0.85)" stroke-width="1.5" stroke-linecap="round"/>
+      <circle cx="12" cy="12" r="1.5" fill="rgba(255,255,255,0.9)"/>
+    </svg>
+  </div>
+
   <div id="roaming-panel" class="panel-hidden">
     <div class="roam-hud-bar">
       <div class="roam-logo">
         <span class="logo-text"><em>Explore Mode</em></span>
       </div>
-      <div class="roam-hint">Movement controls coming soon</div>
-      <button id="roam-back-btn" class="roam-back-btn">
+      <div class="roam-hint">
+        <span class="roam-key">W A S D</span> Move &nbsp;·&nbsp;
+        <span class="roam-key">Mouse</span> Look &nbsp;·&nbsp;
+        <span class="roam-key">Shift</span> Sprint &nbsp;·&nbsp;
+        <span class="roam-key">Space</span> Jump &nbsp;·&nbsp;
+        <span class="roam-key">Scroll</span> Zoom &nbsp;·&nbsp;
+        <span class="roam-key">Esc</span> Unlock Cursor
+      </div>
+      <button id="roam-back-btn" class="roam-back-btn hidden">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
         Change Spawn
       </button>
@@ -281,7 +299,11 @@
             <div class="explore-hint-icon">🕹</div>
             <div class="explore-hint-text">
               <div class="explore-hint-title">Movement Controls</div>
-              <div class="explore-hint-sub">Coming soon — first-person navigation is in development.</div>
+              <div class="explore-hint-sub">
+                <b>WASD</b> — move &nbsp;·&nbsp; <b>Mouse</b> — look<br>
+                <b>Shift</b> — sprint &nbsp;·&nbsp; <b>Space</b> — jump<br>
+                <b>Scroll</b> — zoom &nbsp;·&nbsp; <b>Esc</b> — exit roaming
+              </div>
             </div>
           </div>
           <div class="explore-divider"></div>
@@ -358,6 +380,15 @@
 
     </div>
   </div>
+  <!-- Pointer-lock click-to-start overlay -->
+  <!--div id="pointer-lock-overlay" class="hidden">
+    <div class="pl-title">⬡ Explore Mode</div>
+    <div class="pl-sub">
+      Click anywhere to capture mouse<br>
+      <span style="color:var(--accent);font-weight:700;">Esc</span> to release &nbsp;·&nbsp; <span style="color:var(--accent);font-weight:700;">Esc again</span> to exit roaming
+    </div>
+  </div-->
+
   <script type="module" src="./main.js"></script>
 </body>
 </html>
