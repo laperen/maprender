@@ -34,7 +34,7 @@ const KEYS = {
   SPRINT  : ['ShiftLeft', 'ShiftRight'],
 };
 
-export class RoamingCamera {
+export class RoamingControls {
   /**
    * @param {THREE.PerspectiveCamera} camera     the scene's existing camera
    * @param {THREE.Scene}             scene      Three.js scene (kept for compat)

@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { OrbitControlsImpl } from './orbitControls.js';
 import { CloudLayer }        from './clouds.js';
-import { RoamingCamera }     from './roamingCamera.js';
+import { RoamingControls }     from './roamingControls.js';
 
 // ── Night-sky constants ───────────────────────────────────────
 const STAR_COUNT    = 3000;
@@ -740,7 +740,7 @@ export class SceneManager {
     this.init();
 
     // Roaming camera shares the scene's existing camera + canvas
-    this._roamingCam = new RoamingCamera(
+    this._roamingCam = new RoamingControls(
       this.camera,
       this.scene,
       this.renderer.domElement
