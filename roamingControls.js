@@ -26,14 +26,14 @@ const USE_HEIGHT      =  1.6;  // eye offset above feet
 const CAM_COLLISION_R =  0.6;
 
 // ── Tunables — character ──────────────────────────────────────
-const CAPSULE_RADIUS  =  0.5;   // metres — half-width of collision capsule
+const CAPSULE_RADIUS  =  0.3;   // metres — half-width of collision capsule
 const CAPSULE_HEIGHT  =  1.0;   // inner segment length (total = height + 2*radius)
 const CHAR_HEIGHT     =  1.7;   // visual / eye height
 
-const MAX_SPEED       = 20;     // world-units/sec top speed
+const MAX_SPEED       = 50;     // world-units/sec top speed
 const AIR_NUDGE       = 10;     // lateral speed while airborne
 const JUMP_FORCE      =  7;     // upward impulse on jump
-const GRAVITY_ACC     = -9.84;    // world-units/sec²
+const GRAVITY_ACC     = -9.81;    // world-units/sec²
 const MAX_JUMP_COUNT  =  2;     // allow double-jump
 const WALL_RIDE_THRESH =  2;    // min speed² to initiate wall-ride
 const INERTIA_REFRESH  =  0.5;  // seconds between wall-ride inertia top-ups
