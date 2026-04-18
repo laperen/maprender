@@ -1,30 +1,51 @@
-// roamingCamera.js — Third-person boom-arm camera for roaming mode.
-// Adapts the boom-arm pattern from customCamera.js to the existing
-// SceneManager architecture. Reuses the scene's existing camera —
-// no second camera is created. OrbitControls are disabled while active.
+// roamingControls.js — Third-person boom-arm camera + capsule-collision physics.
+//
+// Movement model ported from customMovement.js / customCollision.js:
+//   • Capsule collider resolved via three-mesh-bvh shapecast (same BVH already
+//     built by WorldBuilder for the terrain mesh).
+//   • Inertia-based ground movement with air nudge and wall-ride detection.
+//   • Gravity accumulator; double-jump with inertia gating.
+//   • Wall-ride: player can run along steep surfaces briefly before gravity wins.
+//
+// Camera model retained from the original roamingControls.js:
+//   • Boom-arm (yaw + pitch) with smooth lerp and geometry push-back.
 
 import * as THREE from 'three';
 
-// ── Tunables ─────────────────────────────────────────────────
-const MOVE_SPEED        =  8;     // world-units/sec base walk speed
-const SPRINT_MULT       =  2.8;   // held-Shift multiplier
-const BOOM_LENGTH       = 10;     // default camera distance behind character
-const BOOM_MIN          =  2;     // minimum zoom distance (scroll in)
-const BOOM_MAX          = 28;     // maximum zoom distance (scroll out)
-const BOOM_ZOOM_SPEED   =  2.5;   // scroll wheel sensitivity
-const PITCH_MIN         = -55;    // degrees — look-down limit
-const PITCH_MAX         =  70;    // degrees — look-up limit
-const MOUSE_SENS_X      =  0.18;  // horizontal look sensitivity (deg/px)
-const MOUSE_SENS_Y      =  0.14;  // vertical look sensitivity (deg/px)
-const LERP_CAM_K        = 14;     // camera position exponential-smoothing rate
-const USE_HEIGHT        =  1.6;   // eye-level offset above character feet (m)
-const GROUND_PROBE_Y    = 2000;   // raycast origin height for terrain snapping
-const GRAVITY           = 18;     // downward acceleration (world-units/sec^2)
-const JUMP_VEL          =  7;     // initial upward velocity on jump
-const SNAP_DIST         =  0.4;   // tolerance before gravity kicks in
-const CAM_COLLISION_R   =  0.6;   // camera push-back sphere radius
+// ── Tunables — camera ─────────────────────────────────────────
+const BOOM_LENGTH     = 10;
+const BOOM_MIN        =  2;
+const BOOM_MAX        = 28;
+const BOOM_ZOOM_SPD   =  2.5;
+const PITCH_MIN       = -55;   // degrees
+const PITCH_MAX       =  70;
+const MOUSE_SENS_X    =  0.18;
+const MOUSE_SENS_Y    =  0.14;
+const LERP_CAM_K      = 14;
+const USE_HEIGHT      =  1.6;  // eye offset above feet
+const CAM_COLLISION_R =  0.6;
 
-// ── Key map ──────────────────────────────────────────────────
+// ── Tunables — character ──────────────────────────────────────
+const CAPSULE_RADIUS  =  0.5;   // metres — half-width of collision capsule
+const CAPSULE_HEIGHT  =  1.0;   // inner segment length (total = height + 2*radius)
+const CHAR_HEIGHT     =  1.7;   // visual / eye height
+
+const MAX_SPEED       = 20;     // world-units/sec top speed
+const AIR_NUDGE       = 10;     // lateral speed while airborne
+const JUMP_FORCE      =  7;     // upward impulse on jump
+const GRAVITY_ACC     = -20;    // world-units/sec²
+const MAX_JUMP_COUNT  =  2;     // allow double-jump
+const WALL_RIDE_THRESH =  2;    // min speed² to initiate wall-ride
+const INERTIA_REFRESH  =  0.5;  // seconds between wall-ride inertia top-ups
+const SPRINT_MULT     =  2.0;
+
+// Slope angle (radians) beyond which a surface is a wall, not ground
+const SLOPE_LIMIT     = Math.PI / 4;  // 45°
+
+// Ground-probe fallback origin (used when BVH unavailable)
+const GROUND_PROBE_Y  = 2000;
+
+// ── Key map ───────────────────────────────────────────────────
 const KEYS = {
   FORWARD : ['KeyW', 'ArrowUp'],
   BACK    : ['KeyS', 'ArrowDown'],
@@ -34,11 +55,27 @@ const KEYS = {
   SPRINT  : ['ShiftLeft', 'ShiftRight'],
 };
 
+// ── Scratch objects (module-level — no allocation per frame) ──
+const _up        = new THREE.Vector3(0, 1, 0);
+const _misc      = new THREE.Vector3();
+const _tempBox   = new THREE.Box3();
+const _tempMat   = new THREE.Matrix4();
+const _tempSeg   = new THREE.Line3();
+const _capsuleA  = new THREE.Vector3();  // segment start (world)
+const _capsuleB  = new THREE.Vector3();  // segment end   (world)
+const _triNormal = new THREE.Vector3();
+const _triPoint  = new THREE.Vector3();
+const _capPoint  = new THREE.Vector3();
+const _delta     = new THREE.Vector3();
+const _newPos    = new THREE.Vector3();
+
+
+// ─────────────────────────────────────────────────────────────
 export class RoamingControls {
   /**
-   * @param {THREE.PerspectiveCamera} camera     the scene's existing camera
-   * @param {THREE.Scene}             scene      Three.js scene (kept for compat)
-   * @param {HTMLElement}             domElement renderer canvas
+   * @param {THREE.PerspectiveCamera} camera
+   * @param {THREE.Scene}             scene
+   * @param {HTMLElement}             domElement
    */
   constructor(camera, scene, domElement) {
     this._camera = camera;
@@ -46,35 +83,65 @@ export class RoamingControls {
     this._dom    = domElement;
     this._active = false;
 
-    //this._terrainMesh = null;
-    this.collidables = null;
-    // Boom-arm state
-    this._yaw     = 0;
-    this._pitch   = -10;
-    this._boomLen = BOOM_LENGTH;
+    // Set externally by WorldBuilder / SceneManager after each world build.
+    // Each entry is a THREE.Mesh whose geometry already has a boundsTree (BVH).
+    this.collidables = [];
 
-    // Character physics
-    this._charPos  = new THREE.Vector3();
-    this._charVelY = 0;
-    this._onGround = false;
-
-    // Smooth camera target
+    // ── Camera state ─────────────────────────────────────────
+    this._yaw      = 0;
+    this._pitch    = -10;
+    this._boomLen  = BOOM_LENGTH;
     this._camTarget = new THREE.Vector3();
     this._firstTick = true;
 
-    // Pre-allocated scratch objects
-    this._fwd       = new THREE.Vector3();
-    this._right     = new THREE.Vector3();
-    this._ray       = new THREE.Raycaster();
-    this._ray.firstHitOnly = true;
-    this._rayOrigin = new THREE.Vector3();
-    this._rayDown   = new THREE.Vector3(0, -1, 0);
-    this._boomDir   = new THREE.Vector3();
-    this._pivot     = new THREE.Vector3();
-    this._idealCam  = new THREE.Vector3();
-    this._camDir    = new THREE.Vector3();
+    // Scratch — camera
+    this._boomDir  = new THREE.Vector3();
+    this._pivot    = new THREE.Vector3();
+    this._idealCam = new THREE.Vector3();
+    this._camDir   = new THREE.Vector3();
+    this._camRay   = new THREE.Raycaster();
+    this._camRay.firstHitOnly = true;
 
-    // Key state
+    // ── Character physics state ───────────────────────────────
+    // Feet position (bottom of capsule)
+    this._charPos     = new THREE.Vector3();
+    // The collider mesh is a simple invisible object whose world-space
+    // position is the CENTRE of the capsule (feet + radius + height/2).
+    this._colliderMesh = (() => {
+      const m = new THREE.Mesh(
+        new THREE.CapsuleGeometry(CAPSULE_RADIUS, CAPSULE_HEIGHT, 2, 8),
+        new THREE.MeshBasicMaterial({ visible: false })
+      );
+      scene.add(m);
+      return m;
+    })();
+
+    // Velocity components — mirrors customMovement.js split
+    this._accelAccum    = new THREE.Vector3();  // ground horizontal inertia
+    this._airNudgeAccum = new THREE.Vector3();  // air lateral nudge
+    this._gravityAccum  = 0;                    // vertical accumulator (signed)
+    this._velocity      = new THREE.Vector3();  // composite each frame
+
+    // Surface state
+    this._onSurface    = false;   // touching any collidable surface this frame
+    this._targetUp     = new THREE.Vector3(0, 1, 0); // current "up" for the character
+    this._wallRiding   = false;
+    this._wallRideAngle = 0;      // angle between targetUp and world up
+    this._inertiaMax   = 0;
+    this._inertiaCurr  = 0;
+    this._inertiaRefreshCurr = 0;
+    this._airJumpCount = 0;       // mid-air jumps used
+
+    // Input helpers
+    this._prevJump = false;
+
+    // Probe ray (fallback when BVH not available)
+    this._probeRay    = new THREE.Raycaster();
+    this._probeRay.firstHitOnly = true;
+    this._probeOrigin = new THREE.Vector3();
+    this._probeDown   = new THREE.Vector3(0, -1, 0);
+
+    // ── Input state ───────────────────────────────────────────
     this._keys = {};
 
     // Bound handlers
@@ -82,26 +149,41 @@ export class RoamingControls {
     this._onKeyUp       = this._onKeyUp.bind(this);
     this._onMouseMove   = this._onMouseMove.bind(this);
     this._onWheel       = this._onWheel.bind(this);
-    //this._onPLChange    = this._onPLChange.bind(this);
     this._onCanvasClick = this._onCanvasClick.bind(this);
 
-    /** Callback fired when the player exits (pointer lock released). */
+    /** Callback fired when the player presses Escape. */
     this.onExit = null;
   }
 
-  // ── Public API ────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  // PUBLIC API
+  // ═══════════════════════════════════════════════════════════
 
   activate(spawnPos, yawDeg = 0) {
     if (this._active) return;
-    this._active      = true;
-    //this._terrainMesh = terrain;
-    this._charPos.copy(spawnPos);
+    this._active    = true;
     this._yaw       = THREE.MathUtils.degToRad(yawDeg);
     this._pitch     = -10;
     this._boomLen   = BOOM_LENGTH;
-    this._charVelY  = 0;
-    this._onGround  = false;
     this._firstTick = true;
+
+    // Place character at spawn
+    this._charPos.copy(spawnPos);
+    this._syncColliderToFeet();
+
+    // Reset physics
+    this._accelAccum.set(0, 0, 0);
+    this._airNudgeAccum.set(0, 0, 0);
+    this._gravityAccum  = 0;
+    this._velocity.set(0, 0, 0);
+    this._onSurface     = false;
+    this._wallRiding    = false;
+    this._targetUp.set(0, 1, 0);
+    this._airJumpCount  = 0;
+    this._inertiaMax    = 0;
+    this._inertiaCurr   = 0;
+    this._prevJump      = false;
+
     this._bindEvents();
     this._requestPointerLock();
   }
@@ -113,79 +195,386 @@ export class RoamingControls {
     if (document.pointerLockElement === this._dom) document.exitPointerLock();
   }
 
+  /**
+   * Called every frame from SceneManager's animate loop.
+   * Returns the current feet position so the character mesh can be synced.
+   */
   tick(dt) {
     if (!this._active) return this._charPos;
-    this._moveCharacter(dt);
+    this._updatePhysics(dt);
     this._positionCamera(dt);
     return this._charPos;
   }
 
   get isActive() { return this._active; }
 
-  // ── Movement ──────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  // PHYSICS UPDATE  (ported from customMovement.js)
+  // ═══════════════════════════════════════════════════════════
 
-  _moveCharacter(dt) {
-    const fwd   = this._key(KEYS.FORWARD) ? 1 : 0;
-    const back  = this._key(KEYS.BACK)    ? 1 : 0;
-    const left  = this._key(KEYS.LEFT)    ? 1 : 0;
-    const right = this._key(KEYS.RIGHT)   ? 1 : 0;
-    const speed = MOVE_SPEED * (this._key(KEYS.SPRINT) ? SPRINT_MULT : 1);
+  _updatePhysics(dt) {
+    const jumpPressed = this._key(KEYS.JUMP);
+    // Edge-detect — only trigger on the frame the key is first pressed
+    const jumpTrigger = jumpPressed && !this._prevJump;
+    this._prevJump = jumpPressed;
 
-    // Horizontal directions from yaw only (pitch doesn't tilt movement)
-    this._fwd.set(  Math.sin(this._yaw), 0,  Math.cos(this._yaw));
-    this._right.set(Math.cos(this._yaw), 0, -Math.sin(this._yaw));
+    const moving = this._key(KEYS.FORWARD) || this._key(KEYS.BACK) ||
+                   this._key(KEYS.LEFT)    || this._key(KEYS.RIGHT);
+    const speed  = MAX_SPEED * (this._key(KEYS.SPRINT) ? SPRINT_MULT : 1);
 
-    this._charPos.x += (this._fwd.x * (fwd - back)  + this._right.x * (left - right)) * speed * dt;
-    this._charPos.z += (this._fwd.z * (fwd - back)  + this._right.z * (left - right)) * speed * dt;
+    // Build horizontal input direction in world space (yaw only)
+    const fwdX = Math.sin(this._yaw), fwdZ = Math.cos(this._yaw);
+    const rtX  = Math.cos(this._yaw), rtZ  = -Math.sin(this._yaw);
+    const fB   = (this._key(KEYS.FORWARD) ? 1 : 0) - (this._key(KEYS.BACK)  ? 1 : 0);
+    const lR   = (this._key(KEYS.LEFT)    ? 1 : 0) - (this._key(KEYS.RIGHT) ? 1 : 0);
+    _misc.set(fwdX * fB + rtX * lR, 0, fwdZ * fB + rtZ * lR);
+    if (_misc.lengthSq() > 0) _misc.normalize();
+    // _misc is now the unit horizontal input direction
 
-    // Gravity & ground snap
-    const groundY = this._getGroundY(this._charPos.x, this._charPos.z);
-    const feetY   = groundY + SNAP_DIST;
+    // ── Ground vs air movement ────────────────────────────────
+    const reverseDamping = Math.exp(-4 * dt);
 
-    if (this._charPos.y > feetY + 0.05) {
-      this._charVelY  -= GRAVITY * dt;
-      this._charPos.y += this._charVelY * dt;
-      this._onGround   = false;
+    if (this._onSurface) {
+      this._groundMovement(_misc, moving, speed, dt, reverseDamping, jumpTrigger);
     } else {
-      this._charPos.y = feetY;
-      this._charVelY  = 0;
-      this._onGround  = true;
+      this._airMovement(_misc, moving, dt, reverseDamping, jumpTrigger);
     }
 
-    if (this._key(KEYS.JUMP) && this._onGround) {
-      this._charVelY = JUMP_VEL;
-      this._onGround = false;
-    }
-  }
-  _intersectObject(collidables){
-    let rethits = [];
-    for(let i = 0, max = collidables.length; i < max; i++){
-      let col = collidables[i];
-      let hits = this._ray.intersectObject(col, false);
-      rethits.push(...hits);
-    }
-    return rethits;
-  }
-  _getGroundY(x, z) {
-    if (!this.collidables || !this.collidables.length) return 0;
-    this._rayOrigin.set(x, GROUND_PROBE_Y, z);
-    this._ray.set(this._rayOrigin, this._rayDown);
-    const hits = this._intersectObject(this.collidables, false);
-    return hits.length ? hits[0].point.y : 0;
+    // ── Composite velocity ────────────────────────────────────
+    this._velocity.copy(this._accelAccum);
+    this._velocity.y += this._gravityAccum;
+    this._velocity.add(this._airNudgeAccum);
+
+    // ── Move and resolve collisions ───────────────────────────
+    this._surfaceDetection(dt);
+
+    // ── OOB check ─────────────────────────────────────────────
+    if (this._charPos.y < -25) this._teleportToOrigin();
   }
 
-  // ── Camera (boom-arm) ─────────────────────────────────────────
+  // ── Ground movement (mirrors GroundMovement in customMovement.js) ─
+  _groundMovement(inputDir, moving, speed, dt, reverseDamping, jumpTrigger) {
+    const speedDelta = dt * speed;
+
+    if (moving) {
+      _misc.copy(inputDir).multiplyScalar(speedDelta);
+      this._accelAccum.add(_misc);
+      this._accelAccum.x *= reverseDamping;
+      this._accelAccum.z *= reverseDamping;
+    } else {
+      // Decelerate
+      _misc.copy(this._accelAccum).multiplyScalar(speedDelta * 0.5);
+      this._accelAccum.sub(_misc);
+    }
+    this._accelAccum.y *= reverseDamping;
+
+    if (jumpTrigger) {
+      const wallPct = this._wallRideAngle / (Math.PI / 2);
+
+      // Transition to air — halve horizontal inertia
+      this._accelAccum.multiplyScalar(
+        THREE.MathUtils.lerp(1.0, (MAX_SPEED - AIR_NUDGE) / MAX_SPEED, 1)
+      );
+      // Reflect over targetUp (wall jump launches along surface normal)
+      this._accelAccum.reflect(this._targetUp);
+
+      _misc.copy(this._targetUp).multiplyScalar(JUMP_FORCE * wallPct);
+      this._accelAccum.add(_misc);
+
+      this._gravityAccum = JUMP_FORCE * (1 - wallPct) + this._accelAccum.y;
+      this._accelAccum.y = 0;
+
+      // After jumping off a wall, face away from it
+      if (this._wallRiding) {
+        // flip forward direction — handled by yaw not changing here; feel is fine
+      }
+
+      this._targetUp.set(0, 1, 0);
+      this._inertiaMax = 0;
+      this._onSurface  = false;
+    }
+  }
+
+  // ── Air movement (mirrors AirMovement in customMovement.js) ──
+  _airMovement(inputDir, moving, dt, reverseDamping, jumpTrigger) {
+    if (moving) {
+      _misc.copy(inputDir).multiplyScalar(AIR_NUDGE * dt);
+      this._airNudgeAccum.add(_misc);
+      this._airNudgeAccum.multiplyScalar(reverseDamping);
+    }
+
+    // Mid-air jump (double jump)
+    if (jumpTrigger && this._airJumpCount < MAX_JUMP_COUNT) {
+      this._airJumpCount++;
+      this._gravityAccum = JUMP_FORCE;
+      this._targetUp.set(0, 1, 0);
+    }
+  }
+
+  // ── Surface detection & capsule collision resolve ─────────────
+  // (ported from SurfaceDetection + WorldCollision in customMovement/customCollision.js)
+  _surfaceDetection(dt) {
+    // Integrate displacement
+    _misc.copy(this._velocity).multiplyScalar(dt);
+
+    // Apply to collider centre
+    this._colliderMesh.position.add(_misc);
+    this._colliderMesh.updateMatrixWorld();
+
+    // Resolve capsule against every collidable with a boundsTree
+    const result = this._worldCollision(_misc);
+
+    // Move collider by collision response delta
+    this._colliderMesh.position.add(result.delta);
+    this._colliderMesh.updateMatrixWorld();
+
+    // Derive feet position from collider centre
+    this._syncFeetFromCollider();
+
+    // ── Surface normal analysis ────────────────────────────────
+    let tempUp = this._targetUp.clone();
+
+    if (result.intersects) {
+      const gp = this._flattest(result.groundTris);
+      if (gp) {
+        tempUp.set(gp.x, gp.y, gp.z);
+        this._wallRiding = false;
+      } else {
+        const wp = this._flattest(result.notGroundTris);
+        const spd2 = this._velocity.lengthSq();
+        if (wp && spd2 > WALL_RIDE_THRESH * WALL_RIDE_THRESH &&
+            this._accelAccum.lengthSq() > WALL_RIDE_THRESH * WALL_RIDE_THRESH) {
+          this._wallRiding = this._wallRideAngle >= SLOPE_LIMIT;
+          tempUp.set(wp.x, wp.y, wp.z);
+        }
+      }
+    }
+
+    // Gravity accumulation
+    this._gravityAccum += dt * GRAVITY_ACC;
+
+    // Angle of surface vs world up
+    const angDiff = this._targetUp.angleTo(tempUp);
+    if (angDiff > SLOPE_LIMIT) {
+      this._inertiaMax  = 0; // reset on sharp surface change
+    }
+
+    // Tick wall-ride inertia
+    this._inertiaCurr = THREE.MathUtils.clamp(
+      this._inertiaCurr - dt, 0, this._inertiaMax
+    );
+
+    if (this._wallRiding) {
+      this._inertiaRefreshCurr = THREE.MathUtils.clamp(
+        this._inertiaRefreshCurr - dt, 0, INERTIA_REFRESH
+      );
+      if (this._inertiaCurr <= 0) {
+        tempUp.set(0, 1, 0);
+        this._wallRiding = false;
+      }
+    } else {
+      if (this._onSurface) this._inertiaMax = 0;
+      if (this._inertiaMax <= 0 && angDiff > SLOPE_LIMIT) {
+        const vLen = this._accelAccum.length() * 0.8;
+        this._inertiaMax  = vLen;
+        this._inertiaCurr = vLen;
+      }
+    }
+
+    // Probe for actual surface contact below the character
+    const surfaceBelow = this._probeSurface(tempUp);
+
+    if (this._wallRiding) {
+      this._inertiaRefreshCurr = THREE.MathUtils.clamp(
+        this._inertiaRefreshCurr - dt, 0, INERTIA_REFRESH
+      );
+      // Replenish inertia while sliding along wall
+      if (this._inertiaRefreshCurr <= 0 && surfaceBelow) {
+        this._inertiaCurr = THREE.MathUtils.clamp(
+          this._inertiaCurr + this._inertiaMax * 0.1,
+          0, this._inertiaMax
+        );
+        this._inertiaRefreshCurr = INERTIA_REFRESH;
+      }
+    }
+
+    if (surfaceBelow) {
+      if (result.intersects) {
+        // Just landed or still grounded
+        this._airNudgeAccum.set(0, 0, 0);
+        this._airJumpCount = 0;
+        if (!this._wallRiding || (this._wallRiding && this._inertiaMax > 0 && this._inertiaCurr > 0)) {
+          // Clamp gravity so it doesn't accumulate underground
+          this._gravityAccum = dt * GRAVITY_ACC;
+        }
+      }
+      this._targetUp.copy(surfaceBelow);
+    }
+
+    this._wallRideAngle = this._targetUp.angleTo(_up);
+    this._onSurface     = result.intersects;
+  }
+
+  // ── BVH capsule vs world (mirrors WorldCollision in customCollision.js) ──
+  _worldCollision(deltaPosition) {
+    const groundTris   = [];
+    const notGroundTris = [];
+    const allTris      = [];
+
+    if (!this.collidables || !this.collidables.length) {
+      return { intersects: false, delta: new THREE.Vector3(), groundTris, notGroundTris };
+    }
+
+    for (const mesh of this.collidables) {
+      const bvh = mesh.geometry?.boundsTree;
+      if (!bvh) continue;
+
+      // Build the capsule segment in LOCAL space of this mesh
+      _tempMat.copy(mesh.matrixWorld).invert();
+
+      const segStart = new THREE.Vector3(
+        this._colliderMesh.position.x,
+        this._colliderMesh.position.y - CAPSULE_HEIGHT * 0.5,
+        this._colliderMesh.position.z
+      ).applyMatrix4(_tempMat);
+
+      const segEnd = new THREE.Vector3(
+        this._colliderMesh.position.x,
+        this._colliderMesh.position.y + CAPSULE_HEIGHT * 0.5,
+        this._colliderMesh.position.z
+      ).applyMatrix4(_tempMat);
+
+      _tempSeg.set(segStart, segEnd);
+
+      _tempBox.makeEmpty();
+      _tempBox.expandByPoint(segStart);
+      _tempBox.expandByPoint(segEnd);
+      _tempBox.min.subScalar(CAPSULE_RADIUS);
+      _tempBox.max.addScalar(CAPSULE_RADIUS);
+
+      bvh.shapecast({
+        intersectsBounds: box => box.intersectsBox(_tempBox),
+        intersectsTriangle: tri => {
+          const triPt  = _triPoint;
+          const capPt  = _capPoint;
+          const dist   = tri.closestPointToSegment(_tempSeg, triPt, capPt);
+
+          if (dist < CAPSULE_RADIUS) {
+            const depth     = CAPSULE_RADIUS - dist;
+            const direction = capPt.clone().sub(triPt).normalize();
+
+            _tempSeg.start.addScaledVector(direction, depth);
+            _tempSeg.end.addScaledVector(direction, depth);
+
+            tri.getNormal(_triNormal);
+            const n = { x: _triNormal.x, y: _triNormal.y, z: _triNormal.z };
+            allTris.push(n);
+
+            const angle = _up.angleTo(_triNormal);
+            if (angle < SLOPE_LIMIT) {
+              if (n.y < 0) notGroundTris.push(n);
+              else         groundTris.push(n);
+            } else {
+              if (n.y >= 0) notGroundTris.push(n);
+            }
+          }
+          return false; // keep iterating all triangles in bounds
+        },
+      });
+
+      // Convert corrected segment back to world space and derive delta
+      _newPos.copy(_tempSeg.start).applyMatrix4(mesh.matrixWorld);
+      // _newPos is now the corrected collider bottom in world space;
+      // recentre to collider centre
+      _newPos.y += CAPSULE_HEIGHT * 0.5;
+    }
+
+    // Compute total delta: corrected position − current position
+    _delta.subVectors(_newPos, this._colliderMesh.position);
+    const offset = Math.max(0, _delta.length() - 1e-5);
+    _delta.normalize().multiplyScalar(offset);
+
+    return {
+      intersects:   _delta.lengthSq() > 0,
+      delta:        _delta.clone(),
+      groundTris,
+      notGroundTris,
+    };
+  }
+
+  // ── Probe downward from character for surface contact ─────────
+  // Returns the surface normal THREE.Vector3 or null.
+  _probeSurface(tempUp) {
+    if (!this.collidables || !this.collidables.length) return null;
+
+    // Cast a short ray in the -targetUp direction from just above feet
+    const origin = this._charPos.clone();
+    origin.y += CAPSULE_RADIUS * 2;
+    _misc.copy(tempUp).negate();
+
+    this._probeRay.set(origin, _misc);
+    this._probeRay.far = CAPSULE_RADIUS * 4 + 0.3;
+
+    for (const mesh of this.collidables) {
+      const hits = this._probeRay.intersectObject(mesh, false);
+      if (hits.length) return hits[0].face ? hits[0].face.normal.clone() : tempUp.clone();
+    }
+    return null;
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────
+
+  /** Sync the invisible collider's centre Y from the feet position. */
+  _syncColliderToFeet() {
+    this._colliderMesh.position.set(
+      this._charPos.x,
+      this._charPos.y + CAPSULE_RADIUS + CAPSULE_HEIGHT * 0.5,
+      this._charPos.z
+    );
+    this._colliderMesh.updateMatrixWorld();
+  }
+
+  /** Derive feet from collider centre (inverse of above). */
+  _syncFeetFromCollider() {
+    this._charPos.set(
+      this._colliderMesh.position.x,
+      this._colliderMesh.position.y - CAPSULE_RADIUS - CAPSULE_HEIGHT * 0.5,
+      this._colliderMesh.position.z
+    );
+  }
+
+  /** Return the triangle normal with the highest Y component (most "ground-like"). */
+  _flattest(list) {
+    if (!list || !list.length) return null;
+    let best = null, bestY = -Infinity;
+    for (const n of list) {
+      if (n.y > bestY) { bestY = n.y; best = n; }
+    }
+    return best;
+  }
+
+  _teleportToOrigin() {
+    this._charPos.set(0, 5, 0);
+    this._syncColliderToFeet();
+    this._accelAccum.set(0, 0, 0);
+    this._airNudgeAccum.set(0, 0, 0);
+    this._gravityAccum = 0;
+    this._targetUp.set(0, 1, 0);
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // CAMERA  (retained from original roamingControls.js)
+  // ═══════════════════════════════════════════════════════════
 
   _positionCamera(dt) {
     const pitchRad = THREE.MathUtils.degToRad(this._pitch);
     const cosPitch = Math.cos(pitchRad);
     const sinPitch = Math.sin(pitchRad);
 
-    // Eye pivot — character feet + use-height (mirrors camvert.position in original)
+    // Eye pivot — character feet + use-height
     this._pivot.copy(this._charPos);
     this._pivot.y += USE_HEIGHT;
 
-    // Boom direction: rotate -Z by pitch then by yaw (mirrors camboom + camvert hierarchy)
     this._boomDir.set(
       -Math.sin(this._yaw) * cosPitch,
        sinPitch,
@@ -208,21 +597,26 @@ export class RoamingControls {
   }
 
   _resolveCamera(pivot, idealPos) {
-    // Pull the camera toward the character if terrain blocks the boom arm
     this._camDir.subVectors(idealPos, pivot).normalize();
     const dist = pivot.distanceTo(idealPos);
-    this._ray.set(pivot, this._camDir);
-    this._ray.far = dist + CAM_COLLISION_R;
+    this._camRay.set(pivot, this._camDir);
+    this._camRay.far = dist + CAM_COLLISION_R;
+
     if (!this.collidables || !this.collidables.length) return idealPos;
-    const hits = this._intersectObject(this.collidables, false);
-    if (hits.length && hits[0].distance < dist) {
-      const safeDist = Math.max(1.5, hits[0].distance - CAM_COLLISION_R);
-      return pivot.clone().addScaledVector(this._camDir, safeDist);
+
+    for (const mesh of this.collidables) {
+      const hits = this._camRay.intersectObject(mesh, false);
+      if (hits.length && hits[0].distance < dist) {
+        const safeDist = Math.max(1.5, hits[0].distance - CAM_COLLISION_R);
+        return pivot.clone().addScaledVector(this._camDir, safeDist);
+      }
     }
     return idealPos;
   }
 
-  // ── Input ─────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  // INPUT
+  // ═══════════════════════════════════════════════════════════
 
   _key(codes) { return codes.some(c => this._keys[c]); }
 
@@ -230,6 +624,10 @@ export class RoamingControls {
     if (!this._active) return;
     this._keys[e.code] = true;
     if (e.code === 'Space') e.preventDefault();
+    // Escape: exit roaming
+    if (e.code === 'Escape') {
+      if (typeof this.onExit === 'function') this.onExit();
+    }
   }
 
   _onKeyUp(e) { this._keys[e.code] = false; }
@@ -247,44 +645,44 @@ export class RoamingControls {
     if (!this._active) return;
     e.preventDefault();
     this._boomLen = THREE.MathUtils.clamp(
-      this._boomLen + (e.deltaY > 0 ? 1 : -1) * BOOM_ZOOM_SPEED,
+      this._boomLen + (e.deltaY > 0 ? 1 : -1) * BOOM_ZOOM_SPD,
       BOOM_MIN, BOOM_MAX
     );
   }
 
-  // Re-acquire pointer lock if user clicks after pressing Esc
   _onCanvasClick() {
     if (this._active && !document.pointerLockElement) this._requestPointerLock();
   }
-  /*
-  _onPLChange() {
-    // Pointer lock lost (Esc) — notify caller so UIController can exit roaming
-    if (this._active && !document.pointerLockElement) {
-      if (typeof this.onExit === 'function') this.onExit();
-    }
-  }
-  */
 
   _requestPointerLock() {
     try { this._dom.requestPointerLock(); } catch (_) {}
   }
 
   _bindEvents() {
-    document.addEventListener('keydown',           this._onKeyDown,    { capture: false });
-    document.addEventListener('keyup',             this._onKeyUp,      { capture: false });
-    document.addEventListener('mousemove',         this._onMouseMove,  { capture: false });
-    this._dom.addEventListener('wheel',            this._onWheel,      { passive: false });
-    this._dom.addEventListener('click',            this._onCanvasClick);
-    //document.addEventListener('pointerlockchange', this._onPLChange);
+    document.addEventListener('keydown',   this._onKeyDown,    { capture: false });
+    document.addEventListener('keyup',     this._onKeyUp,      { capture: false });
+    document.addEventListener('mousemove', this._onMouseMove,  { capture: false });
+    this._dom.addEventListener('wheel',    this._onWheel,      { passive: false });
+    this._dom.addEventListener('click',    this._onCanvasClick);
   }
 
   _unbindEvents() {
-    document.removeEventListener('keydown',           this._onKeyDown);
-    document.removeEventListener('keyup',             this._onKeyUp);
-    document.removeEventListener('mousemove',         this._onMouseMove);
-    this._dom.removeEventListener('wheel',            this._onWheel);
-    this._dom.removeEventListener('click',            this._onCanvasClick);
-    //document.removeEventListener('pointerlockchange', this._onPLChange);
+    document.removeEventListener('keydown',   this._onKeyDown);
+    document.removeEventListener('keyup',     this._onKeyUp);
+    document.removeEventListener('mousemove', this._onMouseMove);
+    this._dom.removeEventListener('wheel',    this._onWheel);
+    this._dom.removeEventListener('click',    this._onCanvasClick);
     this._keys = {};
+  }
+
+  // ── Cleanup ───────────────────────────────────────────────────
+  dispose() {
+    this.deactivate();
+    if (this._colliderMesh) {
+      this._scene.remove(this._colliderMesh);
+      this._colliderMesh.geometry.dispose();
+      this._colliderMesh.material.dispose();
+      this._colliderMesh = null;
+    }
   }
 }

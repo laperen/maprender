@@ -776,6 +776,7 @@ export class SceneManager {
   }
 
   clearWorld() {
+    this._roamingCam.dispose();
     for (const obj of this._objects) {
       this.scene.remove(obj);
       obj.traverse(child => {
