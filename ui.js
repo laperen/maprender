@@ -550,12 +550,6 @@ export class UIController {
       document.getElementById('radius-val').textContent = `${this.radius}m`;
       this._updateMinimap();
     });
-    /*
-    this.$heightSlider.addEventListener('input', () => {
-      this.heightScale = parseInt(this.$heightSlider.value) / 2;
-      this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
-    });
-    */
 
     // Manual time slider
     if (this.$todSlider) {
@@ -720,21 +714,6 @@ export class UIController {
 
     // Visual roaming state
     document.body.classList.add('roaming-active');
-    /*
-    // Show pointer-lock prompt briefly, then hide once lock is acquired
-    const plOverlay = document.getElementById('pointer-lock-overlay');
-    if (plOverlay) {
-      plOverlay.classList.remove('hidden');
-      const hidePL = () => {
-        plOverlay.classList.add('hidden');
-        document.removeEventListener('pointerlockchange', hidePL);
-      };
-      document.addEventListener('pointerlockchange', hidePL);
-      // Auto-hide after 4s as fallback
-      setTimeout(() => plOverlay.classList.add('hidden'), 4000);
-    }
-    */
-
     // Start the third-person roaming camera
     // Uses a smooth transition first, then hands off to RoamingCamera on arrival
     const spawnVec = new THREE.Vector3(this._beaconX, this._beaconY, this._beaconZ);
@@ -758,11 +737,6 @@ export class UIController {
     const crosshair = document.getElementById('roam-crosshair');
     if (crosshair) crosshair.classList.add('hidden');
     document.body.classList.remove('roaming-active');
-    /*
-    // Hide pointer-lock overlay if still showing
-    const plOverlay = document.getElementById('pointer-lock-overlay');
-    if (plOverlay) plOverlay.classList.add('hidden');
-    */
     // Stop the roaming camera first (releases pointer lock, re-enables orbit)
     this.scene.stopRoamingCamera();
 
@@ -986,25 +960,6 @@ export class UIController {
       this.$tooltip.classList.add('hidden');
       return;
     }
-    /*
-    const hit = this.scene.pick(e.clientX, e.clientY);
-    if (hit && hit.object.userData.kind) {
-      const d = hit.object.userData;
-      let html = `<strong>${d.kind.toUpperCase()}</strong>`;
-      if (d.tags) {
-        if (d.tags.name)     html += `<br>${d.tags.name}`;
-        if (d.tags.building) html += `<br>Type: ${d.tags.building}`;
-        if (d.height)        html += `<br>Height: ${d.height.toFixed(0)}m`;
-        if (d.tags.highway)  html += `<br>Road: ${d.tags.highway}`;
-      }
-      this.$tooltip.innerHTML  = html;
-      this.$tooltip.style.left = `${e.clientX + 14}px`;
-      this.$tooltip.style.top  = `${e.clientY + 14}px`;
-      this.$tooltip.classList.remove('hidden');
-    } else {
-      this.$tooltip.classList.add('hidden');
-    }
-    */
   }
 
   _setStatus(msg, cls) {

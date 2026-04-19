@@ -1,13 +1,7 @@
 WIP
 
-collision
-p:
-The roaming control character is falling through the terrain, and not colliding with buildings.
-
-physics, and character movement
-p:
-???
-
-TODO
-
-replace orbit camera?
+character movement
+issues:
+character bounces when the slope is too steep.
+character is uncontrollable when bouncing happens.
+character orientation isn't changed while wallriding, not sure if that is preventing movement up the wall.

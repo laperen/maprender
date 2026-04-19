@@ -26,11 +26,12 @@ const USE_HEIGHT      =  1.6;  // eye offset above feet
 const CAM_COLLISION_R =  0.6;
 
 // ── Tunables — character ──────────────────────────────────────
-const CAPSULE_RADIUS  =  0.3;   // metres — half-width of collision capsule
-const CAPSULE_HEIGHT  =  1.0;   // inner segment length (total = height + 2*radius)
+const CAPSULE_RADIUS  =  0.5;   // metres — half-width of collision capsule
+const CAPSULE_HEIGHT  =  0.7;   // inner segment length (total = height + 2*radius)
 const CHAR_HEIGHT     =  1.7;   // visual / eye height
 
-const MAX_SPEED       = 50;     // world-units/sec top speed
+const MAX_SPEED       = 20;     // world-units/sec top speed
+const MAX_TOTAL_SPEED = 50;     // absolute max speed
 const AIR_NUDGE       = 10;     // lateral speed while airborne
 const JUMP_FORCE      =  7;     // upward impulse on jump
 const GRAVITY_ACC     = -9.81;    // world-units/sec²
@@ -38,6 +39,10 @@ const MAX_JUMP_COUNT  =  2;     // allow double-jump
 const WALL_RIDE_THRESH =  2;    // min speed² to initiate wall-ride
 const INERTIA_REFRESH  =  0.5;  // seconds between wall-ride inertia top-ups
 const SPRINT_MULT     =  2.0;
+
+const FRICTION = 1.5;
+// for collision, Tune this value (smaller = more accurate, more expensive)
+const MAX_STEP = 0.5;
 
 // Slope angle (radians) beyond which a surface is a wall, not ground
 const SLOPE_LIMIT     = Math.PI / 4;  // 45°
@@ -228,12 +233,35 @@ export class RoamingControls {
     const fB   = (this._key(KEYS.FORWARD) ? 1 : 0) - (this._key(KEYS.BACK)  ? 1 : 0);
     const lR   = (this._key(KEYS.LEFT)    ? 1 : 0) - (this._key(KEYS.RIGHT) ? 1 : 0);
     _misc.set(fwdX * fB + rtX * lR, 0, fwdZ * fB + rtZ * lR);
-    if (_misc.lengthSq() > 0) _misc.normalize();
+
+    if (_misc.lengthSq() > 0) {
+      _misc.normalize();
+      _misc.projectOnPlane(this._targetUp).normalize();
+
+      // 🔑 If wall riding, restrict input to current motion direction
+      if (this._wallRiding && this._velocity.lengthSq() > 0) {
+        const wallForward = this._velocity.clone().normalize();
+      
+        // Project input onto current travel direction (like grinding)
+        const alignment = _misc.dot(wallForward);
+      
+        if (alignment > 0) {
+          _misc.copy(wallForward).multiplyScalar(alignment);
+        } else {
+          // Prevent reversing direction on wall
+          _misc.set(0, 0, 0);
+        }
+      }
+    }
     // _misc is now the unit horizontal input direction
 
     // ── Ground vs air movement ────────────────────────────────
     const reverseDamping = Math.exp(-4 * dt);
+    
 
+    if (this._velocity.length() > MAX_TOTAL_SPEED) {
+      this._velocity.setLength(MAX_TOTAL_SPEED);
+    }
     if (this._onSurface) {
       this._groundMovement(_misc, moving, speed, dt, reverseDamping, jumpTrigger);
     } else {
@@ -244,6 +272,12 @@ export class RoamingControls {
     this._velocity.copy(this._accelAccum);
     this._velocity.y += this._gravityAccum;
     this._velocity.add(this._airNudgeAccum);
+    if (this._onSurface && _misc.lengthSq() > 0 && this._velocity.lengthSq() > 0) {
+      const turnSpeed = 6.0;
+    
+      const desired = _misc.clone().multiplyScalar(this._velocity.length());
+      this._velocity.lerp(desired, 1 - Math.exp(-turnSpeed * dt));
+    }
 
     // ── Move and resolve collisions ───────────────────────────
     this._surfaceDetection(dt);
@@ -257,15 +291,26 @@ export class RoamingControls {
     const speedDelta = dt * speed;
 
     if (moving) {
+      // Accelerate in input direction
       _misc.copy(inputDir).multiplyScalar(speedDelta);
       this._accelAccum.add(_misc);
-      this._accelAccum.x *= reverseDamping;
-      this._accelAccum.z *= reverseDamping;
     } else {
-      // Decelerate
-      _misc.copy(this._accelAccum).multiplyScalar(speedDelta * 0.5);
-      this._accelAccum.sub(_misc);
+      // Apply smooth friction instead of hard stop
+      const frictionFactor = Math.exp(-FRICTION * dt);
+      this._accelAccum.multiplyScalar(frictionFactor);
+      if (this._onSurface) {
+        const rollDrag = 0.98;
+        this._accelAccum.multiplyScalar(rollDrag);
+      }
     }
+    const horizontalSpeed = Math.hypot(this._accelAccum.x, this._accelAccum.z);
+    if (horizontalSpeed > speed) {
+      const scale = speed / horizontalSpeed;
+      this._accelAccum.x *= scale;
+      this._accelAccum.z *= scale;
+    }
+    
+    // Always damp vertical a bit
     this._accelAccum.y *= reverseDamping;
 
     if (jumpTrigger) {
@@ -314,23 +359,60 @@ export class RoamingControls {
   // ── Surface detection & capsule collision resolve ─────────────
   // (ported from SurfaceDetection + WorldCollision in customMovement/customCollision.js)
   _surfaceDetection(dt) {
-    // Integrate displacement
-    _misc.copy(this._velocity).multiplyScalar(dt);
+    // 🔑 Break movement into smaller steps to prevent tunneling
+    const totalMove = _misc.copy(this._velocity).multiplyScalar(dt);
 
-    // Apply to collider centre
-    this._colliderMesh.position.add(_misc);
-    this._colliderMesh.updateMatrixWorld();
 
-    // Resolve capsule against every collidable with a boundsTree
-    const result = this._worldCollision(_misc);
+    const steps = Math.ceil(totalMove.length() / MAX_STEP);
+    const stepMove = totalMove.clone().multiplyScalar(1 / steps);
 
-    // Move collider by collision response delta
-    this._colliderMesh.position.add(result.delta);
-    this._colliderMesh.updateMatrixWorld();
+    let result = { intersects: false, groundTris: [], notGroundTris: [] };
+
+    for (let i = 0; i < steps; i++) {
+      // Move a small step
+      this._colliderMesh.position.add(stepMove);
+      this._colliderMesh.updateMatrixWorld();
+
+      // Resolve collision at this step
+      const stepResult = this._worldCollision(stepMove);
+
+      this._colliderMesh.position.add(stepResult.delta);
+      this._colliderMesh.updateMatrixWorld();
+
+      // Accumulate results (for surface logic later)
+      if (stepResult.intersects) {
+        result.intersects = true;
+        result.groundTris.push(...stepResult.groundTris);
+        result.notGroundTris.push(...stepResult.notGroundTris);
+      }
+    }
 
     // Derive feet position from collider centre
     this._syncFeetFromCollider();
+    if (this._onSurface) {
+      // 🔑 Remove ALL velocity into the surface (not just negative)
+      const normalComponent = this._velocity.dot(this._targetUp);
+    
+      _misc.copy(this._targetUp).multiplyScalar(normalComponent);
+      this._velocity.sub(_misc);
+    
+      // Re-project cleanly
+      this._velocity.projectOnPlane(this._targetUp);
+      
+      // 🔑 Extra: lock direction when wall riding
+      if (this._wallRiding && this._velocity.lengthSq() > 0) {
+        // Wall forward = direction along wall surface
+        const wallForward = _misc
+          .copy(this._velocity)
+          .projectOnPlane(this._targetUp)
+          .normalize();
 
+        const speed = this._velocity.length();
+
+        // Rebuild velocity strictly along wall
+        this._velocity.copy(wallForward.multiplyScalar(speed));
+      }
+    }
     // ── Surface normal analysis ────────────────────────────────
     let tempUp = this._targetUp.clone();
 
@@ -351,7 +433,19 @@ export class RoamingControls {
     }
 
     // Gravity accumulation
-    this._gravityAccum += dt * GRAVITY_ACC;
+    if (this._onSurface) {
+      // 🔑 Gravity along slope (causes downhill acceleration)
+      const gravityVec = _misc.set(0, GRAVITY_ACC, 0);
+    
+      const tangentGravity = gravityVec.projectOnPlane(this._targetUp);
+      this._velocity.addScaledVector(tangentGravity, dt);
+    
+      // 🔑 Small stick force to keep contact
+      const stickForce = 6.0;
+      this._velocity.addScaledVector(this._targetUp, -stickForce * dt);
+    } else {
+      this._gravityAccum += dt * GRAVITY_ACC;
+    }
 
     // Angle of surface vs world up
     const angDiff = this._targetUp.angleTo(tempUp);
@@ -397,6 +491,16 @@ export class RoamingControls {
         this._inertiaRefreshCurr = INERTIA_REFRESH;
       }
     }
+    
+    if (this._wallRiding && this._inertiaMax > 0) {
+      const climbFactor = this._inertiaCurr / this._inertiaMax;
+    
+      // As inertia fades → push player down along wall
+      const downForce = (1 - climbFactor) * 5.0;
+    
+      _misc.copy(this._targetUp).multiplyScalar(-downForce * dt);
+      this._velocity.add(_misc);
+    }
 
     if (surfaceBelow) {
       if (result.intersects) {
@@ -409,6 +513,12 @@ export class RoamingControls {
         }
       }
       this._targetUp.copy(surfaceBelow);
+    }
+    if (this._onSurface && !this._wallRiding) {
+      // 🔑 Damp tiny vertical jitter
+      if (Math.abs(this._velocity.y) < 0.5) {
+        this._velocity.y = 0;
+      }
     }
 
     this._wallRideAngle = this._targetUp.angleTo(_up);
@@ -468,7 +578,7 @@ export class RoamingControls {
           if (dist < CAPSULE_RADIUS) {
             meshHit = true;
             anyHit  = true;
-            const depth     = CAPSULE_RADIUS - dist;
+            const depth = (CAPSULE_RADIUS - dist) * 0.8;
             const direction = capPt.clone().sub(triPt).normalize();
   
             _tempSeg.start.addScaledVector(direction, depth);
@@ -636,9 +746,11 @@ export class RoamingControls {
     this._keys[e.code] = true;
     if (e.code === 'Space') e.preventDefault();
     // Escape: exit roaming
+    /*
     if (e.code === 'Escape') {
       if (typeof this.onExit === 'function') this.onExit();
     }
+    */
   }
 
   _onKeyUp(e) { this._keys[e.code] = false; }

@@ -82,13 +82,6 @@ export class OverlayPanel {
       this._panel.classList.add('open');
       this._toggleBtn.classList.add('active');
       this._backdrop.classList.add('active');
-      // Default: open to first available category
-      /*
-      if (!this._activeCategory) {
-        const firstAvail = this._appMode === 'roaming' ? 'explore' : 'jukebox';
-        this._setCategory(firstAvail);
-      }
-      */
       if (this._appMode === 'roaming') {
         this._setCategory('explore');
       } else {
