@@ -8,6 +8,20 @@ const BASE_ORBIT_ROTATE_SPEED = 1.0;
 const BASE_ROAM_MOUSE_X       = 0.18;
 const BASE_ROAM_MOUSE_Y       = 0.14;
 
+const STORAGE_KEY = 'atsim_settings';
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return null;
+}
+
+function saveSettings(obj) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); } catch (_) {}
+}
+
 export class OverlayPanel {
   constructor({ uiController }) {
     this.ui = uiController;
@@ -18,9 +32,18 @@ export class OverlayPanel {
     this._jukeboxReady = false;
     this.$mapPreview = document.getElementById('map-preview');
 
-    // Settings state
-    this._bgmVolume   = 50;   // 0–100
-    this._turnSens    = 100;  // 10–200, where 100 = 1.0×
+    // Settings state — restore from localStorage or fall back to defaults
+    const saved = loadSettings();
+    this._bgmVolume = saved?.bgmVolume  ?? 50;   // 0–100
+    this._turnSens  = saved?.turnSens   ?? 100;  // 10–200, where 100 = 1.0×
+  }
+
+  // ── Persist current settings ──────────────────────────────────
+  _saveSettings() {
+    saveSettings({
+      bgmVolume: this._bgmVolume,
+      turnSens:  this._turnSens,
+    });
   }
 
   init() {
@@ -76,7 +99,7 @@ export class OverlayPanel {
       });
     });
 
-    // Explore: exit button → delegate to roam-back-btn
+    // Explore: exit button -> delegate to roam-back-btn
     const overlayRoamBack = document.getElementById('overlay-roam-back-btn');
     if (overlayRoamBack) {
       overlayRoamBack.addEventListener('click', () => {
@@ -85,46 +108,51 @@ export class OverlayPanel {
       });
     }
 
-    // ── Settings: BGM volume ──────────────────────────────────
+    // Settings: BGM volume
     if (this._$bgmSlider) {
       this._$bgmSlider.addEventListener('input', () => {
         this._bgmVolume = parseInt(this._$bgmSlider.value);
         if (this._$bgmVal) this._$bgmVal.textContent = `${this._bgmVolume}%`;
         this._applyBGMVolume();
+        this._saveSettings();
       });
     }
 
-    // ── Settings: Turning sensitivity ─────────────────────────
+    // Settings: Turning sensitivity
     if (this._$turnSlider) {
       this._$turnSlider.addEventListener('input', () => {
         this._turnSens = parseInt(this._$turnSlider.value);
-        if (this._$turnVal) this._$turnVal.textContent = `${(this._turnSens / 100).toFixed(1)}×`;
+        if (this._$turnVal) this._$turnVal.textContent = `${(this._turnSens / 100).toFixed(1)}x`;
         this._applySensitivity();
+        this._saveSettings();
       });
     }
 
     this._updateCategoryVisibility();
   }
 
-  // ── Apply all settings on init ────────────────────────────────
+  // Apply all settings on init (restores slider positions too)
   _applySettings() {
-    if (this._$bgmVal)   this._$bgmVal.textContent  = `${this._bgmVolume}%`;
-    if (this._$turnVal)  this._$turnVal.textContent  = `${(this._turnSens / 100).toFixed(1)}×`;
+    // Restore slider DOM values from (possibly persisted) state
+    if (this._$bgmSlider)  this._$bgmSlider.value  = this._bgmVolume;
+    if (this._$turnSlider) this._$turnSlider.value  = this._turnSens;
+
+    if (this._$bgmVal)  this._$bgmVal.textContent  = `${this._bgmVolume}%`;
+    if (this._$turnVal) this._$turnVal.textContent  = `${(this._turnSens / 100).toFixed(1)}x`;
+
     this._applySensitivity();
-    // BGM volume is applied when jukebox is initialised (volume is set then)
+    // BGM volume is applied when jukebox is initialised
   }
 
-  // ── Sensitivity: writes into orbit controls + roaming controls ─
+  // Sensitivity: writes into orbit controls + roaming controls
   _applySensitivity() {
     const mult = this._turnSens / 100;
 
-    // Orbit controls
     const orbitCtrl = this.ui?.scene?.controls;
     if (orbitCtrl) {
-      orbitCtrl.rotateSpeed = BASE_ORBIT_ROTATE_SPEED * mult;
+      orbitCtrl.rotateSpeed = BASE_ORBIT_ROTATE_SPEED * mult / 10;
     }
 
-    // Roaming controls — patch the live sensitivity constants on the instance
     const roamCam = this.ui?.scene?._roamingCam;
     if (roamCam) {
       roamCam._mouseSensX = BASE_ROAM_MOUSE_X * mult;
@@ -132,12 +160,10 @@ export class OverlayPanel {
     }
   }
 
-  // ── BGM volume: delegates to the Jukebox instance ─────────────
+  // BGM volume: delegates to the Jukebox instance
   _applyBGMVolume() {
     if (this._jukebox) {
-      // Use the jukebox's internal _setVolume which handles the audio player
       this._jukebox._setVolume(this._bgmVolume);
-      // Also keep the jukebox's internal state consistent
       this._jukebox._currentVolume = this._bgmVolume / 100;
     }
   }
@@ -190,14 +216,12 @@ export class OverlayPanel {
     }
   }
 
-  // ── Jukebox lazy init ─────────────────────────────────────────
   _initJukebox() {
     const mount = document.getElementById('jukebox-mount');
     if (!mount) return;
     this._jukebox = new Jukebox();
     this._jukebox.init(mount);
     this._jukeboxReady = true;
-    // Apply current BGM volume immediately
     this._applyBGMVolume();
   }
 

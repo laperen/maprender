@@ -8,9 +8,5 @@ character orientation isn't changed while wallriding, not sure if that is preven
 position reset using _teleportToOrigin should be changed to resetting to last grounded position instead
 
 settings menu
-- saving settings values
 - clearing map cache?
-
-general controls
-- balance out sensativity between orbit controls and roaming controls, relative to turning sensativity in settings.
 
