@@ -104,13 +104,19 @@ export class OrbitControlsImpl {
 
   _panLeft(distance, matrix) {
     this._v.setFromMatrixColumn(matrix, 0);
+    this._v.y = 0;                          // lock to XZ plane
+    this._v.normalize();
     this._v.multiplyScalar(-distance);
     this._panOffset.add(this._v);
   }
 
   _panUp(distance, matrix) {
-    this._v.setFromMatrixColumn(matrix, 1);
-    this._v.multiplyScalar(distance);
+    // Use the camera's forward vector projected onto XZ instead of the
+    // screen-up vector, so dragging "up" moves forward/back on the ground.
+    this._v.setFromMatrixColumn(matrix, 2); // camera forward (into screen)
+    this._v.y = 0;                          // lock to XZ plane
+    this._v.normalize();
+    this._v.multiplyScalar(-distance);      // negate: drag up → move forward
     this._panOffset.add(this._v);
   }
 
