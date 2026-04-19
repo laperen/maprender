@@ -5,3 +5,13 @@ issues:
 character bounces when the slope is too steep.
 character is uncontrollable when bouncing happens.
 character orientation isn't changed while wallriding, not sure if that is preventing movement up the wall.
+
+settings menu
+- clearing map cache?
+
+general controls
+- balance out sensativity between orbit controls and roaming controls, relative to turning sensativity in settings.
+
+orbit controls
+- limit movement to xz plane while holding right mouse button
+

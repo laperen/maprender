@@ -1,35 +1,44 @@
 // overlay.js — Persistent overlay panel with category navigation
-// Categories: Explore Mode (roaming only), Jukebox
+// Categories: Explore Mode (roaming only), Jukebox, Settings
 
 import { Jukebox } from './jukebox.js';
+
+// Base sensitivity multipliers (matched to original constants in orbitControls / roamingControls)
+const BASE_ORBIT_ROTATE_SPEED = 1.0;
+const BASE_ROAM_MOUSE_X       = 0.18;
+const BASE_ROAM_MOUSE_Y       = 0.14;
 
 export class OverlayPanel {
   constructor({ uiController }) {
     this.ui = uiController;
     this._open = false;
     this._activeCategory = null;
-    this._appMode = 'map-creation'; // tracked externally via setAppMode()
-    this._jukebox = null;           // lazy-initialised on first open
+    this._appMode = 'map-creation';
+    this._jukebox = null;
     this._jukeboxReady = false;
     this.$mapPreview = document.getElementById('map-preview');
+
+    // Settings state
+    this._bgmVolume   = 50;   // 0–100
+    this._turnSens    = 100;  // 10–200, where 100 = 1.0×
   }
 
   init() {
     this._cacheDOM();
     this._bindEvents();
+    this._applySettings();
   }
+
   _updateMapPreviewVisibility() {
     if (!this.$mapPreview) return;
-  
     const hide = this._appMode !== 'map-creation';
     this.$mapPreview.classList.toggle('hidden', hide);
   }
-  // Called by UIController when app mode changes
+
   setAppMode(mode) {
     this._appMode = mode;
     this._updateCategoryVisibility();
     this._updateMapPreviewVisibility();
-    // If leaving roaming while explore category is active, collapse it
     if (mode !== 'roaming' && this._activeCategory === 'explore') {
       this._setCategory(null);
       this._close();
@@ -37,11 +46,16 @@ export class OverlayPanel {
   }
 
   _cacheDOM() {
-    this._toggleBtn = document.getElementById('overlay-toggle-btn');
-    this._panel     = document.getElementById('overlay-panel');
-    this._backdrop  = document.getElementById('overlay-backdrop');
-    // Jukebox content container inside the overlay view
-    this._jukeboxContainer = document.getElementById('jukebox-mount');
+    this._toggleBtn          = document.getElementById('overlay-toggle-btn');
+    this._panel              = document.getElementById('overlay-panel');
+    this._backdrop           = document.getElementById('overlay-backdrop');
+    this._jukeboxContainer   = document.getElementById('jukebox-mount');
+
+    // Settings controls
+    this._$bgmSlider         = document.getElementById('settings-bgm-vol');
+    this._$bgmVal            = document.getElementById('settings-bgm-vol-val');
+    this._$turnSlider        = document.getElementById('settings-turn-sens');
+    this._$turnVal           = document.getElementById('settings-turn-sens-val');
   }
 
   // ── Events ────────────────────────────────────────────────────
@@ -71,7 +85,61 @@ export class OverlayPanel {
       });
     }
 
+    // ── Settings: BGM volume ──────────────────────────────────
+    if (this._$bgmSlider) {
+      this._$bgmSlider.addEventListener('input', () => {
+        this._bgmVolume = parseInt(this._$bgmSlider.value);
+        if (this._$bgmVal) this._$bgmVal.textContent = `${this._bgmVolume}%`;
+        this._applyBGMVolume();
+      });
+    }
+
+    // ── Settings: Turning sensitivity ─────────────────────────
+    if (this._$turnSlider) {
+      this._$turnSlider.addEventListener('input', () => {
+        this._turnSens = parseInt(this._$turnSlider.value);
+        if (this._$turnVal) this._$turnVal.textContent = `${(this._turnSens / 100).toFixed(1)}×`;
+        this._applySensitivity();
+      });
+    }
+
     this._updateCategoryVisibility();
+  }
+
+  // ── Apply all settings on init ────────────────────────────────
+  _applySettings() {
+    if (this._$bgmVal)   this._$bgmVal.textContent  = `${this._bgmVolume}%`;
+    if (this._$turnVal)  this._$turnVal.textContent  = `${(this._turnSens / 100).toFixed(1)}×`;
+    this._applySensitivity();
+    // BGM volume is applied when jukebox is initialised (volume is set then)
+  }
+
+  // ── Sensitivity: writes into orbit controls + roaming controls ─
+  _applySensitivity() {
+    const mult = this._turnSens / 100;
+
+    // Orbit controls
+    const orbitCtrl = this.ui?.scene?.controls;
+    if (orbitCtrl) {
+      orbitCtrl.rotateSpeed = BASE_ORBIT_ROTATE_SPEED * mult;
+    }
+
+    // Roaming controls — patch the live sensitivity constants on the instance
+    const roamCam = this.ui?.scene?._roamingCam;
+    if (roamCam) {
+      roamCam._mouseSensX = BASE_ROAM_MOUSE_X * mult;
+      roamCam._mouseSensY = BASE_ROAM_MOUSE_Y * mult;
+    }
+  }
+
+  // ── BGM volume: delegates to the Jukebox instance ─────────────
+  _applyBGMVolume() {
+    if (this._jukebox) {
+      // Use the jukebox's internal _setVolume which handles the audio player
+      this._jukebox._setVolume(this._bgmVolume);
+      // Also keep the jukebox's internal state consistent
+      this._jukebox._currentVolume = this._bgmVolume / 100;
+    }
   }
 
   _toggle() {
@@ -101,12 +169,10 @@ export class OverlayPanel {
   _setCategory(cat) {
     this._activeCategory = cat;
 
-    // Sidebar active state
     document.querySelectorAll('.overlay-cat-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.cat === cat);
     });
 
-    // Show/hide content area
     const content = document.getElementById('overlay-content');
     if (cat) {
       content.classList.add('visible');
@@ -115,12 +181,10 @@ export class OverlayPanel {
       return;
     }
 
-    // Show correct view
     document.querySelectorAll('.overlay-view').forEach(v => v.classList.remove('active'));
     const view = document.getElementById(`view-${cat}`);
     if (view) view.classList.add('active');
 
-    // Lazily init the Jukebox the first time the jukebox view is opened
     if (cat === 'jukebox' && !this._jukeboxReady) {
       this._initJukebox();
     }
@@ -130,9 +194,11 @@ export class OverlayPanel {
   _initJukebox() {
     const mount = document.getElementById('jukebox-mount');
     if (!mount) return;
-    this._jukebox      = new Jukebox();
+    this._jukebox = new Jukebox();
     this._jukebox.init(mount);
     this._jukeboxReady = true;
+    // Apply current BGM volume immediately
+    this._applyBGMVolume();
   }
 
   _updateCategoryVisibility() {

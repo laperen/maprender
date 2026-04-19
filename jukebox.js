@@ -60,7 +60,7 @@ export class Jukebox {
     this._$playBtn    = q('.jk-btn-play');
     this._$pauseBtn   = q('.jk-btn-pause');
     this._$nextBtn    = q('.jk-btn-next');
-    this._$volSlider  = q('.jk-vol-slider');
+    this._$volSlider  = document.getElementById('settings-bgm-vol');// q('.jk-vol-slider');
     this._$audiolist  = q('.jk-audiolist');
     this._$trackCount = q('.jk-track-count');
     this._$emptyState = q('.jk-empty-state');

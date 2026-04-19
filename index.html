@@ -274,6 +274,15 @@
           </span>
           <span class="overlay-cat-label">Jukebox</span>
         </div>
+        <div class="overlay-cat-btn" data-cat="settings" id="cat-settings" title="Settings">
+          <span class="overlay-cat-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </span>
+          <span class="overlay-cat-label">Settings</span>
+        </div>
       </div>
       <div id="overlay-sidebar-bottom">
         <button id="overlay-close-btn" title="Close">
@@ -348,10 +357,6 @@
                 <button class="jk-play-btn jk-btn-play"  title="Play">▶</button>
                 <button class="jk-play-btn jk-btn-pause" title="Pause">⏸</button>
                 <button class="jk-play-btn jk-btn-next"  title="Next">⏭</button>
-                <div class="jk-vol-row">
-                  <label>Vol</label>
-                  <input class="jk-vol-slider" type="range" min="0" max="100" value="50" />
-                </div>
               </div>
             
               <!-- List header -->
@@ -375,6 +380,39 @@
                 <span class="jk-np-label">Nothing playing</span>
               </div>
             </div></div>
+        </div>
+      </div>
+
+      <!-- Settings -->
+      <div class="overlay-view" id="view-settings">
+        <div class="overlay-view-header">
+          <span class="overlay-view-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            Settings
+          </span>
+        </div>
+        <div class="overlay-view-body settings-body">
+
+          <div class="settings-section-label">Audio</div>
+          <div class="settings-row">
+            <label class="settings-label" for="settings-bgm-vol">BGM Volume</label>
+            <div class="settings-control">
+              <input type="range" id="settings-bgm-vol" class="settings-slider" min="0" max="100" value="50" />
+              <span class="settings-val" id="settings-bgm-vol-val">50%</span>
+            </div>
+          </div>
+
+          <div class="settings-divider"></div>
+          <div class="settings-section-label">Controls</div>
+
+          <div class="settings-row">
+            <label class="settings-label" for="settings-turn-sens">Turning Sensitivity</label>
+            <div class="settings-control">
+              <input type="range" id="settings-turn-sens" class="settings-slider" min="10" max="200" value="100" step="5" />
+              <span class="settings-val" id="settings-turn-sens-val">1.0×</span>
+            </div>
+          </div>
+
         </div>
       </div>
 

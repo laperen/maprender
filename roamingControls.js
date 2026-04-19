@@ -99,6 +99,10 @@ export class RoamingControls {
     this._camTarget = new THREE.Vector3();
     this._firstTick = true;
 
+    // Instance-level sensitivity (can be overridden by Settings panel)
+    this._mouseSensX = MOUSE_SENS_X;
+    this._mouseSensY = MOUSE_SENS_Y;
+
     // Scratch — camera
     this._boomDir  = new THREE.Vector3();
     this._pivot    = new THREE.Vector3();
@@ -757,9 +761,9 @@ export class RoamingControls {
 
   _onMouseMove(e) {
     if (!this._active || !document.pointerLockElement) return;
-    this._yaw   -= (e.movementX ?? 0) * MOUSE_SENS_X * (Math.PI / 180);
+    this._yaw   -= (e.movementX ?? 0) * this._mouseSensX * (Math.PI / 180);
     this._pitch  = THREE.MathUtils.clamp(
-      this._pitch + (e.movementY ?? 0) * MOUSE_SENS_Y,
+      this._pitch + (e.movementY ?? 0) * this._mouseSensY,
       PITCH_MIN, PITCH_MAX
     );
   }

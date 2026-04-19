@@ -1972,8 +1972,92 @@ body { overflow: hidden; }
 }
 .jk-np-label.active { color: var(--accent); }
 /* ═══════════════════════════════════════════════════════════════
-   ROAMING CAMERA — crosshair, key badges, HUD updates
+   SETTINGS PANEL
    ═══════════════════════════════════════════════════════════════ */
+
+.settings-body {
+  gap: 0;
+  padding: 0 !important;
+}
+
+.settings-section-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-family: 'Space Mono', monospace;
+  padding: 16px 16px 8px;
+}
+
+.settings-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 0 0;
+}
+
+.settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-label {
+  font-size: 11px;
+  font-family: 'Space Mono', monospace;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.settings-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-slider {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  border: none;
+  appearance: none;
+  background: var(--border);
+  cursor: pointer;
+  padding: 0;
+}
+
+.settings-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  cursor: pointer;
+}
+
+.settings-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  cursor: pointer;
+  border: none;
+}
+
+.settings-val {
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  min-width: 36px;
+  text-align: right;
+}
+
 
 /* Crosshair — fixed dead-centre of viewport */
 #roam-crosshair {
