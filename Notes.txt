@@ -12,6 +12,3 @@ settings menu
 general controls
 - balance out sensativity between orbit controls and roaming controls, relative to turning sensativity in settings.
 
-orbit controls
-- limit movement to xz plane while holding right mouse button
-
