@@ -287,7 +287,7 @@ export class RoamingControls {
     this._surfaceDetection(dt);
 
     // ── OOB check ─────────────────────────────────────────────
-    if (this._charPos.y < -25) this._teleportToOrigin();
+    if (this._charPos.y < -100) this._teleportToOrigin();
   }
 
   // ── Ground movement (mirrors GroundMovement in customMovement.js) ─
