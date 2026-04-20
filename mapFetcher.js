@@ -4,9 +4,10 @@
 export class MapFetcher {
   constructor() {
     this.overpassEndpoints = [
-      'https://overpass-api.de/api/interpreter',
+      //'https://overpass-api.de/api/interpreter',
       'https://overpass.kumi.systems/api/interpreter',
-      'https://lz4.overpass-api.de/api/interpreter'
+      //'https://lz4.overpass-api.de/api/interpreter',
+      'https://overpass.private.coffee/api/interpreter'
     ];
     this.photonUrl   = 'https://photon.komoot.io/api/';
     this.MAX_CHUNKS = 20; // tune this
@@ -254,7 +255,9 @@ export class MapFetcher {
       method: 'POST',
       body: `data=${encodeURIComponent(query)}`,
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
+        'Content-Type': 'text/plain'
+        //'Content-Type': 'application/x-www-form-urlencoded',
+        //'Accept': 'application/json'
       }
     });
   
