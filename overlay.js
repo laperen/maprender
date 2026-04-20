@@ -103,7 +103,8 @@ export class OverlayPanel {
     const overlayRoamBack = document.getElementById('overlay-roam-back-btn');
     if (overlayRoamBack) {
       overlayRoamBack.addEventListener('click', () => {
-        document.getElementById('roam-back-btn')?.click();
+        this.ui._exitRoamingMode();
+        //document.getElementById('roam-back-btn')?.click();
         this._close();
       });
     }
@@ -230,5 +231,141 @@ export class OverlayPanel {
     if (!exploreBtn) return;
     const inRoaming = this._appMode === 'roaming';
     exploreBtn.classList.toggle('disabled-cat', !inRoaming);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LEFT ROAMING PANEL
+// Slides in from the left, visible only in roaming mode.
+// Opening it temporarily unlocks the cursor (releases pointer lock)
+// but canvas drag (mousedown+move) re-locks while held.
+// ═══════════════════════════════════════════════════════════════
+
+export class LeftPanel {
+  constructor({ uiController }) {
+    this.ui = uiController;
+    this._open  = false;
+    this._appMode = 'map-creation';
+    this._activeCategory = 'proxy';
+
+    // Cursor drag-restore state
+    this._dragging = false;
+    this._wasPointerLocked = false;
+
+    this._onCanvasMouseDown = this._onCanvasMouseDown.bind(this);
+    this._onDocMouseUp      = this._onDocMouseUp.bind(this);
+    this._onTouchStart      = this._onTouchStart.bind(this);
+    this._onTouchEnd        = this._onTouchEnd.bind(this);
+  }
+
+  init() {
+    this._panel        = document.getElementById('left-panel');
+    this._toggleBtn    = document.getElementById('left-panel-toggle-btn');
+    this._closeBtn     = document.getElementById('left-panel-close-btn');
+    this._canvas       = document.getElementById('canvas-container');
+
+    this._toggleBtn.addEventListener('click', () => this._toggle());
+    this._closeBtn.addEventListener('click',  () => this._close());
+
+    // Category sidebar buttons
+    document.querySelectorAll('.left-cat-btn').forEach(btn => {
+      btn.addEventListener('click', () => this._setCategory(btn.dataset.lcat));
+    });
+  }
+
+  setAppMode(mode) {
+    this._appMode = mode;
+    // Auto-close if leaving roaming
+    if (mode !== 'roaming' && this._open) this._close();
+  }
+
+  // ── Open / close ──────────────────────────────────────────────
+
+  _toggle() {
+    this._open ? this._close() : this._open_panel();
+  }
+
+  _open_panel() {
+    this._open = true;
+    this._panel.classList.add('open');
+    this._toggleBtn.classList.add('active');
+    document.body.classList.add('left-panel-open');
+
+    // Release pointer lock so the cursor is usable in the panel
+    this._wasPointerLocked = !!document.pointerLockElement;
+    if (this._wasPointerLocked) document.exitPointerLock();
+
+    // Canvas drag listeners — re-grab while dragging
+    this._canvas.addEventListener('mousedown',  this._onCanvasMouseDown);
+    this._canvas.addEventListener('touchstart', this._onTouchStart, { passive: true });
+    document.addEventListener('mouseup',  this._onDocMouseUp);
+    document.addEventListener('touchend', this._onTouchEnd);
+  }
+
+  _close() {
+    this._open = false;
+    this._panel.classList.remove('open');
+    this._toggleBtn.classList.remove('active');
+    document.body.classList.remove('left-panel-open');
+    document.body.classList.remove('canvas-dragging');
+
+    // Restore pointer lock if roaming camera is active
+    const roamCam = this.ui?.scene?._roamingCam;
+    /*
+    if (roamCam?.isActive && this._appMode === 'roaming') {
+      try { this._canvas.requestPointerLock(); } catch (_) {}
+    }
+    */
+
+    this._canvas.removeEventListener('mousedown',  this._onCanvasMouseDown);
+    this._canvas.removeEventListener('touchstart', this._onTouchStart);
+    document.removeEventListener('mouseup',  this._onDocMouseUp);
+    document.removeEventListener('touchend', this._onTouchEnd);
+    this._dragging = false;
+  }
+
+  // ── Canvas drag: unlock cursor temporarily re-grabbed ─────────
+
+  _onCanvasMouseDown(e) {
+    if (e.button !== 0) return;
+    this._dragging = true;
+    document.body.classList.add('canvas-dragging');
+    // Re-request pointer lock while drag is held, so look-around works
+    const roamCam = this.ui?.scene?._roamingCam;
+    if (roamCam?.isActive) {
+      try { this._canvas.requestPointerLock(); } catch (_) {}
+    }
+  }
+
+  _onDocMouseUp() {
+    if (!this._dragging) return;
+    this._dragging = false;
+    document.body.classList.remove('canvas-dragging');
+    // Release lock again so cursor is free in panel
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
+
+  _onTouchStart() {
+    this._dragging = true;
+    document.body.classList.add('canvas-dragging');
+  }
+
+  _onTouchEnd() {
+    this._dragging = false;
+    document.body.classList.remove('canvas-dragging');
+  }
+
+  // ── Category switching ────────────────────────────────────────
+
+  _setCategory(cat) {
+    this._activeCategory = cat;
+
+    document.querySelectorAll('.left-cat-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.lcat === cat);
+    });
+
+    document.querySelectorAll('.left-view').forEach(v => v.classList.remove('active'));
+    const view = document.getElementById(`left-view-${cat}`);
+    if (view) view.classList.add('active');
   }
 }

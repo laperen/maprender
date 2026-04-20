@@ -1085,3 +1085,98 @@ body.roaming-active::after {
   pointer-events: none;
   background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.35) 100%);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   LEFT ROAMING PANEL
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Toggle button — mirrors #overlay-toggle-btn but top-left */
+#left-panel-toggle-btn {
+  position: fixed;
+  top: 14px; left: 14px;
+  z-index: 50;
+  width: 40px; height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.18s ease;
+  box-shadow: 0 2px 12px rgba(0,0,0,.4);
+  opacity: 0;
+  pointer-events: none;
+}
+body.roaming-active #left-panel-toggle-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+#left-panel-toggle-btn:hover { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 12px rgba(71,215,255,.2); }
+#left-panel-toggle-btn.active { background: rgba(71,215,255,.08); border-color: var(--accent); color: var(--accent); }
+
+/* Panel — mirrors #overlay-panel but slides from left */
+#left-panel {
+  position: fixed;
+  top: 0; left: 0;
+  height: 100%;
+  z-index: 40;
+  display: flex;
+  flex-direction: row-reverse;
+  transform: translateX(-100%);
+  transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+  box-shadow: 8px 0 40px rgba(0,0,0,.6);
+}
+#left-panel.open { transform: translateX(0); }
+
+/* Sidebar — mirrors #overlay-sidebar */
+#left-panel-sidebar {
+  width: 64px; height: 100%;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0;
+  flex-shrink: 0;
+}
+#left-panel-sidebar-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  padding-top: 54px;
+}
+#left-panel-sidebar-bottom { padding-bottom: 12px; }
+
+#left-panel-close-btn {
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+#left-panel-close-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+/* Content area — mirrors #overlay-content */
+#left-panel-content {
+  width: 400px; height: 100%;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Left views reuse .overlay-view */
+.left-view { display: none; flex-direction: column; height: 100%; }
+.left-view.active { display: flex; }
+
+/* Cursor unlock while left panel open */
+body.left-panel-open #canvas-container { cursor: default; }
+body.left-panel-open.canvas-dragging #canvas-container { cursor: grabbing; }

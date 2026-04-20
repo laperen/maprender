@@ -27,6 +27,7 @@ export class UIController {
     // App mode: 'map-creation' | 'location-selection' | 'roaming'
     this._appMode = 'map-creation';
     if (this._overlay) this._overlay.setAppMode('map-creation');
+    if (this._leftPanel) this._leftPanel.setAppMode('map-creation');
     // Beacon / spawn state
     this._beaconX = null;
     this._beaconY = null;
@@ -96,7 +97,7 @@ export class UIController {
     // Mode panels
     this.$uiPanel        = document.getElementById('ui');
     this.$selectionPanel = document.getElementById('selection-panel');
-    this.$roamingPanel   = document.getElementById('roaming-panel');
+    //this.$roamingPanel   = document.getElementById('roaming-panel');
     this.$enterSelBtn    = document.getElementById('enter-selection-btn');
     this.$enterWorldBtn  = document.getElementById('enter-world-btn');
     this.$selBackBtn     = document.getElementById('sel-back-btn');
@@ -650,10 +651,11 @@ export class UIController {
     if (!this._worldGenerated) return;
     this._appMode = 'location-selection';
     if (this._overlay) this._overlay.setAppMode(this._appMode);
+    if (this._leftPanel) this._leftPanel.setAppMode(this._appMode);
     // Hide main UI panel, show selection panel
     this.$uiPanel.classList.add('ui-hidden');
     this.$selectionPanel.classList.remove('panel-hidden');
-    this.$roamingPanel.classList.add('panel-hidden');
+    //this.$roamingPanel.classList.add('panel-hidden');
 
     // Reset beacon state UI
     if (this.$enterWorldBtn) this.$enterWorldBtn.disabled = true;
@@ -680,9 +682,10 @@ export class UIController {
   _exitSelectionMode() {
     this._appMode = 'map-creation';
     if (this._overlay) this._overlay.setAppMode(this._appMode);
+    if (this._leftPanel) this._leftPanel.setAppMode(this._appMode);
     this.$uiPanel.classList.remove('ui-hidden');
     this.$selectionPanel.classList.add('panel-hidden');
-    this.$roamingPanel.classList.add('panel-hidden');
+    //this.$roamingPanel.classList.add('panel-hidden');
 
     document.body.classList.remove('selection-active');
 
@@ -695,10 +698,11 @@ export class UIController {
 
     this._appMode = 'roaming';
     if (this._overlay) this._overlay.setAppMode(this._appMode);
+    if (this._leftPanel) this._leftPanel.setAppMode(this._appMode);
 
     // Hide selection panel, show roaming HUD
     this.$selectionPanel.classList.add('panel-hidden');
-    this.$roamingPanel.classList.remove('panel-hidden');
+    //this.$roamingPanel.classList.remove('panel-hidden');
 
     // Disable ground-click selection
     this.scene.exitSelectionMode();
@@ -729,7 +733,8 @@ export class UIController {
   _exitRoamingMode() {
     this._appMode = 'location-selection';
     if (this._overlay) this._overlay.setAppMode(this._appMode);
-    this.$roamingPanel.classList.add('panel-hidden');
+    if (this._leftPanel) this._leftPanel.setAppMode(this._appMode);
+    //this.$roamingPanel.classList.add('panel-hidden');
     this.$selectionPanel.classList.remove('panel-hidden');
     this.$uiPanel.classList.add('ui-hidden');
 
