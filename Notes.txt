@@ -7,86 +7,9 @@ character is uncontrollable when bouncing happens.
 character orientation isn't changed while wallriding, not sure if that is preventing movement up the wall.
 position reset using _teleportToOrigin should be changed to resetting to last grounded position instead
 
+map:
+- there are terrain artifacts which reach great heights.
+
 settings menu
 - clearing map cache?
 
-
-
-prompt result for vector tiles:
-
-The Winning Solution: Protomaps Daily Build + pmtiles Adapter 
-
-Since you want a 3D scene, free data, no API keys, and direct browser fetching, this is your best architecture. 
-Step A: The Source 
-
-You will use the public Protomaps daily build. 
-
-     URL: https://build.protomaps.com/20240815.pmtiles
-     Format: Vector Tiles (compressed).
-     
-
-Step B: The Technology 
-
-Because browsers don't natively understand the .pmtiles format (it's a special archive), you need a tiny JavaScript library to translate requests from your map library into requests for that file. 
-
-Use MapLibre GL JS (it is the open-source fork of Mapbox GL JS, free and no keys required). 
-Step C: How to implement it 
-
-Here is how you fetch the data from the browser without a proxy server: 
-
-    Include the libraries: 
-         MapLibre GL JS (The map renderer)
-         pmtiles (The adapter to read the file)
-         protomaps-leaflet or MapLibre plugin (The glue).
-          
-
-    The Code: 
-    javascript
-     
-      
-
-    // 1. Initialize the PMTiles adapter pointing to the free public file
-    const p = new pmtiles.PMTiles("https://build.protomaps.com/20240815.pmtiles");
-
-    // 2. Setup a "source" for MapLibre that uses this adapter
-    const protocol = new pmtiles.Protocol();
-    maplibregl.addProtocol("pmtiles", protocol.tile);
-
-    // 3. Initialize your Map
-    const map = new maplibregl.Map({
-      container: 'map',
-      style: {
-        version: 8,
-        sources: {
-          // This uses the protocol we added above to fetch from the S3 URL
-          "protomaps": {
-            type: "vector",
-            url: "pmtiles://https://build.protomaps.com/20240815.pmtiles",
-            attribution: "© OpenStreetMap"
-          }
-        },
-        layers: [
-          {
-            "id": "buildings",
-            "type": "fill-extrusion", // This makes it 3D!
-            "source": "protomaps",
-            "source-layer": "building", // The specific layer inside the tile for buildings
-            "paint": {
-              "fill-extrusion-color": "#aaaaaa",
-              "fill-extrusion-height": 5, // Fixed height or use data
-              "fill-extrusion-base": 0
-            }
-          }
-        ]
-      }
-    });
-     
-     
-      
-
-Summary of Advantages 
-
-    Zero Cost: The hosting is paid for by the Protomaps project (for the daily build). 
-    Zero Auth: No API keys needed in your code. 
-    Direct Browser Fetch: The pmtiles library handles the range requests, and AWS S3 handles the CORS headers automatically. 
-    Performance: You are streaming vector tiles, not raw JSON. The 3D rendering will be smooth (60fps) because the heavy data crunching is done efficiently by the format. 
