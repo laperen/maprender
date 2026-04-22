@@ -736,6 +736,7 @@ body.selection-active #canvas-container { cursor: crosshair; }
   height: 100%;
   z-index: 40;
   display: flex;
+  flex-direction: row-reverse;
   transform: translateX(100%);
   transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
   box-shadow: -8px 0 40px rgba(0,0,0,.6);
@@ -746,7 +747,7 @@ body.selection-active #canvas-container { cursor: crosshair; }
 #overlay-sidebar {
   width: 64px; height: 100%;
   background: var(--bg);
-  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -799,7 +800,6 @@ body.selection-active #canvas-container { cursor: crosshair; }
 #overlay-content {
   width: 400px; height: 100%;
   background: var(--panel);
-  border-left: 1px solid var(--border);
   overflow: hidden;
   display: none;
   flex-direction: column;
@@ -1123,7 +1123,7 @@ body.roaming-active #left-panel-toggle-btn {
   height: 100%;
   z-index: 40;
   display: flex;
-  flex-direction: row-reverse;
+  flex-direction: row;
   transform: translateX(-100%);
   transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
   box-shadow: 8px 0 40px rgba(0,0,0,.6);

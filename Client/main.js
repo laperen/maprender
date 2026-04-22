@@ -23,3 +23,7 @@ leftPanel.init();
 // Expose panels to ui so mode transitions update them
 ui._overlay   = overlay;
 ui._leftPanel = leftPanel;
+
+// Cross-close: opening one panel closes the other
+overlay._leftPanel  = leftPanel;
+leftPanel._overlay  = overlay;

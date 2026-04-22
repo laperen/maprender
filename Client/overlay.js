@@ -173,6 +173,8 @@ export class OverlayPanel {
     if (this._open) {
       this._close();
     } else {
+      // Close the left panel first if it's open
+      this._leftPanel?._close();
       this._open = true;
       this._panel.classList.add('open');
       this._toggleBtn.classList.add('active');
@@ -286,6 +288,8 @@ export class LeftPanel {
   }
 
   _open_panel() {
+    // Close the overlay panel first if it's open
+    this._overlay?._close();
     this._open = true;
     this._panel.classList.add('open');
     this._toggleBtn.classList.add('active');
