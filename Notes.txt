@@ -13,3 +13,5 @@ map:
 settings menu
 - clearing map cache?
 
+linux server command:
+node /home/oem/Projects/Web/ATSim/maprender/Server/proxy.js
