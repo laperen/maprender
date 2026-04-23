@@ -49,6 +49,12 @@ export class SceneManager {
     this._roamingCam = null; // initialised in start() after renderer exists
     this.$enterWorldBtn  = document.getElementById('enter-world-btn');
     this._collidables = [];
+
+    // Default geographic location for SPA solar algorithm (Tokyo)
+    // Overridden by setLocation() when user geocodes or generates a world.
+    this._geoLat  = 35.6812;
+    this._geoLng  = 139.7671;
+    this._geoDate = new Date();
   }
 
   init() {
@@ -121,57 +127,212 @@ export class SceneManager {
     this._setSkyPosition(12);
   }
 
-  // Compute sun world-space direction from hour (0–24) and push to sky shader
+  // ── Geographic location for accurate solar position ───────────
+  // Call this whenever the user changes location (lat/lng).
+  // SceneManager stores it so _setSkyPosition can use it every frame.
+  setLocation(lat, lng) {
+    this._geoLat = lat;
+    this._geoLng = lng;
+    // Snap the reference date to today so declination is correct.
+    this._geoDate = new Date();
+  }
+
+  // ── Public accessor — solar elevation in degrees for a given local hour ──
+  // Used by the UI preview arc so it stays in sync with the scene's SPA.
+  // Returns a number in the range roughly -90..+90.
+  getSolarElevation(hour) {
+    if (this._geoLat !== undefined && this._geoLng !== undefined) {
+      return this._solarPosition(
+        ((hour % 24) + 24) % 24,
+        this._geoLat,
+        this._geoLng,
+        this._geoDate || new Date()
+      ).elevDeg;
+    }
+    // Fallback: original sine arc
+    const elevNorm = (hour - 6) / 12;
+    return Math.max(-20, 75 * Math.sin(elevNorm * Math.PI));
+  }
+
+  // ── NOAA SPA solar position algorithm ─────────────────────────
+  // Returns { elevDeg, azimuthDeg } for a given local clock hour (0-24),
+  // geographic lat/lng (degrees), and calendar date.
+  // "localHour" is the wall-clock time at the location (what the slider shows).
+  // Based on the NOAA Solar Calculator equations (simplified SPA).
+  _solarPosition(localHour, latDeg, lngDeg, date) {
+    const D2R = Math.PI / 180;
+    const R2D = 180 / Math.PI;
+
+    // ── Julian day ─────────────────────────────────────────────
+    // Build JD using localHour directly as the fractional day.
+    // The JD value doesn't need to be astronomically exact to UTC —
+    // it's only used to derive slowly-changing quantities (declination,
+    // equation of time) where a few-hour error has negligible effect.
+    const Y = date.getFullYear();
+    const M = date.getMonth() + 1;   // 1-12
+    const D = date.getDate();
+
+    let jd;
+    {
+      let Ym = M, Yy = Y;
+      if (M <= 2) { Yy -= 1; Ym += 12; }
+      const A = Math.floor(Yy / 100);
+      const B = 2 - A + Math.floor(A / 4);
+      jd = Math.floor(365.25 * (Yy + 4716)) +
+           Math.floor(30.6001 * (Ym + 1)) +
+           D + B - 1524.5 + localHour / 24;
+    }
+
+    // ── Julian century ─────────────────────────────────────────
+    const T = (jd - 2451545.0) / 36525;
+
+    // ── Geometric mean longitude of sun (deg) ──────────────────
+    const L0 = (280.46646 + T * (36000.76983 + T * 0.0003032)) % 360;
+
+    // ── Geometric mean anomaly (deg) ───────────────────────────
+    const M0 = 357.52911 + T * (35999.05029 - T * 0.0001537);
+
+    // ── Equation of centre ─────────────────────────────────────
+    const Mrad = M0 * D2R;
+    const C = Math.sin(Mrad) * (1.914602 - T * (0.004817 + 0.000014 * T))
+            + Math.sin(2 * Mrad) * (0.019993 - 0.000101 * T)
+            + Math.sin(3 * Mrad) * 0.000289;
+
+    // ── Sun's true longitude ────────────────────────────────────
+    const sunLon = L0 + C;
+
+    // ── Sun's apparent longitude (aberration + nutation) ───────
+    const omega  = 125.04 - 1934.136 * T;
+    const lambda = sunLon - 0.00569 - 0.00478 * Math.sin(omega * D2R);
+
+    // ── Mean obliquity of ecliptic ─────────────────────────────
+    const epsilon0 = 23 + (26 + (21.448 - T * (46.8150 + T * (0.00059 - T * 0.001813))) / 60) / 60;
+    const epsilon  = epsilon0 + 0.00256 * Math.cos(omega * D2R);
+
+    // ── Sun's declination ──────────────────────────────────────
+    const lambdaRad  = lambda * D2R;
+    const epsilonRad = epsilon * D2R;
+    const declinDeg  = R2D * Math.asin(Math.sin(epsilonRad) * Math.sin(lambdaRad));
+
+    // ── Equation of time (minutes) ─────────────────────────────
+    const y      = Math.tan(epsilonRad / 2) ** 2;
+    const L0rad  = L0 * D2R;
+    const eot    = 4 * R2D * (
+        y * Math.sin(2 * L0rad)
+      - 2 * 0.016708634 * Math.sin(Mrad)
+      + 4 * 0.016708634 * y * Math.sin(Mrad) * Math.cos(2 * L0rad)
+      - 0.5 * y * y * Math.sin(4 * L0rad)
+      - 1.25 * 0.016708634 * 0.016708634 * Math.sin(2 * Mrad)
+    ); // minutes
+
+    // ── True solar time ────────────────────────────────────────
+    // Local time already encodes the timezone (UTC offset).
+    // The remaining correction is: longitude within the timezone strip
+    // (difference between actual lng and the timezone's reference meridian,
+    // which is lngDeg rounded to the nearest 15°), plus equation of time.
+    // Reference meridian for this timezone (nearest 15° multiple):
+    const refMeridian  = Math.round(lngDeg / 15) * 15;
+    const lngCorrection = (lngDeg - refMeridian) * 4; // minutes (+4 min/degree east)
+    const localMinutes  = localHour * 60;
+    const trueSolarTime = ((localMinutes + eot + lngCorrection) % 1440 + 1440) % 1440;
+
+    // ── Hour angle ─────────────────────────────────────────────
+    // 0 at solar noon, positive in the afternoon
+    const hourAngleDeg = trueSolarTime / 4 - 180;
+
+    // ── Solar zenith angle ─────────────────────────────────────
+    const latRad = latDeg  * D2R;
+    const haRad  = hourAngleDeg * D2R;
+    const decRad = declinDeg * D2R;
+
+    const cosZenith = Math.sin(latRad) * Math.sin(decRad)
+                    + Math.cos(latRad) * Math.cos(decRad) * Math.cos(haRad);
+    const zenithDeg = R2D * Math.acos(THREE.MathUtils.clamp(cosZenith, -1, 1));
+    const elevDeg   = 90 - zenithDeg;
+
+    // ── Atmospheric refraction correction (degrees) ────────────
+    let refraction = 0;
+    if (elevDeg > -0.575) {
+      if (elevDeg > 85) {
+        refraction = 0;
+      } else if (elevDeg > 5) {
+        refraction = 58.1 / Math.tan(elevDeg * D2R)
+                   - 0.07 / Math.tan(elevDeg * D2R) ** 3
+                   + 0.000086 / Math.tan(elevDeg * D2R) ** 5;
+      } else {
+        refraction = 1735 + elevDeg * (-518.2 + elevDeg * (103.4 + elevDeg * (-12.79 + elevDeg * 0.711)));
+      }
+      refraction /= 3600; // arcseconds → degrees
+    }
+    const elevCorrDeg = elevDeg + refraction;
+
+    // ── Azimuth (N=0, E=90, S=180, W=270) ─────────────────────
+    let azimuthDeg;
+    {
+      const sinZ   = Math.sin(zenithDeg * D2R);
+      const cosAzi = sinZ > 1e-6
+        ? -(Math.sin(latRad) * cosZenith - Math.sin(decRad)) / (Math.cos(latRad) * sinZ)
+        : (latDeg >= 0 ? 0 : Math.PI);
+      azimuthDeg = R2D * Math.acos(THREE.MathUtils.clamp(cosAzi, -1, 1));
+      if (hourAngleDeg > 0) azimuthDeg = (azimuthDeg + 180) % 360;
+      else                   azimuthDeg = (540 - azimuthDeg) % 360;
+    }
+
+    return { elevDeg: elevCorrDeg, azimuthDeg };
+  }
+
+  // ── Compute sun world-space direction and push to sky shader ──
+  // Uses NOAA SPA when location is set; falls back to simple sine arc.
   _setSkyPosition(hour) {
-    // ── 1. Normalize time (0–24 → 0–1) ───────────────
     const t = ((hour % 24) + 24) % 24;
-    const phase = t / 24;
-  
-    // ── 2. Smooth orbital angles (NO clamping, NO max()) ───────
-    // Elevation: full sinusoidal orbit (-1..1)
-    const elev = Math.sin(phase * Math.PI * 2 - Math.PI / 2);
-  
-    // Map elevation to sky angle (no hard cutoffs)
-    const elevDeg = elev * 75; // ±75° smooth arc
-  
-    // Azimuth: full 360° rotation
-    const aziDeg = phase * 360;
-  
-    const phi   = THREE.MathUtils.degToRad(90 - elevDeg);
-    const theta = THREE.MathUtils.degToRad(aziDeg);
-  
-    const sunPos = new THREE.Vector3();
-    sunPos.setFromSphericalCoords(1, phi, theta);
-  
+
+    let elevDeg, azimuthDeg;
+
+    if (this._geoLat !== undefined && this._geoLng !== undefined) {
+      // ── Geographic mode: proper solar position ────────────────
+      const pos  = this._solarPosition(t, this._geoLat, this._geoLng, this._geoDate || new Date());
+      elevDeg    = pos.elevDeg;
+      azimuthDeg = pos.azimuthDeg;
+    } else {
+      // ── Fallback: simple sinusoidal arc (original behaviour) ──
+      const phase = t / 24;
+      const elev  = Math.sin(phase * Math.PI * 2 - Math.PI / 2);
+      elevDeg     = elev * 75;
+      azimuthDeg  = phase * 360;
+    }
+
+    // ── Convert alt-az to Three.js world vector ────────────────
+    // Three.js Sky shader: phi = polar angle from Y-up, theta = azimuthal.
+    // Azimuth 0° = North = -Z in Three.js (right-hand, Y-up).
+    // We rotate so N→-Z, E→+X, S→+Z, W→-X.
+    const elevRad = THREE.MathUtils.degToRad(elevDeg);
+    const aziRad  = THREE.MathUtils.degToRad(azimuthDeg);
+
+    // World-space sun direction (Y-up, X-east, Z-south)
+    const sunPos = new THREE.Vector3(
+       Math.sin(aziRad) * Math.cos(elevRad),   // X = east component
+       Math.sin(elevRad),                        // Y = altitude
+      -Math.cos(aziRad) * Math.cos(elevRad),   // Z = -north component
+    );
+    sunPos.normalize();
+
     this._skyUniforms['sunPosition'].value.copy(sunPos);
-  
-    this._sunDirection = sunPos.clone().normalize();
-  
-    // ── 3. Moon is always exact inverse (stable now) ───────────
-    this._moonDirection = this._sunDirection.clone().negate();
-  
-    // ── 4. Atmosphere tuning (based on elevation, not clamped sin) ─
-    const isDay = elev > 0;
-  
-    const nightFactor = THREE.MathUtils.smoothstep(-0.1, 0.1, elev);
-    const dayFactor   = 1 - nightFactor;
-  
-    const turbidity = isDay
-      ? THREE.MathUtils.lerp(0.6, 1.4, dayFactor)
-      : 0.5;
+    this._sunDirection  = sunPos.clone();
+    this._moonDirection = sunPos.clone().negate();
 
-    const rayleigh = isDay
-      ? THREE.MathUtils.lerp(0.15, 0.3, dayFactor)  // balanced blue
-      : 0.1;
+    // Store for setTimeOfDay to use (avoid recomputing)
+    this._lastSolarElevDeg = elevDeg;
 
-    const mieCoefficient = isDay ? 0.0025 : 0.0008;  // reduce haze
-    const mieDirectionalG = 0.75; // slightly less forward scattering
+    // ── Atmosphere tuning ──────────────────────────────────────
+    const elevNorm    = THREE.MathUtils.clamp(elevDeg / 75, -1, 1);
+    const dayFactor   = THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.18);
+    const isDay       = elevDeg > 0;
 
-    this._skyUniforms['turbidity'].value = turbidity;
-    this._skyUniforms['rayleigh'].value = rayleigh;
-    this._skyUniforms['mieCoefficient'].value = mieCoefficient;
-    this._skyUniforms['mieDirectionalG'].value = mieDirectionalG;
-  
+    this._skyUniforms['turbidity'].value      = isDay ? THREE.MathUtils.lerp(0.6, 1.4, dayFactor) : 0.5;
+    this._skyUniforms['rayleigh'].value       = isDay ? THREE.MathUtils.lerp(0.15, 0.3, dayFactor) : 0.1;
+    this._skyUniforms['mieCoefficient'].value = isDay ? 0.0025 : 0.0008;
+    this._skyUniforms['mieDirectionalG'].value = 0.75;
+
     return sunPos;
   }
   _getAtmosphereColors(elevDeg) {
@@ -462,23 +623,22 @@ export class SceneManager {
     // ── 1. Normalize time to cyclic 24h domain ───────────────
     const t = ((hour % 24) + 24) % 24;
     this._currentHour = t;
-  
-    const phase = t / 24;              // 0..1 cyclic
-    const angle = phase * Math.PI * 2; // full circular driver
-  
-    // ── 2. Core sun model (continuous cycle, no seams) ───────
-    // Sun height: smooth periodic curve
-    const elevDeg = -20 + 95 * Math.max(0, Math.sin(angle - Math.PI / 2));
-  
-    const elevNorm = THREE.MathUtils.clamp(elevDeg / 75, -0.267, 1);
-  
-    // Smooth day/night split (stable across wrap)
-    const sunDayPhase = THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.18);
+
+    // ── 2. Update sun direction via SPA ─────────────────────
+    // _setSkyPosition stores the true solar elevation in _lastSolarElevDeg.
+    this._setSkyPosition(t);
+
+    // Use SPA elevation when location is known; fall back to sine arc.
+    const elevDeg = (this._lastSolarElevDeg !== undefined)
+      ? this._lastSolarElevDeg
+      : -20 + 95 * Math.max(0, Math.sin(t / 24 * Math.PI * 2 - Math.PI / 2));
+
+    const elevNorm = THREE.MathUtils.clamp(elevDeg / 90, -1, 1);
+
+    // Smooth day/night split driven by true solar elevation
+    const sunDayPhase = THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.15);
     const nightPhase = 1 - sunDayPhase;
     this._nightPhase = nightPhase;
-  
-    // ── 3. Update sun direction via Sky system ───────────────
-    this._setSkyPosition(t);
   
     const dist = 1000;
   

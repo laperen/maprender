@@ -363,6 +363,20 @@ button {
   white-space: nowrap;
   pointer-events: none;
 }
+.tod-tz-label {
+  position: absolute;
+  bottom: 20px;  /* sits just above tod-time-label (which is at 6px) but below it visually */
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 8px;
+  font-weight: 700;
+  color: rgba(71,215,255,.75);
+  text-shadow: 0 1px 3px rgba(0,0,0,.9);
+  letter-spacing: 0.07em;
+  white-space: nowrap;
+  pointer-events: none;
+  text-transform: uppercase;
+}
 #cloud-panel-host .tod-time-label { bottom: 4px; }
 
 .tod-slider-wrap {

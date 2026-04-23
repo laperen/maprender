@@ -13,8 +13,9 @@ export class UIController {
     this.heightScale = 1;
     this.renderMode  = 'solid';
     this.timeOfDay   = 12;   // 0–24h float
-    this._deviceTimeMode  = false;
+    this._deviceTimeMode  = false;  // true = local area time, false = manual
     this._deviceTimerID   = null;
+    this._localTimezone   = null;   // IANA timezone string for searched area
 
     // Cloud state
     this._cloudAutoMode  = true;   // true = use weather API, false = manual
@@ -85,6 +86,7 @@ export class UIController {
     this.$canvas        = document.getElementById('canvas-container');
     this.$timePanelHost = document.getElementById('time-panel-host');
     this.$cloudPanelHost = document.getElementById('cloud-panel-host');
+    this.$todTzLabel    = document.getElementById('tod-tz-label');
 
     // Collapsible toggles
     this.$todToggle  = document.getElementById('tod-toggle');
@@ -368,7 +370,7 @@ export class UIController {
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
 
-    // Sky gradient based on time
+    // Sky gradient based on time — uses real SPA elevation via _skyColor
     const skyColor = this._skyColor(hour);
     const grad = ctx.createLinearGradient(0, 0, 0, H);
     grad.addColorStop(0, skyColor.top);
@@ -392,50 +394,51 @@ export class UIController {
     ctx.arc(cx, cy, r, Math.PI, 0);
     ctx.stroke();
 
-    // Sun / Moon position on arc
-    const daySunAngle  = this._sunAngle(hour);
-    const nightMoonAng = this._moonAngle(hour);
+    // ── Sun position — driven by real SPA elevation ───────────
+    const elevDeg  = this._solarElevDeg(hour);
+    const np       = this._nightPhaseForHour(hour);
+    const isDay    = elevDeg > -6;
 
-    const elevNorm = (hour - 6) / 12;
-    const elevDeg  = Math.max(-20, 75 * Math.sin(elevNorm * Math.PI));
-    const isDay    = elevDeg > -3;
+    // Map elevation to arc radius offset: elev 0° = on the arc, 90° = zenith
+    // We clamp so the dot stays within the canvas.
+    const elevRad  = THREE_MathUtils_clamp(elevDeg / 90, -0.25, 1) * r;
+    const arcAngle = this._sunArcAngle(hour); // π..0 east to west
 
-    if (isDay) {
-      const sx = cx + r * Math.cos(Math.PI + daySunAngle);
-      const sy = cy - r * Math.sin(daySunAngle);
-      const sunVisible = sy < cy;
+    // Arc-tangent point at horizon, then offset inward by elevation
+    const sx = cx + r * Math.cos(Math.PI - arcAngle);
+    const sy = cy - Math.max(0, elevRad);       // above horizon only
 
-      if (sunVisible) {
-        const sunGlow = ctx.createRadialGradient(sx, sy, 0, sx, sy, 22);
-        sunGlow.addColorStop(0,   'rgba(255,220,100,0.55)');
-        sunGlow.addColorStop(0.5, 'rgba(255,180,60,0.18)');
-        sunGlow.addColorStop(1,   'rgba(255,140,30,0.0)');
-        ctx.fillStyle = sunGlow;
-        ctx.beginPath();
-        ctx.arc(sx, sy, 22, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(sx, sy, 7, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffe090';
-        ctx.fill();
-      }
+    if (isDay && elevDeg > -3) {
+      const sunGlow = ctx.createRadialGradient(sx, sy, 0, sx, sy, 22);
+      sunGlow.addColorStop(0,   'rgba(255,220,100,0.55)');
+      sunGlow.addColorStop(0.5, 'rgba(255,180,60,0.18)');
+      sunGlow.addColorStop(1,   'rgba(255,140,30,0.0)');
+      ctx.fillStyle = sunGlow;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 22, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(sx, sy, 7, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffe090';
+      ctx.fill();
     }
 
-    if (!isDay || this._nightPhaseForHour(hour) > 0.1) {
-      const mx = cx + r * Math.cos(Math.PI + nightMoonAng);
-      const my = cy - r * Math.sin(nightMoonAng);
-      const moonVisible = my < cy;
-      if (moonVisible) {
-        const alpha = this._nightPhaseForHour(hour);
+    // ── Moon — opposite side of sky ───────────────────────────
+    if (np > 0.05) {
+      // Moon is roughly opposite the sun
+      const moonArcAngle = (arcAngle + Math.PI) % (Math.PI * 2);
+      const moonElevRad  = THREE_MathUtils_clamp(-elevDeg / 90, -0.25, 1) * r;
+      const mx = cx + r * Math.cos(Math.PI - moonArcAngle);
+      const my = cy - Math.max(0, moonElevRad);
+      if (my < cy) {
         ctx.beginPath();
         ctx.arc(mx, my, 6, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(200,220,255,${alpha * 0.9})`;
+        ctx.fillStyle = `rgba(200,220,255,${np * 0.9})`;
         ctx.fill();
       }
     }
 
     // Stars (dots) at night
-    const np = this._nightPhaseForHour(hour);
     if (np > 0.05) {
       ctx.fillStyle = `rgba(255,255,255,${np * 0.7})`;
       const starPositions = [
@@ -472,43 +475,56 @@ export class UIController {
     }
   }
 
-  _sunAngle(hour) {
-    const t = THREE_MathUtils_clamp((hour - 6) / 12, 0, 2);
-    return t * Math.PI * 0.5 + (t > 1 ? (t - 1) * Math.PI * 0.5 : 0);
+  // ── Solar elevation helpers — delegate to scene SPA ──────────
+  // elevDeg is the true altitude of the sun in degrees (-90..+90).
+  // Positive = above horizon (day), negative = below (night/twilight).
+  _solarElevDeg(hour) {
+    return this.scene.getSolarElevation(hour);
   }
 
-  _moonAngle(hour) {
-    const t = ((hour + 6) % 24) / 12;
-    return THREE_MathUtils_clamp(t, 0, 2) / 2 * Math.PI;
-  }
-
+  // Night phase: 0 = full day, 1 = full night. Smooth civil-twilight transition.
   _nightPhaseForHour(hour) {
-    const elevNorm = (hour - 6) / 12;
-    const elevDeg  = Math.max(-20, 75 * Math.sin(elevNorm * Math.PI));
-    const dayPhase = smoothstep(elevDeg / 75, -0.05, 0.18);
+    const elevDeg  = this._solarElevDeg(hour);
+    // Civil twilight ends at −6°. Full day above +10°.
+    const dayPhase = smoothstep(elevDeg, -6, 10);
     return 1 - dayPhase;
   }
 
+  // Arc angle (radians) for the sun dot on the preview semicircle.
+  // Maps elevation+azimuth → a 0..π angle along the arc (left=sunrise, right=sunset).
+  _sunArcAngle(hour) {
+    const elevDeg = this._solarElevDeg(hour);
+    // Use elevation to position the dot on the arc: 0° elev = horizon, 90° = zenith.
+    // We also need an east→west sweep — derive from whether it's AM or PM.
+    // Simple heuristic: treat noon (peak elevation hour) as the midpoint.
+    // Find approximate solar noon = hour when elevation is maximum.
+    const t = ((hour % 24) + 24) % 24;
+    // Fraction of the day the sun has traveled (0=sunrise,0.5=noon,1=sunset).
+    // We use hour against the 0–24 range, centred on 12.
+    const fracOfDay = t / 24; // 0..1
+    // Arc goes from π (left/east) to 0 (right/west).
+    // At fracOfDay=0 → angle=π, fracOfDay=1 → angle=0.
+    return Math.PI * (1 - fracOfDay);
+  }
+
   _skyColor(hour) {
-    const np = this._nightPhaseForHour(hour);
-    const elevNorm = (hour - 6) / 12;
-    const elevDeg  = Math.max(-20, 75 * Math.sin(elevNorm * Math.PI));
-    const isGolden = elevDeg >= 0 && elevDeg <= 18;
+    const np      = this._nightPhaseForHour(hour);
+    const elevDeg = this._solarElevDeg(hour);
+    const isGolden = elevDeg >= -6 && elevDeg <= 18;
 
     if (np > 0.9) return { top: '#020510', bot: '#060a1c', ground: 'rgba(15,20,40,0.9)' };
     if (np > 0.5) return { top: '#0a1535', bot: '#152040', ground: 'rgba(20,30,55,0.9)' };
-    if (isGolden && hour <= 9)  return { top: '#1a2a6c', bot: '#e05f10', ground: 'rgba(60,30,10,0.9)' };
-    if (isGolden && hour >= 16) return { top: '#1a2a6c', bot: '#c04010', ground: 'rgba(50,25,10,0.9)' };
+    if (isGolden && elevDeg < 10 && hour <= 12) return { top: '#1a2a6c', bot: '#e05f10', ground: 'rgba(60,30,10,0.9)' };
+    if (isGolden && elevDeg < 10 && hour >  12) return { top: '#1a2a6c', bot: '#c04010', ground: 'rgba(50,25,10,0.9)' };
     return { top: '#1565c0', bot: '#42a5f5', ground: 'rgba(50,90,60,0.9)' };
   }
 
   // ── Indicator pills (sun/moon/lamps) ─────────────────────────
   _updateIndicators(hour) {
     if (!this.$todIndicators) return;
-    const np = this._nightPhaseForHour(hour);
-    const lampOn = np > 0.25;
-    const elevNorm = (hour - 6) / 12;
-    const elevDeg  = Math.max(-20, 75 * Math.sin(elevNorm * Math.PI));
+    const elevDeg  = this._solarElevDeg(hour);
+    const np       = this._nightPhaseForHour(hour);
+    const lampOn   = np > 0.25;
     const sunActive = elevDeg > 0;
 
     const pill = (icon, label, active, color) =>
@@ -517,10 +533,10 @@ export class UIController {
       </div>`;
 
     this.$todIndicators.innerHTML =
-      pill('☀', 'Sun',   sunActive,      '#ffd060') +
-      pill('☽', 'Moon',  np > 0.15,      '#c8d8ff') +
-      pill('★', 'Stars', np > 0.3,       '#aac8ff') +
-      pill('◎', 'Lamps', lampOn,         '#ffa040');
+      pill('☀', 'Sun',   sunActive,  '#ffd060') +
+      pill('☽', 'Moon',  np > 0.15,  '#c8d8ff') +
+      pill('★', 'Stars', np > 0.3,   '#aac8ff') +
+      pill('◎', 'Lamps', lampOn,     '#ffa040');
   }
 
   _bindEvents() {
@@ -540,10 +556,12 @@ export class UIController {
     this.$latInput.addEventListener('change', () => {
       this.lat = parseFloat(this.$latInput.value) || this.lat;
       this._updateMinimap();
+      this.scene.setLocation(this.lat, this.lng);
     });
     this.$lngInput.addEventListener('change', () => {
       this.lng = parseFloat(this.$lngInput.value) || this.lng;
       this._updateMinimap();
+      this.scene.setLocation(this.lat, this.lng);
     });
 
     this.$radiusSlider.addEventListener('input', () => {
@@ -762,7 +780,7 @@ export class UIController {
     this.scene.enterSelectionMode();
   }
 
-  // ── Device time mode ──────────────────────────────────────────
+  // ── Local area time mode ──────────────────────────────────────
   _setDeviceMode(on) {
     this._deviceTimeMode = on;
 
@@ -781,9 +799,32 @@ export class UIController {
     }
   }
 
-  _syncDeviceTime() {
+  // Returns the current local time for the searched area as a decimal hour (0–24).
+  // Uses the area's IANA timezone if available; falls back to device local time.
+  _getAreaHour() {
+    const tz = this._localTimezone;
+    try {
+      const now = new Date();
+      if (tz) {
+        // Use Intl to get the time in the area's timezone
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz,
+          hour: 'numeric', minute: 'numeric', second: 'numeric',
+          hour12: false,
+        }).formatToParts(now);
+        const get = type => parseInt(parts.find(p => p.type === type)?.value ?? '0');
+        let h = get('hour');
+        if (h === 24) h = 0; // midnight edge case
+        return h + get('minute') / 60 + get('second') / 3600;
+      }
+    } catch (_) {}
+    // Fallback: device local time
     const now = new Date();
-    const hour = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+    return now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+  }
+
+  _syncDeviceTime() {
+    const hour = this._getAreaHour();
     this.timeOfDay = hour;
     if (this.$todSlider) this.$todSlider.value = hour;
     this._applyTimeOfDay(hour);
@@ -804,6 +845,17 @@ export class UIController {
     const label = `${icon} ${hh}:${mm}`;
     if (this.$todLabel) this.$todLabel.textContent = label;
     if (this.$todMeta)  this.$todMeta.textContent  = label;
+
+    // Show timezone badge when in local-time mode and timezone is known
+    if (this.$todTzLabel) {
+      if (this._deviceTimeMode && this._localTimezone) {
+        // Show short city name from IANA string (e.g. "Asia/Tokyo" → "Tokyo")
+        const city = this._localTimezone.split('/').pop().replace(/_/g, ' ');
+        this.$todTzLabel.textContent = `🌐 ${city}`;
+      } else {
+        this.$todTzLabel.textContent = '';
+      }
+    }
   }
 
   _toggleCollapsible(btn, body) {
@@ -823,6 +875,14 @@ export class UIController {
       this.$lngInput.value = result.lng.toFixed(6);
       this._setStatus(`📍 ${result.display.split(',').slice(0, 2).join(',')}`, '');
       this._updateMinimap();
+      // Update SPA location immediately so manual slider is accurate for new coords
+      this.scene.setLocation(this.lat, this.lng);
+      // If local-time mode is active, fetch timezone and sync
+      if (this._deviceTimeMode) {
+        this.fetcher.fetchWeather(this.lat, this.lng).then(w => {
+          if (w.timezone) { this._localTimezone = w.timezone; this._syncDeviceTime(); }
+        }).catch(() => {});
+      }
     } catch (err) {
       this._setStatus(`Geocoding failed: ${err.message}`, 'error');
     }
@@ -871,6 +931,12 @@ export class UIController {
       this._lastWays = ways;
       this._lastMapKey = mapKey;
 
+      // Store area timezone for Local Time mode (from weather response)
+      if (weather.timezone) this._localTimezone = weather.timezone;
+
+      // Tell scene the geographic location so SPA solar algorithm is accurate
+      this.scene.setLocation(this.lat, this.lng);
+
       // Apply weather (cover + condition)
       this.scene.setWeather(weather.cloudCover, weather.weatherCode);
 
@@ -886,7 +952,13 @@ export class UIController {
       const result = await this.builder.build(ways, this.heightScale, this.lat, this.lng, this.radius);
       this.scene.setRenderMode(this.renderMode);
       this.scene.flyTo(0, 0, this.radius);
-      this._applyTimeOfDay(this.timeOfDay);
+
+      // If local-time mode is active, re-sync to area time now that timezone is known
+      if (this._deviceTimeMode) {
+        this._syncDeviceTime();
+      } else {
+        this._applyTimeOfDay(this.timeOfDay);
+      }
 
       this.$statBuildings.textContent = `${result.buildings} buildings`;
       this.$statRoads.textContent     = `${result.roads} road segments`;

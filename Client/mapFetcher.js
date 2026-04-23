@@ -288,6 +288,7 @@ out skel qt;
         `?latitude=${lat.toFixed(4)}&longitude=${lng.toFixed(4)}` +
         `&current=cloud_cover,weather_code,wind_speed_10m,wind_direction_10m` +
         `&wind_speed_unit=ms` +
+        `&timezone=auto` +
         `&forecast_days=1`;
       const res  = await fetch(url);
       if (!res.ok) throw new Error('weather fetch failed');
@@ -295,13 +296,18 @@ out skel qt;
       const cur  = json.current || {};
       const windSpeed = Math.min(80, Math.round((cur.wind_speed_10m ?? 5) * 2));
       return {
-        cloudCover:    cur.cloud_cover        ?? 40,
-        weatherCode:   cur.weather_code       ?? 1,
+        cloudCover:       cur.cloud_cover        ?? 40,
+        weatherCode:      cur.weather_code       ?? 1,
         windSpeed,
-        windDirection: Math.round(cur.wind_direction_10m ?? 13),
+        windDirection:    Math.round(cur.wind_direction_10m ?? 13),
+        // IANA timezone string (e.g. "Asia/Tokyo") — used by ui.js Local Time mode
+        timezone:         json.timezone          ?? null,
+        // UTC offset in seconds at current moment (accounts for DST)
+        utcOffsetSeconds: json.utc_offset_seconds ?? null,
       };
     } catch (_) {
-      return { cloudCover: 40, weatherCode: 1, windSpeed: 18, windDirection: 13 };
+      return { cloudCover: 40, weatherCode: 1, windSpeed: 18, windDirection: 13,
+               timezone: null, utcOffsetSeconds: null };
     }
   }
 
