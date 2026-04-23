@@ -167,7 +167,11 @@ export class MapFetcher {
   async fetchArea(lat, lng, radiusMeters = 500) {
     const key    = this._getGridKey(lat, lng);
     const cached = await this._getChunk(key);
-
+  
+    if (this._isFresh(cached)) {
+      return { ways: cached.data, source: 'cache' };
+    }
+  
     try {
       const data = await this._retry(() =>
         this._fetchFromProxy(lat, lng, radiusMeters)
@@ -177,7 +181,7 @@ export class MapFetcher {
     } catch (err) {
       console.warn('[mapFetcher] proxy request failed:', err.message);
       if (cached?.data) {
-        console.warn('[mapFetcher] falling back to cached data');
+        console.warn('[mapFetcher] falling back to stale cached data');
         return { ways: cached.data, source: 'cache' };
       }
       throw err;
