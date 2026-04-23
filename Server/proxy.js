@@ -36,8 +36,11 @@ const PORT = parseInt(process.env.PORT ?? '3001', 10);
 // client-side behaviour that existed before.
 const OVERPASS_MIRRORS = [
   'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
   'https://lz4.overpass-api.de/api/interpreter',
+  'https://z.overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter', // replaces kumi
+  'https://overpass.openstreetmap.ru/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
 
 const PHOTON_BASE = 'https://photon.komoot.io/api/';

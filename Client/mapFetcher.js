@@ -96,15 +96,21 @@ export class MapFetcher {
     });
   }
 
-  async _setChunk(key, data) {
+  async _setChunk(key, data, radius) {
     const db = await this._initDB();
     await new Promise((resolve, reject) => {
       const tx    = db.transaction('chunks', 'readwrite');
       const store = tx.objectStore('chunks');
-      store.put({ key, data, timestamp: Date.now() });
+      store.put({
+        key,
+        data,
+        radius,              // ✅ store coverage radius
+        timestamp: Date.now()
+      });
       tx.oncomplete = () => resolve();
       tx.onerror    = () => reject(tx.error);
     });
+  
     const count = await this._countChunks();
     if (count > this.MAX_CHUNKS) {
       await this._evictOldestChunks(count - this.MAX_CHUNKS);
@@ -159,7 +165,14 @@ export class MapFetcher {
   // ═══════════════════════════════════════════════════════════════
   // Overpass fetch — routes through proxy
   // ═══════════════════════════════════════════════════════════════
-
+  _filterByRadius(ways, radiusMeters) {
+    const r2 = radiusMeters * radiusMeters;
+  
+    return ways.filter(way => {
+      // keep way if ANY point is inside radius
+      return way.coords.some(p => (p.x * p.x + p.z * p.z) <= r2);
+    });
+  }
   /**
    * Fetch buildings, roads, water, parks within `radiusMeters` of (lat, lng).
    * Hits the local proxy instead of Overpass directly.
@@ -168,22 +181,40 @@ export class MapFetcher {
     const key    = this._getGridKey(lat, lng);
     const cached = await this._getChunk(key);
   
-    if (this._isFresh(cached)) {
-      return { ways: cached.data, source: 'cache' };
+    // ✅ Use cache if it's fresh AND large enough
+    if (this._isFresh(cached) && cached.radius >= radiusMeters) {
+      return {
+        ways: this._filterByRadius(cached.data, radiusMeters),
+        source: 'cache'
+      };
     }
   
     try {
+      // 🔄 Fetch ONLY what you need (not always max)
+      const fetchRadius = Math.max(radiusMeters, cached?.radius || 0);
+  
       const data = await this._retry(() =>
-        this._fetchFromProxy(lat, lng, radiusMeters)
+        this._fetchFromProxy(lat, lng, fetchRadius)
       );
-      await this._setChunk(key, data);
-      return { ways: data, source: 'network' };
+  
+      // ✅ Upgrade cache to larger radius
+      await this._setChunk(key, data, fetchRadius);
+  
+      return {
+        ways: this._filterByRadius(data, radiusMeters),
+        source: 'network'
+      };
+  
     } catch (err) {
       console.warn('[mapFetcher] proxy request failed:', err.message);
+  
       if (cached?.data) {
-        console.warn('[mapFetcher] falling back to stale cached data');
-        return { ways: cached.data, source: 'cache' };
+        return {
+          ways: this._filterByRadius(cached.data, radiusMeters),
+          source: 'cache'
+        };
       }
+  
       throw err;
     }
   }
