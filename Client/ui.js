@@ -29,6 +29,26 @@ export class UIController {
     this._appMode = 'map-creation';
     if (this._overlay) this._overlay.setAppMode('map-creation');
     if (this._leftPanel) this._leftPanel.setAppMode('map-creation');
+
+    // ── Game mode state machine ───────────────────────────────
+    // Game modes are active only while _appMode === 'roaming'.
+    // 'explore' — freeform exploration; no win/lose conditions, no timer.
+    //             Jukebox switches to the 'day'/'night' category automatically.
+    // 'race'    — timed challenge; a route with checkpoints is generated at
+    //             world-build time. Reaching all checkpoints before the timer
+    //             expires triggers a win, running out triggers a loss.
+    //             Jukebox switches to 'day'/'night' on start and 'win'/'lose'
+    //             on completion. (Route/checkpoint generation is a future step;
+    //             the state machine and public API are wired up here.)
+    this._gameMode       = 'explore'; // 'explore' | 'race'
+    this._exploreJukeboxCat = null;  // tracks last jukebox category pushed in explore mode
+    this._raceState      = 'idle'; 
+    this._raceDuration   = 120;       // seconds — configurable later via UI
+    this._raceTimeLeft   = 0;
+    this._raceCheckpoints    = [];    // [{x,y,z, radius}] — filled by _setupRace()
+    this._raceNextCheckpoint = 0;
+    this._raceRAFId      = null;
+    this._racePrevMs     = null;
     // Beacon / spawn state
     this._beaconX = null;
     this._beaconY = null;
@@ -756,10 +776,174 @@ export class UIController {
         // Called when player presses Escape inside roaming mode
         this._exitRoamingMode();
       });
+      // Start game-mode session (explore or race) after camera is live
+      this._startGameModeSession(spawnVec);
     });
   }
 
+  // ── Game Mode Public API ──────────────────────────────────────
+
+  /**
+   * Set the active game mode. Only takes effect at the start of the next
+   * roaming session; calling mid-session is a no-op to avoid state corruption.
+   * @param {'explore'|'race'} mode
+   */
+  setGameMode(mode) {
+    if (mode !== 'explore' && mode !== 'race') return;
+    //if (this._appMode === 'roaming') return; // cannot change while in world
+    this._gameMode = mode;
+  }
+
+  /** Returns the current game mode string. */
+  getGameMode() { return this._gameMode; }
+
+  // ── Game Mode Internals ───────────────────────────────────────
+
+  /**
+   * Called when roaming begins.  Starts the appropriate game-mode session.
+   * @param {THREE.Vector3} spawnPos
+   */
+  _startGameModeSession(spawnPos) {
+    if (this._gameMode === 'race') {
+      this._exploreJukeboxCat = null;
+      this._setupRace(spawnPos);
+      this._startRaceTimer();
+      this._switchJukeboxCategory('day');
+    } else {
+      // explore — sync jukebox to time of day and begin tracking transitions
+      this._exploreJukeboxCat = null;
+      this._syncJukeboxToTimeOfDay();
+    }
+  }
+
+  /** Called when roaming ends (player exits or race concludes). */
+  _endGameModeSession() {
+    this._stopRaceTimer();
+    this._raceState = 'idle';
+    this._exploreJukeboxCat = null;
+  }
+
+  // ── Explore mode helpers ──────────────────────────────────────
+
+  /**
+   * Switch the jukebox to a category appropriate for the current time of day.
+   * Explore mode: day (06:00–20:00) → 'day' category, otherwise 'night'.
+   */
+  _syncJukeboxToTimeOfDay() {
+    const hour = this.timeOfDay;
+    const cat  = (hour >= 6 && hour < 20) ? 'day' : 'night';
+    this._switchJukeboxCategory(cat);
+  }
+
+  // ── Race mode helpers ─────────────────────────────────────────
+
+  /**
+   * Build a simple checkpoint route around the spawn point.
+   * Checkpoints are placed at cardinal offsets scaled to the world radius.
+   * This is intentionally minimal — richer procedural generation can be
+   * added later without changing the state-machine contract.
+   * @param {THREE.Vector3} spawnPos
+   */
+  _setupRace(spawnPos) {
+    const r = this.radius * 0.5; // half world radius keeps checkpoints reachable
+    const offsets = [
+      { x:  r,  z:  0 },
+      { x:  0,  z: -r },
+      { x: -r,  z:  0 },
+      { x:  0,  z:  r },
+    ];
+    this._raceCheckpoints = offsets.map(o => ({
+      x:      spawnPos.x + o.x,
+      y:      spawnPos.y,
+      z:      spawnPos.z + o.z,
+      radius: 12,           // capture radius in metres
+    }));
+    this._raceNextCheckpoint = 0;
+    this._raceTimeLeft       = this._raceDuration;
+    this._raceState          = 'running';
+  }
+
+  _startRaceTimer() {
+    this._stopRaceTimer();
+    this._racePrevMs = performance.now();
+    const tick = (nowMs) => {
+      if (this._raceState !== 'running') return;
+      this._raceRAFId = requestAnimationFrame(tick);
+      const dtSec = (nowMs - (this._racePrevMs ?? nowMs)) / 1000;
+      this._racePrevMs = nowMs;
+
+      this._raceTimeLeft = Math.max(0, this._raceTimeLeft - dtSec);
+      this._tickRaceCheckpoints();
+
+      if (this._raceTimeLeft <= 0 && this._raceState === 'running') {
+        this._onRaceLose();
+      }
+    };
+    this._raceRAFId = requestAnimationFrame(tick);
+  }
+
+  _stopRaceTimer() {
+    if (this._raceRAFId !== null) {
+      cancelAnimationFrame(this._raceRAFId);
+      this._raceRAFId = null;
+    }
+    this._racePrevMs = null;
+  }
+
+  /**
+   * Check whether the player has reached the next checkpoint.
+   * Player position is read from the scene's roaming camera character position.
+   */
+  _tickRaceCheckpoints() {
+    if (this._raceNextCheckpoint >= this._raceCheckpoints.length) return;
+
+    const charPos = this.scene.getCharacterPosition();
+    if (!charPos) return;
+
+    const cp = this._raceCheckpoints[this._raceNextCheckpoint];
+    const dx = charPos.x - cp.x;
+    const dz = charPos.z - cp.z;
+    const dist2 = dx * dx + dz * dz;
+
+    if (dist2 <= cp.radius * cp.radius) {
+      this._raceNextCheckpoint++;
+      if (this._raceNextCheckpoint >= this._raceCheckpoints.length) {
+        this._onRaceWin();
+      }
+    }
+  }
+
+  _onRaceWin() {
+    this._raceState = 'win';
+    this._stopRaceTimer();
+    this._switchJukeboxCategory('win');
+  }
+
+  _onRaceLose() {
+    this._raceState = 'lose';
+    this._stopRaceTimer();
+    this._switchJukeboxCategory('lose');
+  }
+
+  // ── Jukebox category helper ───────────────────────────────────
+
+  /**
+   * Ask the overlay's Jukebox instance to switch to a given category.
+   * Silently does nothing if the jukebox hasn't been initialised yet.
+   * @param {'day'|'night'|'win'|'lose'} cat
+   */
+  _switchJukeboxCategory(cat) {
+    const jb = this._overlay?._jukebox;
+    if (!jb) return;
+    // Activate the matching tab button inside the jukebox root
+    const btn = jb._root?.querySelector(`.jk-cat[data-cat="${cat}"]`);
+    if (btn) btn.click(); // triggers jukebox's own category-switch handler
+  }
+
   _exitRoamingMode() {
+    // Clean up game-mode session before dismantling the roaming state
+    this._endGameModeSession();
+
     this._appMode = 'location-selection';
     if (this._overlay) this._overlay.setAppMode(this._appMode);
     if (this._leftPanel) this._leftPanel.setAppMode(this._appMode);
@@ -833,7 +1017,21 @@ export class UIController {
     }
     this._timePrevMs = null;
   }
-
+  /**
+     * Called each frame while in explore mode.
+     * Detects day↔night transitions in the advancing time-of-day and
+     * switches the jukebox category accordingly.
+     * Day:   solar elevation > 0  (sun above horizon)
+     * Night: solar elevation ≤ 0  (sun at or below horizon)
+     */
+  _tickExploreDayNight() {
+    const elevDeg = this._solarElevDeg(this.timeOfDay);
+    const cat = elevDeg > 0 ? 'day' : 'night';
+    if (cat !== this._exploreJukeboxCat) {
+      this._exploreJukeboxCat = cat;
+      this._switchJukeboxCategory(cat);
+    }
+  }
   _tickTimeLoop(nowMs) {
     if (this._timePrevMs === null) { this._timePrevMs = nowMs; return; }
     const dtSec = (nowMs - this._timePrevMs) / 1000;
@@ -854,6 +1052,12 @@ export class UIController {
       this.timeOfDay = (this.timeOfDay + this._TIME_RATE_MANUAL * dtSec) % 24;
       if (this.$todSlider) this.$todSlider.value = this.timeOfDay;
       this._applyTimeOfDay(this.timeOfDay);
+    }
+
+    // ── Explore mode: detect day/night transitions and update jukebox ──
+    //if (this._appMode === 'roaming' && this._gameMode === 'explore') {
+    if (this._gameMode === 'explore') {
+      this._tickExploreDayNight();
     }
   }
 

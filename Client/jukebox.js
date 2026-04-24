@@ -77,6 +77,11 @@ export class Jukebox {
         this._$catBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         this._setCategory(btn.dataset.cat);
+        // If the newly selected category is empty or volume is zero, stop playback
+        if (this._isBlocked() && this._isPlaying) {
+          this._pause();
+          this._setPlaying(false, '');
+        }
       });
     });
 
@@ -88,6 +93,7 @@ export class Jukebox {
 
     // Playback
     this._$playBtn.addEventListener('click',  () => {
+      if (this._isBlocked()) return;
       this._play();
       this._setPlaying(true, this._currentUrl());
     });
@@ -96,13 +102,18 @@ export class Jukebox {
       this._setPlaying(false, '');
     });
     this._$nextBtn.addEventListener('click',  () => {
+      if (this._isBlocked()) return;
       this._next();
       setTimeout(() => this._setPlaying(true, this._currentUrl()), 80);
     });
 
-    // Volume
+    // Volume — pause immediately when slider reaches zero
     this._$volSlider.addEventListener('change', () => {
       this._setVolume(this._$volSlider.value);
+      if (this._isMuted() && this._isPlaying) {
+        this._pause();
+        this._setPlaying(false, '');
+      }
     });
 
     // Track list mutations — re-upgrade new <li>s
@@ -299,7 +310,7 @@ export class Jukebox {
   // ── Playback ─────────────────────────────────────────────────
 
   async _loadTrack(track) {
-    if (this._isTransitioning) return;
+    if (this._isTransitioning || this._isMuted()) return;
     this._isTransitioning = true;
 
     // Ensure SC API is available before trying to create a SC player
@@ -338,7 +349,7 @@ export class Jukebox {
   _next() {
     this._isTransitioning = false;
     const list = this._categories[this._currentCategory];
-    if (!list.length) return;
+    if (!list.length || this._isMuted()) return;
     this._currentIndex = (this._currentIndex + 1) % list.length;
     this._loadTrack(list[this._currentIndex]);
   }
@@ -406,6 +417,23 @@ export class Jukebox {
     if (url.includes('audius.co'))      return ['audius',     'AU'];
     if (/\.(mp3|wav|ogg)/i.test(url))  return ['audio',      'MP3'];
     return ['unknown', '?'];
+  }
+
+  // ── Interaction guards ────────────────────────────────────────
+
+  /** True when BGM volume is set to zero (slider at 0). */
+  _isMuted() {
+    return this._currentVolume <= 0;
+  }
+
+  /** True when the active category's playlist is empty. */
+  _isListEmpty() {
+    return this._categories[this._currentCategory].length === 0;
+  }
+
+  /** Returns true if any user-initiated playback action should be blocked. */
+  _isBlocked() {
+    return this._isMuted() || this._isListEmpty();
   }
 
   // ── Utils ────────────────────────────────────────────────────

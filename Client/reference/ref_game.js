@@ -30,6 +30,19 @@ let useplayer;
 const tempUp = new THREE.Vector3();
 const prevpos = new THREE.Vector3();
 
+function ChangePlayer(actor){
+    if(useplayer) {
+        useplayer.inputDir.set(0,0,0);
+    }
+    useplayer = actor;
+    charraycaster.far = actor.groundColliderData.radius + 0.3;
+    SetupCamera(actor);
+}
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
 function updateCamera(actor, deltaTime){
     camboom.position.copy(actor.groundColliderMesh.position);
     camboom.up.lerp(actor.targetup, deltaTime * 2);
@@ -60,6 +73,17 @@ renderer.setPixelRatio(window.devicePixelRatio);
 space3d.appendChild(renderer.domElement);
 let outlineEffect = new OutlineEffect(renderer);
 
+let currentscene = PreloadScene(renderer, level);
+const csm = new CSM({
+    fade:true,
+    //far: camera.far,
+    cascades: 4,
+    shadowMapSize: 1024,
+    lightDirection: new THREE.Vector3(-2,-1,-1),
+    camera: camera,
+    parent: currentscene,
+    lightIntensity: 2
+});
 function GroundMovement(actor, deltaTime, reverseDamping){
     let speedDelta = deltaTime * actor.maxSpeed;
     if(actor.moving){
@@ -100,6 +124,12 @@ function AirMovement(actor, deltaTime, reverseDamping){
     if(actor.jump){
         //mid air jump
         actor.targetup.copy(upVector);
+    }
+}
+function ArrowHelper(actor, dir){
+    if(null != arrowHelper){
+        arrowHelper.position.copy(actor.groundColliderMesh.position);
+        arrowHelper.setDirection(dir);
     }
 }
 function ApplyControls(actor, deltaTime){
@@ -259,3 +289,4 @@ function DoAnimate(){
 function animate(){
     renderer.setAnimationLoop(DoAnimate) ;
 }
+export { animate, camera, ChangePlayer, csm };
