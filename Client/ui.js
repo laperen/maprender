@@ -37,6 +37,13 @@ export class UIController {
 
     this._lastMapKey = null;
     this._lastWays = null;
+
+    // ── Time progression loop ─────────────────────────────────
+    // Manual mode: 1 full in-game day = 2 real hours (24h / 7200s)
+    this._TIME_RATE_MANUAL = 24 / 7200; // game-hours per real-second
+    this._timePrevMs    = null;   // previous rAF timestamp
+    this._timeRAFId     = null;   // requestAnimationFrame id
+    this._sliderDragging = false; // true while user drags the slider
   }
 
   init() {
@@ -577,6 +584,10 @@ export class UIController {
         this.timeOfDay = parseFloat(this.$todSlider.value);
         this._applyTimeOfDay(this.timeOfDay);
       });
+      this.$todSlider.addEventListener('mousedown', () => { this._sliderDragging = true; });
+      this.$todSlider.addEventListener('touchstart', () => { this._sliderDragging = true; }, { passive: true });
+      this.$todSlider.addEventListener('mouseup',   () => { this._sliderDragging = false; });
+      this.$todSlider.addEventListener('touchend',  () => { this._sliderDragging = false; });
     }
 
     // Time mode buttons
@@ -791,11 +802,58 @@ export class UIController {
       this.$todSliderWrap.style.pointerEvents = on ? 'none' : '';
     }
 
+    // Clear legacy interval if any
+    if (this._deviceTimerID) { clearInterval(this._deviceTimerID); this._deviceTimerID = null; }
+
     if (on) {
       this._syncDeviceTime();
-      this._deviceTimerID = setInterval(() => this._syncDeviceTime(), 30000);
+    }
+    // rAF loop handles both modes — restart it so it picks up the mode change
+    if (this._worldGenerated) {
+      this._stopTimeLoop();
+      this._startTimeLoop();
+    }
+  }
+
+  // ── Time progression rAF loop ─────────────────────────────────
+  _startTimeLoop() {
+    this._stopTimeLoop();
+    this._timePrevMs = performance.now();
+    const tick = (nowMs) => {
+      this._timeRAFId = requestAnimationFrame(tick);
+      this._tickTimeLoop(nowMs);
+    };
+    this._timeRAFId = requestAnimationFrame(tick);
+  }
+
+  _stopTimeLoop() {
+    if (this._timeRAFId !== null) {
+      cancelAnimationFrame(this._timeRAFId);
+      this._timeRAFId = null;
+    }
+    this._timePrevMs = null;
+  }
+
+  _tickTimeLoop(nowMs) {
+    if (this._timePrevMs === null) { this._timePrevMs = nowMs; return; }
+    const dtSec = (nowMs - this._timePrevMs) / 1000;
+    this._timePrevMs = nowMs;
+
+    if (this._deviceTimeMode) {
+      // ── Local time: read real area clock every frame ────────
+      const areaHour = this._getAreaHour();
+      // Only update if visibly different (avoid thrashing every frame)
+      if (Math.abs(areaHour - this.timeOfDay) > 0.0005) {
+        this.timeOfDay = areaHour;
+        if (this.$todSlider) this.$todSlider.value = areaHour;
+        this._applyTimeOfDay(areaHour);
+      }
     } else {
-      if (this._deviceTimerID) { clearInterval(this._deviceTimerID); this._deviceTimerID = null; }
+      // ── Manual mode: advance at TIME_RATE_MANUAL ─────────
+      if (this._sliderDragging) return; // pause while user drags
+      this.timeOfDay = (this.timeOfDay + this._TIME_RATE_MANUAL * dtSec) % 24;
+      if (this.$todSlider) this.$todSlider.value = this.timeOfDay;
+      this._applyTimeOfDay(this.timeOfDay);
     }
   }
 
@@ -833,8 +891,15 @@ export class UIController {
   // ── Apply time: drives scene + updates UI ─────────────────────
   _applyTimeOfDay(hour) {
     this.scene.setTimeOfDay(hour);
-    this._drawArc(hour);
-    this._updateIndicators(hour);
+
+    // Throttle expensive canvas redraws to ~10fps — the 3D scene updates every frame
+    // but the arc preview and indicator pills don't need sub-frame precision.
+    const nowMs = performance.now();
+    if (!this._lastArcDrawMs || nowMs - this._lastArcDrawMs >= 100) {
+      this._lastArcDrawMs = nowMs;
+      this._drawArc(hour);
+      this._updateIndicators(hour);
+    }
 
     const h  = Math.floor(hour) % 24;
     const m  = Math.round((hour % 1) * 60);
@@ -898,6 +963,8 @@ export class UIController {
     }
     this.$stats.classList.add('hidden');
     this.scene.clearWorld();
+    this._stopTimeLoop();
+    this._worldGenerated = false;
     this._setStatus('Fetching map data…', 'active loading');
 
     try {
@@ -967,6 +1034,7 @@ export class UIController {
 
       // Mark world as generated — enables the Explore button
       this._worldGenerated = true;
+      this._startTimeLoop(); // begin real-time time progression
       if (this.$enterSelBtn) {
         this.$enterSelBtn.disabled = false;
         this.$enterSelBtn.classList.add('world-ready');
