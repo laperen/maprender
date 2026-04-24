@@ -11,7 +11,7 @@
 //   • Boom-arm (yaw + pitch) with smooth lerp and geometry push-back.
 
 import * as THREE from 'three';
-import {StartCloneUse,CloneVector3} from './mrUtils.js';
+import {StartCloneUse,GetMiscVect,CloneVector3} from './mrUtils.js';
 
 // ── Tunables — camera ─────────────────────────────────────────
 const BOOM_LENGTH     = 10;
@@ -170,6 +170,11 @@ export class RoamingControls {
     this._inertiaCurr   = 0;
     this._prevJump      = false;
 
+    this.tempBox = new THREE.Box3();
+    this.tempMat = new THREE.Matrix4();
+    this.tempSegment = new THREE.Line3();
+    this.triclone = new THREE.Triangle();
+
     this._bindEvents();
     this._requestPointerLock();
   }
@@ -234,6 +239,94 @@ export class RoamingControls {
     this._gravityAccum = 0;
     this._targetUp.set(0, 1, 0);
   }
+
+  // ═══════════════════════════════════════════════════════════
+  // Collision
+  // ═══════════════════════════════════════════════════════════
+  
+  _worldCollision(deltaPosition){
+    // adjust player position based on collisions
+    this._colliderMesh.updateMatrixWorld();
+    this.tempBox.makeEmpty();
+
+    let gtp = [];
+    let tp = [];
+    let ngtp = [];
+    let intersects = [];
+    StartCloneUse();
+    const deltaVector = GetMiscVect();
+    let miscvect = GetMiscVect();
+    let miscvect2 = GetMiscVect();
+    for(let i = 0, max = this._scene.collidables.length; i < max; i++){
+      let col = this._scene.collidables[i];
+      this.tempMat.copy(col.matrixWorld).invert();
+      this.tempSegment.copy(this._colliderMesh.matrixWorld).applyMatrix4(this.tempMat);
+      // get the position of the capsule in the local space of the collider
+      this.tempSegment.start.applyMatrix4(this._colliderMesh.matrixWorld).applyMatrix4(this.tempMat);
+      this.tempSegment.end.applyMatrix4(this._colliderMesh.matrixWorld).applyMatrix4(this.tempMat);
+      // get the axis aligned bounding box of the capsule
+      this.tempBox.expandByPoint(this.tempSegment.start);
+      this.tempBox.expandByPoint(this.tempSegment.end);
+      this.tempBox.min.addScalar(-this._colliderMesh.radius);
+      this.tempBox.max.addScalar(this._colliderMesh.radius);
+      col.geometry.boundsTree.shapecast({
+        intersectsBounds: box => box.intersectsBox( this.tempBox ),
+        intersectsTriangle: tri => {
+          // check if the triangle is intersecting the capsule and adjust the
+          // capsule position if it is.
+          const triPoint = deltaPosition;
+          const capsulePoint = miscvect2;
+          const distance = tri.closestPointToSegment(this.tempSegment, triPoint, capsulePoint);
+          if(distance < this._colliderMesh.radius){
+            const depth = this._colliderMesh.radius - distance;
+            const direction = capsulePoint.sub(triPoint).normalize();
+            this.tempSegment.start.addScaledVector(direction, depth);
+            this.tempSegment.end.addScaledVector(direction, depth);
+            tri.getNormal(miscvect);
+            this.triclone.copy(tri);
+            let mini = {
+              x: miscvect.x,
+              y: miscvect.y,
+              z: miscvect.z
+            };
+            tp.push(mini);
+            if(_up.angleTo(miscvect) < SLOPE_LIMIT){
+              if(mini.y < 0){
+                ngtp.push(mini);
+              }else{
+                gtp.push(mini);
+              }
+            }else{
+              if(mini.y >= 0){
+                ngtp.push(mini);
+              }
+            }
+          }
+        }
+      });
+
+      // get the adjusted position of the capsule collider in world space after checking
+      // triangle collisions and moving it. capsuleInfo.segment.start is assumed to be
+      // the origin of the player model.
+      const newPosition = deltaPosition;
+      newPosition,copy(this.tempSegment.start).applyMatrix4(col.matrixWorld);
+      // check how much the collider was moved
+      deltaVector.subVectors(newPosition, this._colliderMesh.position);
+      const offset = Math.max(0,0,deltaVector.length() - 1e-5);
+      deltaVector.normalize().multiplyScalar(offset);
+      intersects.push(CloneVector3(deltaVector));
+
+    }
+    return {
+      intersects: intersects,
+      delta: deltaVector,
+      tripoints: tp,
+      groundtripoints: gtg,
+      notgroundpoints: ngtp
+    }
+  }
+  //playercontrols?
+
 
   // ═══════════════════════════════════════════════════════════
   // CAMERA  (retained from original roamingControls.js)

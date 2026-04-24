@@ -5,13 +5,17 @@ let usedMiscs = 0;
 function StartCloneUse(){
   usedMiscs = 0;
 }
-function CloneVector3(vect3){
+function GetMiscVect(){
   if(usedMiscs >= miscs.length){
     miscs.push(new THREE.Vector3());
   }
-  miscs[usedMiscs].copy(vect3);
   usedMiscs++;
   return miscs[usedMiscs-1];
 }
+function CloneVector3(vect3){
+  let misc = GetMiscVect();
+  misc.copy(vect3);
+  return miscs;
+}
 
-export {StartCloneUse,CloneVector3};
+export {StartCloneUse,GetMiscVect,CloneVector3};
