@@ -15,7 +15,7 @@ function GetMiscVect(){
 function CloneVector3(vect3){
   let misc = GetMiscVect();
   misc.copy(vect3);
-  return miscs;
+  return misc;
 }
 
 export {StartCloneUse,GetMiscVect,CloneVector3};

@@ -170,10 +170,26 @@ export class RoamingControls {
     this._inertiaCurr   = 0;
     this._prevJump      = false;
 
+    //collision properties
     this.tempBox = new THREE.Box3();
     this.tempMat = new THREE.Matrix4();
     this.tempSegment = new THREE.Line3();
     this.triclone = new THREE.Triangle();
+
+    //input properties
+    this.inputDir = new THREE.Vector3();
+    this.forwardDir = new THREE.Vector3();
+    this.moving = false;
+    this.targetUp = new THREE.Vector3(0,1,0);
+    this.mousex = 0;
+    this.mousey = 0;
+    this.camX = 0;
+    this.camYDelta = 0;
+    this.camXDelta = 0;
+    this.mcount = false;
+    this.prevmcount = false;
+    this.jump = false;
+    this.surfaceHit = null;
 
     this._bindEvents();
     this._requestPointerLock();
@@ -325,7 +341,36 @@ export class RoamingControls {
       notgroundpoints: ngtp
     }
   }
-  //playercontrols?
+  _playerControls(deltaTime){
+    if(this.mcount != this.prevmcount){//detects if mouse has truly been moved
+        this.camYDelta = this.mousex * deltaTime * this._mouseSensY;
+        this.camXDelta = this.mousey * deltaTime * this._mouseSensX;
+    }else{
+        this.camYDelta = 0;
+        this.camXDelta = 0;
+    }
+    this.prevmcount = this.mcount;
+    this.camX = THREE.MathUtils.clamp(this.camX + this.camXDelta, -rad90, rad90);
+
+    let forward = this._keys[ 'KeyW' ];
+    let backward = this._keys[ 'KeyS' ];
+    let left = this._keys[ 'KeyA' ];
+    let right = this._keys[ 'KeyD' ];
+    this.moving = (forward || backward || right || left);
+    this.inputDir.set( left?-1:right?1:0, 0, forward?-1:backward?1:0 ).transformDirection(this._colliderMesh.matrixWorld);
+    this.forwardDir.set(1,0,0).transformDirection(this._colliderMesh.matrixWorld).applyAxisAngle(this.targetUp, camYDelta);
+  }
+  _applyControls(deltaTime){
+    let jumpInput = _keys['Space'];
+    if(jumpInput){
+      this.jump = jumpInput && jumpInput != this._prevJump;
+    }
+    this._prevJump = jumpInput;
+    if(this.surfaceHit){
+
+    }
+  }
+  
 
 
   // ═══════════════════════════════════════════════════════════

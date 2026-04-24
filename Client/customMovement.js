@@ -117,21 +117,6 @@ function ApplyControls(actor, deltaTime){
         AirMovement(actor, deltaTime, reverseDamping);
     }
 }
-function ApplyControls(actor, deltaTime){
-    let jumpinput = keyStates[ 'Space' ];
-    if(jumpinput){
-        actor.jump = jumpinput && jumpinput != actor.prevJump;
-    }
-    actor.prevJump = jumpinput;
-    let reverseDamping = Math.exp( - 4 * deltaTime );
-    if(surfacehit){
-		reportystate.innerText = "on Surface";
-        GroundMovement(actor, deltaTime, reverseDamping);
-    }else{
-		reportystate.innerText = "Air";
-        AirMovement(actor, deltaTime, reverseDamping);
-    }
-}
 const closeToZero = 0.001 * 0.001;
 const zerovect = new THREE.Vector3(0,0,0);
 function GetCloseToZero(vect){
