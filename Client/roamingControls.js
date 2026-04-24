@@ -11,6 +11,7 @@
 //   • Boom-arm (yaw + pitch) with smooth lerp and geometry push-back.
 
 import * as THREE from 'three';
+import {StartCloneUse,CloneVector3} from './mrUtils.js';
 
 // ── Tunables — camera ─────────────────────────────────────────
 const BOOM_LENGTH     = 10;
@@ -29,22 +30,13 @@ const CAM_COLLISION_R =  0.6;
 const CAPSULE_RADIUS  =  0.5;   // metres — half-width of collision capsule
 const CAPSULE_HEIGHT  =  0.7;   // inner segment length (total = height + 2*radius)
 
-const MAX_SPEED       = 20;     // world-units/sec top speed
-const MAX_TOTAL_SPEED = 50;     // absolute max speed
-const AIR_NUDGE       = 10;     // lateral speed while airborne
-const JUMP_FORCE      =  7;     // upward impulse on jump
-const GRAVITY_ACC     = -9.81;    // world-units/sec²
-const MAX_JUMP_COUNT  =  2;     // allow double-jump
-const WALL_RIDE_THRESH =  2;    // min speed² to initiate wall-ride
-const INERTIA_REFRESH  =  0.5;  // seconds between wall-ride inertia top-ups
-const SPRINT_MULT     =  2.0;
-
 const FRICTION = 1.5;
 // for collision, Tune this value (smaller = more accurate, more expensive)
 const MAX_STEP = 0.5;
 
 // Slope angle (radians) beyond which a surface is a wall, not ground
 const SLOPE_LIMIT     = Math.PI / 4;  // 45°
+const rad90 = Math.PI/2;// 90°
 
 // ── Key map ───────────────────────────────────────────────────
 const KEYS = {
@@ -58,14 +50,6 @@ const KEYS = {
 
 // ── Scratch objects (module-level — no allocation per frame) ──
 const _up        = new THREE.Vector3(0, 1, 0);
-const _misc      = new THREE.Vector3();
-const _tempBox   = new THREE.Box3();
-const _tempMat   = new THREE.Matrix4();
-const _tempSeg   = new THREE.Line3();
-const _triNormal = new THREE.Vector3();
-const _triPoint  = new THREE.Vector3();
-const _capPoint  = new THREE.Vector3();
-const _delta     = new THREE.Vector3();
 
 
 // ─────────────────────────────────────────────────────────────
@@ -286,6 +270,8 @@ export class RoamingControls {
   }
 
   _resolveCamera(pivot, idealPos) {
+    StartCloneUse();
+    
     this._camDir.subVectors(idealPos, pivot).normalize();
     const dist = pivot.distanceTo(idealPos);
     this._camRay.set(pivot, this._camDir);
@@ -297,7 +283,7 @@ export class RoamingControls {
       const hits = this._camRay.intersectObject(mesh, false);
       if (hits.length && hits[0].distance < dist) {
         const safeDist = Math.max(1.5, hits[0].distance - CAM_COLLISION_R);
-        return pivot.clone().addScaledVector(this._camDir, safeDist);
+        return CloneVector3(pivot).addScaledVector(this._camDir, safeDist);
       }
     }
     return idealPos;

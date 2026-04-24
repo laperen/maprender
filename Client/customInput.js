@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { upVector, rad90 } from 'scripts/utilproperties.js';
 
+const rad90 = Math.PI/2;
 const keyStates = {};
 let mousex = 0;
 let mousey = 0;

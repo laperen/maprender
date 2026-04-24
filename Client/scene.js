@@ -4,6 +4,7 @@ import { Sky } from 'three/addons/objects/Sky.js';
 import { OrbitControlsImpl } from './orbitControls.js';
 import { CloudLayer }        from './clouds.js';
 import { RoamingControls }     from './roamingControls.js';
+import {StartCloneUse,CloneVector3} from './mrUtils.js';
 
 // ── Night-sky constants ───────────────────────────────────────
 const STAR_COUNT    = 3000;
@@ -284,6 +285,7 @@ export class SceneManager {
   // ── Compute sun world-space direction and push to sky shader ──
   // Uses NOAA SPA when location is set; falls back to simple sine arc.
   _setSkyPosition(hour) {
+    StartCloneUse();
     const t = ((hour % 24) + 24) % 24;
 
     let elevDeg, azimuthDeg;
@@ -317,8 +319,8 @@ export class SceneManager {
     sunPos.normalize();
 
     this._skyUniforms['sunPosition'].value.copy(sunPos);
-    this._sunDirection  = sunPos.clone();
-    this._moonDirection = sunPos.clone().negate();
+    this._sunDirection  = CloneVector3(sunPos);
+    this._moonDirection = CloneVector3(sunPos).negate();
 
     // Store for setTimeOfDay to use (avoid recomputing)
     this._lastSolarElevDeg = elevDeg;
@@ -365,6 +367,7 @@ export class SceneManager {
   }
   // ── Day lights ────────────────────────────────────────────────
   _addLights() {
+    StartCloneUse();
     const dist = 1000;
     // Placeholder direction; _setSkyPosition updates it
     const dir  = new THREE.Vector3(0.5, 0.7, -0.3).normalize();
@@ -392,16 +395,17 @@ export class SceneManager {
 
   // ── Night layer ───────────────────────────────────────────────
   _initNightLayer() {
+    StartCloneUse();
     // Moon sits opposite the sun, 50° above horizon
     const moonPhi   = THREE.MathUtils.degToRad(90 - 50);
     const moonTheta = THREE.MathUtils.degToRad(135 + 180);
     const moonDir   = new THREE.Vector3();
     moonDir.setFromSphericalCoords(1, moonPhi, moonTheta);
-    this._moonDirection = moonDir.clone();
+    this._moonDirection = CloneVector3(moonDir);
 
     // Moon directional light — blue-white, starts at 0 intensity
     this._moonLight = new THREE.DirectionalLight(0xc8d8ff, 0);
-    this._moonLight.position.copy(moonDir.clone().multiplyScalar(1000));
+    this._moonLight.position.copy(CloneVector3(moonDir).multiplyScalar(1000));
     this._moonLight.castShadow = false; // soft moonlight, no hard shadows
     this.scene.add(this._moonLight);
 
@@ -758,6 +762,7 @@ export class SceneManager {
   }
 
   _tickNight(dt) {
+    StartCloneUse();
     if (this._starPoints) {
       this._starTime += dt;
       // uTwinkle advances slowly and wraps at 1.0 — the vertex shader uses fract()
@@ -770,7 +775,7 @@ export class SceneManager {
       this._starPoints.position.copy(this.camera.position);
     }
     if (this._moonMesh || this._moonHalo) {
-      const moonPos = this.camera.position.clone()
+      const moonPos = CloneVector3(this.camera.position)
         .addScaledVector(this._moonDirection, MOON_DIST);
     
       if (this._moonMesh) {
@@ -1075,6 +1080,7 @@ export class SceneManager {
 
   // ── Beacon ────────────────────────────────────────────────────
   placeBeacon(x, y, z) {
+    StartCloneUse();
     this.removeBeacon();
 
     this._beaconPos = new THREE.Vector3(x, y, z);
@@ -1233,12 +1239,13 @@ export class SceneManager {
   // ═══════════════════════════════════════════════════════════════
 
   transitionToRoaming(onComplete) {
+    StartCloneUse();
     if (!this._characterPos) { if (onComplete) onComplete(); return; }
 
     // Disable orbit controls during transition
     this.controls.enabled = false;
 
-    const charPos   = this._characterPos.clone();
+    const charPos   = CloneVector3(this._characterPos);
     const charH     = this._characterHeight || 2.0;
 
     // Target: behind character (positive Z = "south"), slightly elevated
@@ -1253,8 +1260,8 @@ export class SceneManager {
       charPos.z
     );
 
-    const startCamPos  = this.camera.position.clone();
-    const startLookAt  = this.controls.target.clone();
+    const startCamPos  = CloneVector3(this.camera.position);
+    const startLookAt  = CloneVector3(this.controls.target);
 
     const duration = 1.2; // seconds
     let   elapsed  = 0;
@@ -1273,23 +1280,24 @@ export class SceneManager {
       if (t >= 1) {
         this._transitionActive = false;
         this._transitionTick   = null;
-        this._roamingCamPos    = targetCamPos.clone();
-        this._roamingLookAt    = targetLookAt.clone();
+        this._roamingCamPos    = CloneVector3(targetCamPos);
+        this._roamingLookAt    = CloneVector3(targetLookAt);
         if (onComplete) onComplete();
       }
     };
   }
 
   transitionToOrbit(x, z, radius, onComplete) {
+    StartCloneUse();
     this.controls.enabled = false;
 
     const dist = radius * 2.5;
     const targetCamPos = new THREE.Vector3(x, dist * 0.8, z + dist);
     const targetLookAt = new THREE.Vector3(x, 0, z);
 
-    const startCamPos = this.camera.position.clone();
+    const startCamPos = CloneVector3(this.camera.position);
     const startLookAt = this._roamingLookAt
-      ? this._roamingLookAt.clone()
+      ? CloneVector3(this._roamingLookAt)
       : new THREE.Vector3(x, 0, z);
 
     const duration = 1.0;
@@ -1317,11 +1325,13 @@ export class SceneManager {
   }
 
   getBeaconPosition() {
-    return this._beaconPos ? this._beaconPos.clone() : null;
+    StartCloneUse();
+    return this._beaconPos ? CloneVector3(this._beaconPos) : null;
   }
 
   getCharacterPosition() {
-    return this._characterPos ? this._characterPos.clone() : null;
+    StartCloneUse();
+    return this._characterPos ? CloneVector3(this._characterPos) : null;
   }
 
   // NOTE: methods appended by roaming camera integration patch
