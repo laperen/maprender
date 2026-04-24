@@ -5,9 +5,9 @@ let usedMiscs = 0;
 function StartCloneUse(){
   usedMiscs = 0;
 }
-function GetMiscVect(){
+function GetMiscVect(x=0,y=0,z=0){
   if(usedMiscs >= miscs.length){
-    miscs.push(new THREE.Vector3());
+    miscs.push(new THREE.Vector3(x,y,z));
   }
   usedMiscs++;
   return miscs[usedMiscs-1];
