@@ -29,8 +29,40 @@ export class Jukebox {
 
     // ── DOM refs (set in init) ───────────────────────────────
     this._root = null;   // scoped root element
-  }
 
+    this._defaultCategories = {
+      day: [
+        { url: 'https://soundcloud.com/eduardo-mendez-860865819/strutters-cruise', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/eduardo-mendez-860865819/tricky-sister-girl', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/eduardo-mendez-860865819/blind-2-see', type: 'soundcloud' },
+      ],
+      night: [
+        { url: 'https://soundcloud.com/eduardo-mendez-860865819/overkooled', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/hideki-naganuma/hideki-naganuma-love-sensation', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/eduardo-mendez-860865819/uneasiness-of-funkness', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/andrew3480/air-gear-chain-underwater-mix', type: 'soundcloud' },
+      ],
+      win: [
+        { url: 'https://soundcloud.com/eduardo-mendez-860865819/skygrinder', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/eduardo-mendez-860865819/mad-babies', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/hideki-naganuma/hideki-naganuma-sky-2-high-1', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/jalenon-klasa/air-gear-ost-ii-01-rockin-8', type: 'soundcloud' },
+      ],
+      lose: [
+        { url: 'https://soundcloud.com/eduardo-mendez-860865819/snapped', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/eduardo-mendez-860865819/edgeways', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/eduardo-mendez-860865819/master-buster', type: 'soundcloud' },
+        { url: 'https://soundcloud.com/jalenon-klasa/air-gear-ost-ii-03-chain-tekno', type: 'soundcloud' },
+      ]
+    };
+  }
+  _applyDefaultsIfEmpty() {
+    for (const cat in this._categories) {
+      if (!this._categories[cat] || this._categories[cat].length === 0) {
+        this._categories[cat] = [...this._defaultCategories[cat]];
+      }
+    }
+  }
   // ── Public API ───────────────────────────────────────────────
 
   /**
@@ -45,6 +77,7 @@ export class Jukebox {
     this._cacheDOM();
     this._bindEvents();
     this._loadFromStorage();
+    this._applyDefaultsIfEmpty();
     this._updateAudioList();
     this._upgradeLis();
 
@@ -266,59 +299,62 @@ export class Jukebox {
       },
     };
   }
-  _createSoundCloudPlayer(url) {
-    // Remove old iframe if any
-    if (this._scIframe) {
-      this._scIframe.remove();
-      this._scIframe = null;
-      this._scWidget = null;
-    }
+  async _initSoundCloud() {
+    if (this._scWidget) return;
   
-    // Wrap in a Promise so _createPlayer can await the widget being ready.
-    // SC.Widget internally calls iframe.contentWindow.postMessage, which throws
-    // if called before the iframe document exists. We defer Widget construction
-    // until the iframe's load event fires, guaranteeing contentWindow is non-null.
-    return new Promise((resolve) => {
-      const iframe = document.createElement('iframe');
-      iframe.style.cssText = 'width:0;height:0;opacity:0;position:absolute;pointer-events:none;';
-      // auto_play=false so the widget doesn't fire before we're ready
-      iframe.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&auto_play=false&buying=false&sharing=false&show_artwork=false`;
-      this._scIframe = iframe;
-      document.body.appendChild(iframe);
+    await this._ensureSCApi();
   
-      iframe.addEventListener('load', () => {
-        const widget = window.SC.Widget(iframe);
-        this._scWidget = widget;
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText = 'width:0;height:0;opacity:0;position:absolute;';
+    iframe.src = 'https://w.soundcloud.com/player/?url=&auto_play=false';
   
-        let _pendingPlay   = false;
-        let _pendingVolume = this._currentVolume;
-        let _ready         = false;
+    document.body.appendChild(iframe);
+    this._scIframe = iframe;
   
-        const player = {
-          play:      () => { if (_ready) widget.play();  else _pendingPlay = true; },
-          pause:     () => { if (_ready) widget.pause(); },
-          setVolume: v  => {
-            _pendingVolume = this._clamp(v);
-            if (_ready) widget.setVolume(_pendingVolume * 100);
-          },
-          onEnd: cb => {
-            let called = false;
-            const safe = () => { if (called) return; called = true; cb(); };
+    await new Promise(res => iframe.onload = res);
   
-            widget.bind(window.SC.Widget.Events.READY, () => {
-              _ready = true;
-              widget.setVolume(_pendingVolume * 100);
-              if (_pendingPlay) widget.play();
-              // Duration fallback in case FINISH doesn't fire
-              widget.getDuration(d => { if (d > 0) setTimeout(safe, d); });
-              widget.bind(window.SC.Widget.Events.FINISH, safe);
-            });
-          },
-        };
+    this._scWidget = window.SC.Widget(iframe);
+  }
+  async _createSoundCloudPlayer(url) {
+    await this._initSoundCloud();
   
-        resolve(player);
-      }, { once: true });
-    });
+    const widget = this._scWidget;
+  
+    let _ready = false;
+    let _pendingPlay = false;
+    let _pendingVolume = this._currentVolume;
+  
+    return {
+      play: () => {
+        if (_ready) widget.play();
+        else _pendingPlay = true;
+      },
+  
+      pause: () => widget.pause(),
+  
+      setVolume: v => {
+        _pendingVolume = this._clamp(v);
+        if (_ready) widget.setVolume(_pendingVolume * 100);
+      },
+  
+      load: (url) => {
+        widget.load(url, {
+          auto_play: false,
+          show_artwork: false,
+        });
+      },
+  
+      onEnd: (cb) => {
+        widget.bind(window.SC.Widget.Events.READY, () => {
+          _ready = true;
+  
+          widget.setVolume(_pendingVolume * 100);
+          if (_pendingPlay) widget.play();
+  
+          widget.bind(window.SC.Widget.Events.FINISH, cb);
+        });
+      }
+    };
   }
 
   async _createAudiusPlayer(url) {
@@ -368,37 +404,72 @@ export class Jukebox {
   }
 
   // ── Playback ─────────────────────────────────────────────────
-
+  _fadeOutCurrent(cb) {
+    if (!this._activePlayer) {
+      cb();
+      return;
+    }
+  
+    let v = this._currentVolume;
+  
+    const interval = setInterval(() => {
+      v -= 0.05;
+      this._activePlayer.setVolume(this._clamp(v));
+  
+      if (v <= 0) {
+        clearInterval(interval);
+        this._activePlayer.pause();
+        cb();
+      }
+    }, 40);
+  }
   async _loadTrack(track) {
     if (this._isTransitioning || this._isMuted()) return;
+  
     this._isTransitioning = true;
+  
+    const token = ++this._playbackToken;
+  
+    if (track.type === 'soundcloud') {
+      await this._initSoundCloud();
+  
+      // Fade out current
+      this._fadeOutCurrent(() => {
+        this._scWidget.unbind(window.SC.Widget.Events.READY);
+        this._scWidget.unbind(window.SC.Widget.Events.FINISH);
 
-    // Ensure SC API is available before trying to create a SC player
-    if (track.type === 'soundcloud') await this._ensureSCApi();
+        this._scWidget.load(track.url, { auto_play: true });
 
-    const token     = ++this._playbackToken;
-    const newPlayer = await this._createPlayer(track);
+        this._scWidget.bind(window.SC.Widget.Events.READY, () => {
+          this._scWidget.setVolume(this._currentVolume * 100);
+        });
 
-    newPlayer.onEnd(() => {
-      if (token !== this._playbackToken) return;
-      this._isTransitioning = false;
-      this._next();
-    });
-
-    this._crossfade(this._activePlayer, newPlayer, track.url);
-    this._activePlayer = newPlayer;
-    this._isPlaying    = true;
-  }
-
-  _play() {
-    const list = this._categories[this._playbackCategory];
-    if (!list.length) return;
-    if (this._activePlayer && !this._isPlaying) {
-      this._activePlayer.play();
+        this._scWidget.bind(window.SC.Widget.Events.FINISH, () => {
+          if (token !== this._playbackToken) return;
+          this._isTransitioning = false;
+          this._next();
+        });
+  
+        this._scWidget.bind(window.SC.Widget.Events.FINISH, () => {
+          if (token !== this._playbackToken) return;
+          this._isTransitioning = false;
+          this._next();
+        });
+  
+        this._setPlaying(true, track.url);
+      });
+  
+      this._activePlayer = {
+        pause: () => this._scWidget.pause(),
+        play: () => this._scWidget.play(),
+        setVolume: v => this._scWidget.setVolume(v * 100)
+      };
+  
       this._isPlaying = true;
-    } else if (!this._activePlayer) {
-      this._loadTrack(list[this._currentIndex]);
+      return;
     }
+  
+    // existing logic for audio/audius
   }
 
   _pause() {
@@ -417,8 +488,15 @@ export class Jukebox {
   }
 
   _setVolume(v) {
+    
     this._currentVolume = this._clamp(v / 100);
+
     this._activePlayer?.setVolume(this._currentVolume);
+
+    if (this._scWidget) {
+      this._scWidget.setVolume(this._currentVolume * 100);
+    }
+
     this._saveToStorage();
   }
 
