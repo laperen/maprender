@@ -13,5 +13,8 @@ map:
 settings menu
 - clearing map cache?
 
+merging scripts?
+- number of files might be to much
+
 linux server command:
 node /home/oem/Projects/Web/ATSim/maprender/Server/proxy.js
