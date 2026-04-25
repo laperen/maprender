@@ -1,69 +1,502 @@
 import * as THREE from 'three';
-// js/ui.js — DOM event wiring, status messages, tooltip
+import { Jukebox } from './jukebox.js';
+
+// js/ui.js — DOM event wiring, status messages, tooltip,
+//            MiniMap (formerly minimap.js),
+//            OverlayPanel + LeftPanel (formerly overlay.js)
+
+// ═══════════════════════════════════════════════════════════════
+// MINIMAP  (formerly minimap.js)
+// ═══════════════════════════════════════════════════════════════
+
+const LEAFLET_CSS = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+const LEAFLET_JS  = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+
+const TILE_LAYERS = {
+  streets: {
+    url:         'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  },
+  satellite: {
+    url:         'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution: 'Tiles © Esri',
+  },
+  terrain: {
+    url:         'https://tile.opentopomap.org/{z}/{x}/{y}.png',
+    attribution: '© <a href="https://opentopomap.org">OpenTopoMap</a>',
+  },
+  dark: {
+    url:         'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+    attribution: '© <a href="https://carto.com/attributions">CARTO</a>',
+  },
+};
+
+class MiniMap {
+  constructor(containerId) {
+    this.containerId   = containerId;
+    this.map           = null;
+    this._circle       = null;
+    this._tileLayer    = null;
+    this._currentStyle = 'streets';
+    this._loaded       = false;
+    this._pending      = null;
+    this._load();
+  }
+
+  _load() {
+    if (!document.querySelector('#leaflet-css')) {
+      const link = document.createElement('link');
+      link.id    = 'leaflet-css';
+      link.rel   = 'stylesheet';
+      link.href  = LEAFLET_CSS;
+      document.head.appendChild(link);
+    }
+    if (window.L) { this._init(); return; }
+    const script  = document.createElement('script');
+    script.src    = LEAFLET_JS;
+    script.onload = () => this._init();
+    document.head.appendChild(script);
+  }
+
+  _init() {
+    const L = window.L;
+    this.map = L.map(this.containerId, {
+      center:             [35.6812, 139.7671],
+      zoom:               13,
+      zoomControl:        false,
+      attributionControl: true,
+      dragging:           false,
+      scrollWheelZoom:    false,
+      doubleClickZoom:    false,
+      touchZoom:          false,
+    });
+    const def = TILE_LAYERS.streets;
+    this._tileLayer = L.tileLayer(def.url, {
+      attribution: def.attribution,
+      maxZoom:     19,
+    }).addTo(this.map);
+    this._loaded = true;
+    if (this._pending) {
+      const [lng, lat, radius, styleName] = this._pending;
+      this._pending = null;
+      this.update(lng, lat, radius, styleName);
+    }
+  }
+
+  update(lng, lat, radiusMeters = 500, styleName = 'streets') {
+    if (!this._loaded) {
+      this._pending = [lng, lat, radiusMeters, styleName];
+      return;
+    }
+    const L = window.L;
+    if (styleName !== this._currentStyle && TILE_LAYERS[styleName]) {
+      this._currentStyle = styleName;
+      const def = TILE_LAYERS[styleName];
+      if (this._tileLayer) this.map.removeLayer(this._tileLayer);
+      this._tileLayer = L.tileLayer(def.url, {
+        attribution: def.attribution,
+        maxZoom:     19,
+      }).addTo(this.map);
+    }
+    this.map.setView([lat, lng], this._zoomForRadius(radiusMeters));
+    if (this._circle) {
+      this._circle.setLatLng([lat, lng]);
+      this._circle.setRadius(radiusMeters);
+    } else {
+      this._circle = L.circle([lat, lng], {
+        radius:      radiusMeters,
+        color:       '#4fffb0',
+        weight:      1.5,
+        fillColor:   '#4fffb0',
+        fillOpacity: 0.15,
+      }).addTo(this.map);
+    }
+  }
+
+  _zoomForRadius(r) {
+    return Math.max(11, 16 - Math.log2(r / 100));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// OVERLAY PANEL  (formerly overlay.js → OverlayPanel)
+// ═══════════════════════════════════════════════════════════════
+
+const BASE_ORBIT_ROTATE_SPEED = 1.0;
+const BASE_ROAM_MOUSE_X       = 0.18;
+const BASE_ROAM_MOUSE_Y       = 0.14;
+
+const STORAGE_KEY = 'atsim_settings';
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return null;
+}
+
+function saveSettings(obj) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); } catch (_) {}
+}
+
+class OverlayPanel {
+  constructor({ uiController }) {
+    this.ui = uiController;
+    this._open = false;
+    this._activeCategory = null;
+    this._appMode = 'map-creation';
+    this._jukebox = null;
+    this._jukeboxReady = false;
+    this.$mapPreview = document.getElementById('map-preview');
+
+    const saved = loadSettings();
+    this._bgmVolume = saved?.bgmVolume ?? 50;
+    this._turnSens  = saved?.turnSens  ?? 100;
+
+    this._pendingAutoPlay = null;
+  }
+
+  _saveSettings() {
+    saveSettings({ bgmVolume: this._bgmVolume, turnSens: this._turnSens });
+  }
+
+  init() {
+    this._cacheDOM();
+    this._bindEvents();
+    this._applySettings();
+    this._initJukebox();
+  }
+
+  _updateMapPreviewVisibility() {
+    if (!this.$mapPreview) return;
+    const hide = this._appMode !== 'map-creation';
+    this.$mapPreview.classList.toggle('hidden', hide);
+  }
+
+  setAppMode(mode) {
+    this._appMode = mode;
+    this._updateCategoryVisibility();
+    this._updateMapPreviewVisibility();
+    if (mode !== 'roaming' && this._activeCategory === 'explore') {
+      this._setCategory(null);
+      this._close();
+    }
+  }
+
+  _cacheDOM() {
+    this._toggleBtn        = document.getElementById('overlay-toggle-btn');
+    this._panel            = document.getElementById('overlay-panel');
+    this._backdrop         = document.getElementById('overlay-backdrop');
+    this._$bgmSlider       = document.getElementById('settings-bgm-vol');
+    this._$bgmVal          = document.getElementById('settings-bgm-vol-val');
+    this._$turnSlider      = document.getElementById('settings-turn-sens');
+    this._$turnVal         = document.getElementById('settings-turn-sens-val');
+  }
+
+  _bindEvents() {
+    this._toggleBtn.addEventListener('click', () => this._toggle());
+    this._backdrop.addEventListener('click',  () => this._close());
+    document.getElementById('overlay-close-btn').addEventListener('click', () => this._close());
+
+    document.querySelectorAll('.overlay-cat-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cat = btn.dataset.cat;
+        this._setCategory(this._activeCategory === cat ? null : cat);
+      });
+    });
+
+    const overlayRoamBack = document.getElementById('overlay-roam-back-btn');
+    if (overlayRoamBack) {
+      overlayRoamBack.addEventListener('click', () => {
+        this.ui._exitRoamingMode();
+        this._close();
+      });
+    }
+
+    if (this._$bgmSlider) {
+      this._$bgmSlider.addEventListener('input', () => {
+        this._bgmVolume = parseInt(this._$bgmSlider.value);
+        if (this._$bgmVal) this._$bgmVal.textContent = `${this._bgmVolume}%`;
+        this._applyBGMVolume();
+        this._saveSettings();
+      });
+    }
+
+    if (this._$turnSlider) {
+      this._$turnSlider.addEventListener('input', () => {
+        this._turnSens = parseInt(this._$turnSlider.value);
+        if (this._$turnVal) this._$turnVal.textContent = `${(this._turnSens / 100).toFixed(1)}x`;
+        this._applySensitivity();
+        this._saveSettings();
+      });
+    }
+
+    this._updateCategoryVisibility();
+  }
+
+  _applySettings() {
+    if (this._$bgmSlider)  this._$bgmSlider.value  = this._bgmVolume;
+    if (this._$turnSlider) this._$turnSlider.value  = this._turnSens;
+    if (this._$bgmVal)  this._$bgmVal.textContent  = `${this._bgmVolume}%`;
+    if (this._$turnVal) this._$turnVal.textContent  = `${(this._turnSens / 100).toFixed(1)}x`;
+    this._applySensitivity();
+  }
+
+  _applySensitivity() {
+    const mult = this._turnSens / 100;
+    const orbitCtrl = this.ui?.scene?.controls;
+    if (orbitCtrl) orbitCtrl.rotateSpeed = BASE_ORBIT_ROTATE_SPEED * mult / 10;
+    const roamCam = this.ui?.scene?._roamingCam;
+    if (roamCam) {
+      roamCam._mouseSensX = BASE_ROAM_MOUSE_X * mult;
+      roamCam._mouseSensY = BASE_ROAM_MOUSE_Y * mult;
+    }
+  }
+
+  _applyBGMVolume() {
+    if (this._jukebox) {
+      this._jukebox._setVolume(this._bgmVolume);
+      this._jukebox._currentVolume = this._bgmVolume / 100;
+    }
+  }
+
+  _toggle() {
+    if (this._open) {
+      this._close();
+    } else {
+      this._leftPanel?._close();
+      this._open = true;
+      this._panel.classList.add('open');
+      this._toggleBtn.classList.add('active');
+      this._backdrop.classList.add('active');
+      this._setCategory(this._appMode === 'roaming' ? 'explore' : (this._activeCategory || 'jukebox'));
+      this._updateCategoryVisibility();
+    }
+  }
+
+  _close() {
+    this._open = false;
+    this._panel.classList.remove('open');
+    this._toggleBtn.classList.remove('active');
+    this._backdrop.classList.remove('active');
+  }
+
+  _setCategory(cat) {
+    this._activeCategory = cat;
+    document.querySelectorAll('.overlay-cat-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.cat === cat);
+    });
+    const content = document.getElementById('overlay-content');
+    if (cat) {
+      content.classList.add('visible');
+    } else {
+      content.classList.remove('visible');
+      return;
+    }
+    document.querySelectorAll('.overlay-view').forEach(v => v.classList.remove('active'));
+    const view = document.getElementById(`view-${cat}`);
+    if (view) view.classList.add('active');
+    if (cat === 'jukebox' && !this._jukeboxReady) this._initJukebox();
+  }
+
+  _initJukebox() {
+    const mount = document.getElementById('jukebox-mount');
+    if (!mount) return;
+    this._jukebox = new Jukebox();
+    this._jukebox.init(mount);
+    this._jukeboxReady = true;
+    this._applyBGMVolume();
+    if (this._pendingAutoPlay) {
+      this._jukebox.autoPlay(this._pendingAutoPlay);
+      this._pendingAutoPlay = null;
+    }
+  }
+
+  requestAutoPlay(cat) {
+    if (this._jukeboxReady && this._jukebox) {
+      this._jukebox.autoPlay(cat);
+    } else {
+      this._pendingAutoPlay = cat;
+    }
+  }
+
+  _updateCategoryVisibility() {
+    const exploreBtn = document.getElementById('cat-explore');
+    if (!exploreBtn) return;
+    exploreBtn.classList.toggle('disabled-cat', this._appMode !== 'roaming');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LEFT PANEL  (formerly overlay.js → LeftPanel)
+// ═══════════════════════════════════════════════════════════════
+
+class LeftPanel {
+  constructor({ uiController }) {
+    this.ui = uiController;
+    this._open  = false;
+    this._appMode = 'map-creation';
+    this._activeCategory = 'proxy';
+
+    this._dragging = false;
+    this._wasPointerLocked = false;
+
+    this._onCanvasMouseDown = this._onCanvasMouseDown.bind(this);
+    this._onDocMouseUp      = this._onDocMouseUp.bind(this);
+    this._onTouchStart      = this._onTouchStart.bind(this);
+    this._onTouchEnd        = this._onTouchEnd.bind(this);
+  }
+
+  init() {
+    this._panel     = document.getElementById('left-panel');
+    this._toggleBtn = document.getElementById('left-panel-toggle-btn');
+    this._closeBtn  = document.getElementById('left-panel-close-btn');
+    this._canvas    = document.getElementById('canvas-container');
+
+    this._toggleBtn.addEventListener('click', () => this._toggle());
+    this._closeBtn.addEventListener('click',  () => this._close());
+
+    document.querySelectorAll('.left-cat-btn').forEach(btn => {
+      btn.addEventListener('click', () => this._setCategory(btn.dataset.lcat));
+    });
+  }
+
+  setAppMode(mode) {
+    this._appMode = mode;
+    if (mode !== 'roaming' && this._open) this._close();
+  }
+
+  _toggle() { this._open ? this._close() : this._open_panel(); }
+
+  _open_panel() {
+    this._overlay?._close();
+    this._open = true;
+    this._panel.classList.add('open');
+    this._toggleBtn.classList.add('active');
+    document.body.classList.add('left-panel-open');
+
+    this._wasPointerLocked = !!document.pointerLockElement;
+    if (this._wasPointerLocked) document.exitPointerLock();
+
+    this._canvas.addEventListener('mousedown',  this._onCanvasMouseDown);
+    this._canvas.addEventListener('touchstart', this._onTouchStart, { passive: true });
+    document.addEventListener('mouseup',  this._onDocMouseUp);
+    document.addEventListener('touchend', this._onTouchEnd);
+  }
+
+  _close() {
+    this._open = false;
+    this._panel.classList.remove('open');
+    this._toggleBtn.classList.remove('active');
+    document.body.classList.remove('left-panel-open');
+    document.body.classList.remove('canvas-dragging');
+
+    this._canvas.removeEventListener('mousedown',  this._onCanvasMouseDown);
+    this._canvas.removeEventListener('touchstart', this._onTouchStart);
+    document.removeEventListener('mouseup',  this._onDocMouseUp);
+    document.removeEventListener('touchend', this._onTouchEnd);
+    this._dragging = false;
+  }
+
+  _onCanvasMouseDown(e) {
+    if (e.button !== 0) return;
+    this._dragging = true;
+    document.body.classList.add('canvas-dragging');
+    const roamCam = this.ui?.scene?._roamingCam;
+    if (roamCam?.isActive) {
+      try { this._canvas.requestPointerLock(); } catch (_) {}
+    }
+  }
+
+  _onDocMouseUp() {
+    if (!this._dragging) return;
+    this._dragging = false;
+    document.body.classList.remove('canvas-dragging');
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
+
+  _onTouchStart() {
+    this._dragging = true;
+    document.body.classList.add('canvas-dragging');
+  }
+
+  _onTouchEnd() {
+    this._dragging = false;
+    document.body.classList.remove('canvas-dragging');
+  }
+
+  _setCategory(cat) {
+    this._activeCategory = cat;
+    document.querySelectorAll('.left-cat-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.lcat === cat);
+    });
+    document.querySelectorAll('.left-view').forEach(v => v.classList.remove('active'));
+    const view = document.getElementById(`left-view-${cat}`);
+    if (view) view.classList.add('active');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UI CONTROLLER
+// ═══════════════════════════════════════════════════════════════
+
 export class UIController {
-  constructor({ scene, fetcher, builder, minimap }) {
+  constructor({ scene, fetcher, builder }) {
     this.scene   = scene;
     this.fetcher = fetcher;
     this.builder = builder;
-    this.minimap = minimap;
+
+    // Instantiate minimap, overlay, and left panel internally
+    this.minimap     = new MiniMap('map-preview-inner');
+    this._overlay    = new OverlayPanel({ uiController: this });
+    this._leftPanel  = new LeftPanel({ uiController: this });
+
+    // Cross-close wiring
+    this._overlay._leftPanel = this._leftPanel;
+    this._leftPanel._overlay = this._overlay;
 
     this.lat         = 35.6812;
     this.lng         = 139.7671;
     this.radius      = 500;
     this.heightScale = 1;
     this.renderMode  = 'solid';
-    this.timeOfDay   = 12;   // 0–24h float
-    this._deviceTimeMode  = false;  // true = local area time, false = manual
+    this.timeOfDay   = 12;
+    this._deviceTimeMode  = false;
     this._deviceTimerID   = null;
-    this._localTimezone   = null;   // IANA timezone string for searched area
+    this._localTimezone   = null;
 
-    // Cloud state
-    this._cloudAutoMode  = true;   // true = use weather API, false = manual
-    this._cloudCover     = 40;     // 0–100 %
-    this._cloudCondition = 1;      // WMO-style: 0=clear,1=partly,2=mostly,3=overcast,4=rain,5=storm
-    this._windSpeed      = 18;     // world-units/sec
-    this._windAngleDeg   = 13;     // degrees (0=east, CCW)
-    this._cloudAltitude  = 380;    // metres
+    this._cloudAutoMode  = true;
+    this._cloudCover     = 40;
+    this._cloudCondition = 1;
+    this._windSpeed      = 18;
+    this._windAngleDeg   = 13;
+    this._cloudAltitude  = 380;
 
-    // App mode: 'map-creation' | 'location-selection' | 'roaming'
     this._appMode = 'map-creation';
-    if (this._overlay) this._overlay.setAppMode('map-creation');
-    if (this._leftPanel) this._leftPanel.setAppMode('map-creation');
 
-    // ── Game mode state machine ───────────────────────────────
-    // Game modes are active only while _appMode === 'roaming'.
-    // 'explore' — freeform exploration; no win/lose conditions, no timer.
-    //             Jukebox switches to the 'day'/'night' category automatically.
-    // 'race'    — timed challenge; a route with checkpoints is generated at
-    //             world-build time. Reaching all checkpoints before the timer
-    //             expires triggers a win, running out triggers a loss.
-    //             Jukebox switches to 'day'/'night' on start and 'win'/'lose'
-    //             on completion. (Route/checkpoint generation is a future step;
-    //             the state machine and public API are wired up here.)
-    this._gameMode       = 'explore'; // 'explore' | 'race'
-    this._exploreJukeboxCat = null;  // tracks last jukebox category pushed in explore mode
-    this._raceState      = 'idle'; 
-    this._raceDuration   = 120;       // seconds — configurable later via UI
+    this._gameMode       = 'explore';
+    this._exploreJukeboxCat = null;
+    this._raceState      = 'idle';
+    this._raceDuration   = 120;
     this._raceTimeLeft   = 0;
-    this._raceCheckpoints    = [];    // [{x,y,z, radius}] — filled by _setupRace()
+    this._raceCheckpoints    = [];
     this._raceNextCheckpoint = 0;
     this._raceRAFId      = null;
     this._racePrevMs     = null;
-    // Beacon / spawn state
+
     this._beaconX = null;
     this._beaconY = null;
     this._beaconZ = null;
     this._worldGenerated = false;
 
     this._lastMapKey = null;
-    this._lastWays = null;
+    this._lastWays   = null;
 
-    // ── Time progression loop ─────────────────────────────────
-    // Manual mode: 1 full in-game day = 2 real hours (24h / 7200s)
-    this._TIME_RATE_MANUAL = 24 / 7200; // game-hours per real-second
-    this._timePrevMs    = null;   // previous rAF timestamp
-    this._timeRAFId     = null;   // requestAnimationFrame id
-    this._sliderDragging = false; // true while user drags the slider
+    this._TIME_RATE_MANUAL = 24 / 7200;
+    this._timePrevMs    = null;
+    this._timeRAFId     = null;
+    this._sliderDragging = false;
   }
 
   init() {
@@ -71,17 +504,18 @@ export class UIController {
     this._buildTimePanel();
     this._buildCloudPanel();
     this._bindEvents();
-    //this.$heightVal.textContent = `${this.heightScale.toFixed(1)}×`;
     this.minimap.update(this.lng, this.lat, this.radius);
     this._applyTimeOfDay(this.timeOfDay);
     this._applyCloudProperties();
 
-    // Register beacon placement callback
+    // Init overlay and left panel
+    this._overlay.init();
+    this._leftPanel.init();
+
     this.scene.onBeaconPlaced((x, y, z) => {
       this._beaconX = x;
       this._beaconY = y;
       this._beaconZ = z;
-      // Enable the "Enter World" button once a beacon is placed
       if (this.$enterWorldBtn) {
         this.$enterWorldBtn.disabled = false;
         this.$enterWorldBtn.classList.add('beacon-ready');
@@ -115,18 +549,15 @@ export class UIController {
     this.$cloudPanelHost = document.getElementById('cloud-panel-host');
     this.$todTzLabel    = document.getElementById('tod-tz-label');
 
-    // Collapsible toggles
-    this.$todToggle  = document.getElementById('tod-toggle');
-    this.$todBody    = document.getElementById('tod-body');
-    this.$todMeta    = document.getElementById('tod-meta');
+    this.$todToggle   = document.getElementById('tod-toggle');
+    this.$todBody     = document.getElementById('tod-body');
+    this.$todMeta     = document.getElementById('tod-meta');
     this.$cloudToggle = document.getElementById('cloud-toggle');
     this.$cloudBody   = document.getElementById('cloud-body');
     this.$cloudMeta   = document.getElementById('cloud-meta');
 
-    // Mode panels
     this.$uiPanel        = document.getElementById('ui');
     this.$selectionPanel = document.getElementById('selection-panel');
-    //this.$roamingPanel   = document.getElementById('roaming-panel');
     this.$enterSelBtn    = document.getElementById('enter-selection-btn');
     this.$enterWorldBtn  = document.getElementById('enter-world-btn');
     this.$selBackBtn     = document.getElementById('sel-back-btn');
@@ -134,22 +565,19 @@ export class UIController {
     this.$selectionHint  = document.getElementById('selection-hint');
   }
 
-  // ── Build the time-of-day panel HTML ──────────────────────────
   _buildTimePanel() {
     if (!this.$timePanelHost) return;
-    this.$todArc         = document.getElementById('tod-arc');
-    this.$todLabel       = document.getElementById('tod-time-label');
-    this.$todSlider      = document.getElementById('tod-slider');
-    this.$todSliderWrap  = document.getElementById('tod-slider-wrap');
-    this.$todManualBtn   = document.getElementById('tod-manual-btn');
-    this.$todDeviceBtn   = document.getElementById('tod-device-btn');
-    this.$todIndicators  = document.getElementById('tod-indicators');
-
+    this.$todArc        = document.getElementById('tod-arc');
+    this.$todLabel      = document.getElementById('tod-time-label');
+    this.$todSlider     = document.getElementById('tod-slider');
+    this.$todSliderWrap = document.getElementById('tod-slider-wrap');
+    this.$todManualBtn  = document.getElementById('tod-manual-btn');
+    this.$todDeviceBtn  = document.getElementById('tod-device-btn');
+    this.$todIndicators = document.getElementById('tod-indicators');
     this._drawArc(12);
     this._updateIndicators(12);
   }
 
-  // ── Build the cloud panel HTML ────────────────────────────────
   _buildCloudPanel() {
     if (!this.$cloudPanelHost) return;
     this.$cloudArc          = document.getElementById('cloud-arc');
@@ -167,12 +595,10 @@ export class UIController {
     this.$cloudAltitudeSl   = document.getElementById('cloud-altitude-slider');
     this.$cloudAltitudeVal  = document.getElementById('cloud-altitude-val');
     this.$cloudIndicators   = document.getElementById('cloud-indicators');
-
     this._drawCloudPreview();
     this._updateCloudPills();
   }
 
-  // ── Draw cloud preview canvas ─────────────────────────────────
   _drawCloudPreview() {
     if (!this.$cloudArc) return;
     const canvas = this.$cloudArc;
@@ -183,12 +609,11 @@ export class UIController {
     const cover = this._cloudCover / 100;
     const cond  = this._cloudCondition;
 
-    // Sky gradient
     let skyTop, skyBot;
-    if (cond === 5) { skyTop = '#1a1520'; skyBot = '#2a2030'; }
+    if (cond === 5)      { skyTop = '#1a1520'; skyBot = '#2a2030'; }
     else if (cond === 4) { skyTop = '#2a3040'; skyBot = '#404858'; }
     else if (cond === 3) { skyTop = '#505860'; skyBot = '#707880'; }
-    else { skyTop = '#1565c0'; skyBot = '#42a5f5'; }
+    else                 { skyTop = '#1565c0'; skyBot = '#42a5f5'; }
 
     const grad = ctx.createLinearGradient(0, 0, 0, H - 12);
     grad.addColorStop(0, skyTop);
@@ -196,16 +621,14 @@ export class UIController {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H - 12);
 
-    // Cloud puffs — scale count and opacity with cover
     const cloudCount = Math.round(cover * 8);
     const cloudAlpha = 0.25 + cover * 0.65;
     let cloudColor;
-    if (cond === 5) cloudColor = `rgba(80,80,90,${cloudAlpha})`;
+    if (cond === 5)      cloudColor = `rgba(80,80,90,${cloudAlpha})`;
     else if (cond === 4) cloudColor = `rgba(110,120,130,${cloudAlpha})`;
-    else if (cond >= 2) cloudColor = `rgba(180,185,195,${cloudAlpha})`;
-    else cloudColor = `rgba(230,235,245,${cloudAlpha})`;
+    else if (cond >= 2)  cloudColor = `rgba(180,185,195,${cloudAlpha})`;
+    else                 cloudColor = `rgba(230,235,245,${cloudAlpha})`;
 
-    // Stable cloud positions seeded by index
     const clouds = [
       { x: 0.10, y: 0.25, r: 22 }, { x: 0.28, y: 0.18, r: 28 },
       { x: 0.48, y: 0.28, r: 20 }, { x: 0.65, y: 0.15, r: 32 },
@@ -215,8 +638,7 @@ export class UIController {
 
     for (let i = 0; i < cloudCount; i++) {
       const c  = clouds[i % clouds.length];
-      const cx = c.x * W, cy = c.y * (H - 16);
-      const r  = c.r;
+      const cx = c.x * W, cy = c.y * (H - 16), r = c.r;
       const cg = ctx.createRadialGradient(cx, cy - r * 0.2, 0, cx, cy, r * 1.4);
       cg.addColorStop(0,   cloudColor);
       cg.addColorStop(0.6, cloudColor);
@@ -227,11 +649,9 @@ export class UIController {
       ctx.fill();
     }
 
-    // Wind arrow in top-right
     if (this._windSpeed > 0) {
       const arrowAlpha = Math.min(1, this._windSpeed / 40);
-      const angleDeg   = this._windAngleDeg;
-      const angleRad   = angleDeg * Math.PI / 180;
+      const angleRad   = this._windAngleDeg * Math.PI / 180;
       const arrowLen   = 12 + (this._windSpeed / 80) * 10;
       const ax = W - 22, ay = 14;
       ctx.save();
@@ -249,14 +669,12 @@ export class UIController {
       ctx.restore();
     }
 
-    // Ground strip
     const groundGrad = ctx.createLinearGradient(0, H - 12, 0, H);
     groundGrad.addColorStop(0, 'rgba(50,80,50,0.9)');
     groundGrad.addColorStop(1, 'rgba(20,40,20,0.9)');
     ctx.fillStyle = groundGrad;
     ctx.fillRect(0, H - 12, W, 12);
 
-    // Rain streaks
     if (cond >= 4) {
       ctx.strokeStyle = `rgba(150,180,220,${cover * 0.55})`;
       ctx.lineWidth   = 0.8;
@@ -270,7 +688,6 @@ export class UIController {
       }
     }
 
-    // Lightning for storm
     if (cond === 5 && cover > 0.3) {
       ctx.strokeStyle = 'rgba(255,240,100,0.7)';
       ctx.lineWidth   = 1.5;
@@ -283,16 +700,15 @@ export class UIController {
     }
   }
 
-  // ── Cloud pills ───────────────────────────────────────────────
   _updateCloudPills() {
     if (!this.$cloudIndicators) return;
     const cover = this._cloudCover;
     const cond  = this._cloudCondition;
     const speed = this._windSpeed;
 
-    const labels = ['Clear', 'Partly', 'Mostly', 'Overcast', 'Rain', 'Storm'];
-    const icons  = ['☀', '⛅', '🌥', '☁', '🌧', '⛈'];
-    const condColors = ['#ffd060', '#c8d8ff', '#a0a8b8', '#8090a0', '#4888c0', '#a060d0'];
+    const labels    = ['Clear', 'Partly', 'Mostly', 'Overcast', 'Rain', 'Storm'];
+    const icons     = ['☀', '⛅', '🌥', '☁', '🌧', '⛈'];
+    const condColors= ['#ffd060', '#c8d8ff', '#a0a8b8', '#8090a0', '#4888c0', '#a060d0'];
 
     const windLabel = speed < 5 ? 'Calm' : speed < 20 ? 'Breeze' : speed < 45 ? 'Windy' : 'Gale';
     const windColor = speed < 5 ? '#4fffb0' : speed < 20 ? '#47d7ff' : speed < 45 ? '#ffd060' : '#ff4f6b';
@@ -308,80 +724,58 @@ export class UIController {
       pill('▲', `${this._cloudAltitude}m`, true, '#c8b8ff');
   }
 
-  // ── Apply cloud properties to scene ──────────────────────────
   _applyCloudProperties() {
-    // Always apply physics properties (wind, altitude) regardless of auto/manual
     this.scene.setCloudProperties({
       windSpeed:    this._windSpeed,
       windAngleDeg: this._windAngleDeg,
       altitude:     this._cloudAltitude,
     });
-
-    // Apply weather (cover + condition) only in manual mode
-    // (auto mode sets these from the API in _generate)
     if (!this._cloudAutoMode) {
-      // Map our simple condition index to WMO-style code for setWeather
       const wmoCode = [0, 2, 3, 45, 61, 95][this._cloudCondition] ?? 1;
       this.scene.setWeather(this._cloudCover, wmoCode);
     }
-
-    // Redraw preview and update label
     this._drawCloudPreview();
     this._updateCloudPills();
 
     const condEmoji = ['☀', '⛅', '🌥', '☁', '🌧', '⛈'][this._cloudCondition];
-    const labelText = `${condEmoji} ${this._cloudCover}%`;
     if (this.$cloudLabel) this.$cloudLabel.textContent = `${condEmoji} ${this._cloudCover}% cover`;
-    if (this.$cloudMeta)  this.$cloudMeta.textContent  = labelText;
+    if (this.$cloudMeta)  this.$cloudMeta.textContent  = `${condEmoji} ${this._cloudCover}%`;
   }
 
-  // ── Cloud auto / manual mode ──────────────────────────────────
   _setCloudAutoMode(auto) {
     this._cloudAutoMode = auto;
     if (this.$cloudAutoBtn)   this.$cloudAutoBtn.classList.toggle('active', auto);
     if (this.$cloudManualBtn) this.$cloudManualBtn.classList.toggle('active', !auto);
     if (this.$cloudManualWrap) {
-      this.$cloudManualWrap.style.opacity      = auto ? '0.35' : '1';
+      this.$cloudManualWrap.style.opacity       = auto ? '0.35' : '1';
       this.$cloudManualWrap.style.pointerEvents = auto ? 'none' : '';
     }
     if (auto) {
-      // Immediately fetch live weather for the current coordinates
       if (this.$cloudLabel) this.$cloudLabel.textContent = '⏳ Fetching weather…';
       this.fetcher.fetchWeather(this.lat, this.lng).then(weather => {
         this._syncWeatherToUI(weather);
         this.scene.setWeather(weather.cloudCover, weather.weatherCode);
         this._applyCloudProperties();
-      }).catch(() => {
-        // Fallback: apply whatever values are already set
-        this._applyCloudProperties();
-      });
+      }).catch(() => { this._applyCloudProperties(); });
     } else {
-      // Immediately apply current manual values
       this._applyCloudProperties();
     }
   }
 
-  // ── Sync all weather fields from an API response to internal state + sliders ─
-  // Covers cloud cover, condition, wind speed, and wind direction.
   _syncWeatherToUI(weather) {
-    // Cloud cover
     this._cloudCover = weather.cloudCover;
     if (this.$cloudCoverSlider) this.$cloudCoverSlider.value = this._cloudCover;
     if (this.$cloudCoverVal)    this.$cloudCoverVal.textContent = `${this._cloudCover}%`;
 
-    // Condition (map WMO code → our 0–5 index)
     const wmo = weather.weatherCode;
     this._cloudCondition = wmo >= 95 ? 5 : wmo >= 61 ? 4 : wmo >= 45 ? 3 : wmo >= 3 ? 2 : wmo >= 1 ? 1 : 0;
     if (this.$cloudCondSelect) this.$cloudCondSelect.value = String(this._cloudCondition);
 
-    // Wind speed
     if (weather.windSpeed !== undefined) {
       this._windSpeed = weather.windSpeed;
       if (this.$cloudWindSpeedSl)  this.$cloudWindSpeedSl.value = this._windSpeed;
       if (this.$cloudWindSpeedVal) this.$cloudWindSpeedVal.textContent = `${this._windSpeed} u/s`;
     }
-
-    // Wind direction
     if (weather.windDirection !== undefined) {
       this._windAngleDeg = weather.windDirection;
       if (this.$cloudWindAngleSl)  this.$cloudWindAngleSl.value = this._windAngleDeg;
@@ -389,7 +783,6 @@ export class UIController {
     }
   }
 
-  // ── Draw the arc sky preview canvas ──────────────────────────
   _drawArc(hour) {
     if (!this.$todArc) return;
     const canvas = this.$todArc;
@@ -397,7 +790,6 @@ export class UIController {
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
 
-    // Sky gradient based on time — uses real SPA elevation via _skyColor
     const skyColor = this._skyColor(hour);
     const grad = ctx.createLinearGradient(0, 0, 0, H);
     grad.addColorStop(0, skyColor.top);
@@ -405,7 +797,6 @@ export class UIController {
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
 
-    // Horizon line
     ctx.strokeStyle = 'rgba(255,255,255,0.12)';
     ctx.lineWidth   = 1;
     ctx.beginPath();
@@ -413,7 +804,6 @@ export class UIController {
     ctx.lineTo(W, H - 18);
     ctx.stroke();
 
-    // Arc track (faint)
     const cx = W / 2, cy = H - 18, r = 80;
     ctx.strokeStyle = 'rgba(255,255,255,0.10)';
     ctx.lineWidth   = 1;
@@ -421,19 +811,14 @@ export class UIController {
     ctx.arc(cx, cy, r, Math.PI, 0);
     ctx.stroke();
 
-    // ── Sun position — driven by real SPA elevation ───────────
     const elevDeg  = this._solarElevDeg(hour);
     const np       = this._nightPhaseForHour(hour);
     const isDay    = elevDeg > -6;
+    const elevRad  = _clamp(elevDeg / 90, -0.25, 1) * r;
+    const arcAngle = this._sunArcAngle(hour);
 
-    // Map elevation to arc radius offset: elev 0° = on the arc, 90° = zenith
-    // We clamp so the dot stays within the canvas.
-    const elevRad  = THREE_MathUtils_clamp(elevDeg / 90, -0.25, 1) * r;
-    const arcAngle = this._sunArcAngle(hour); // π..0 east to west
-
-    // Arc-tangent point at horizon, then offset inward by elevation
     const sx = cx + r * Math.cos(Math.PI - arcAngle);
-    const sy = cy - Math.max(0, elevRad);       // above horizon only
+    const sy = cy - Math.max(0, elevRad);
 
     if (isDay && elevDeg > -3) {
       const sunGlow = ctx.createRadialGradient(sx, sy, 0, sx, sy, 22);
@@ -450,11 +835,9 @@ export class UIController {
       ctx.fill();
     }
 
-    // ── Moon — opposite side of sky ───────────────────────────
     if (np > 0.05) {
-      // Moon is roughly opposite the sun
       const moonArcAngle = (arcAngle + Math.PI) % (Math.PI * 2);
-      const moonElevRad  = THREE_MathUtils_clamp(-elevDeg / 90, -0.25, 1) * r;
+      const moonElevRad  = _clamp(-elevDeg / 90, -0.25, 1) * r;
       const mx = cx + r * Math.cos(Math.PI - moonArcAngle);
       const my = cy - Math.max(0, moonElevRad);
       if (my < cy) {
@@ -465,23 +848,21 @@ export class UIController {
       }
     }
 
-    // Stars (dots) at night
     if (np > 0.05) {
       ctx.fillStyle = `rgba(255,255,255,${np * 0.7})`;
       const starPositions = [
-        [30, 20], [80, 10], [130, 30], [170, 8], [210, 25],
-        [55, 50], [150, 55], [200, 45], [25, 60], [195, 70],
+        [30,20],[80,10],[130,30],[170,8],[210,25],
+        [55,50],[150,55],[200,45],[25,60],[195,70],
       ];
-      for (const [sx, sy] of starPositions) {
-        if (sy < H - 22) {
+      for (const [stx, sty] of starPositions) {
+        if (sty < H - 22) {
           ctx.beginPath();
-          ctx.arc(sx, sy, 0.9, 0, Math.PI * 2);
+          ctx.arc(stx, sty, 0.9, 0, Math.PI * 2);
           ctx.fill();
         }
       }
     }
 
-    // Ground strip
     const groundGrad = ctx.createLinearGradient(0, H - 18, 0, H);
     groundGrad.addColorStop(0, skyColor.ground);
     groundGrad.addColorStop(1, 'rgba(0,0,0,0.3)');
@@ -502,43 +883,20 @@ export class UIController {
     }
   }
 
-  // ── Solar elevation helpers — delegate to scene SPA ──────────
-  // elevDeg is the true altitude of the sun in degrees (-90..+90).
-  // Positive = above horizon (day), negative = below (night/twilight).
-  _solarElevDeg(hour) {
-    return this.scene.getSolarElevation(hour);
-  }
+  _solarElevDeg(hour) { return this.scene.getSolarElevation(hour); }
 
-  // Night phase: 0 = full day, 1 = full night. Smooth civil-twilight transition.
   _nightPhaseForHour(hour) {
-    const elevDeg  = this._solarElevDeg(hour);
-    // Civil twilight ends at −6°. Full day above +10°.
-    const dayPhase = smoothstep(elevDeg, -6, 10);
-    return 1 - dayPhase;
+    return 1 - _smoothstep(this._solarElevDeg(hour), -6, 10);
   }
 
-  // Arc angle (radians) for the sun dot on the preview semicircle.
-  // Maps elevation+azimuth → a 0..π angle along the arc (left=sunrise, right=sunset).
   _sunArcAngle(hour) {
-    const elevDeg = this._solarElevDeg(hour);
-    // Use elevation to position the dot on the arc: 0° elev = horizon, 90° = zenith.
-    // We also need an east→west sweep — derive from whether it's AM or PM.
-    // Simple heuristic: treat noon (peak elevation hour) as the midpoint.
-    // Find approximate solar noon = hour when elevation is maximum.
-    const t = ((hour % 24) + 24) % 24;
-    // Fraction of the day the sun has traveled (0=sunrise,0.5=noon,1=sunset).
-    // We use hour against the 0–24 range, centred on 12.
-    const fracOfDay = t / 24; // 0..1
-    // Arc goes from π (left/east) to 0 (right/west).
-    // At fracOfDay=0 → angle=π, fracOfDay=1 → angle=0.
-    return Math.PI * (1 - fracOfDay);
+    return Math.PI * (1 - ((hour % 24 + 24) % 24) / 24);
   }
 
   _skyColor(hour) {
     const np      = this._nightPhaseForHour(hour);
     const elevDeg = this._solarElevDeg(hour);
     const isGolden = elevDeg >= -6 && elevDeg <= 18;
-
     if (np > 0.9) return { top: '#020510', bot: '#060a1c', ground: 'rgba(15,20,40,0.9)' };
     if (np > 0.5) return { top: '#0a1535', bot: '#152040', ground: 'rgba(20,30,55,0.9)' };
     if (isGolden && elevDeg < 10 && hour <= 12) return { top: '#1a2a6c', bot: '#e05f10', ground: 'rgba(60,30,10,0.9)' };
@@ -546,24 +904,20 @@ export class UIController {
     return { top: '#1565c0', bot: '#42a5f5', ground: 'rgba(50,90,60,0.9)' };
   }
 
-  // ── Indicator pills (sun/moon/lamps) ─────────────────────────
   _updateIndicators(hour) {
     if (!this.$todIndicators) return;
-    const elevDeg  = this._solarElevDeg(hour);
-    const np       = this._nightPhaseForHour(hour);
-    const lampOn   = np > 0.25;
-    const sunActive = elevDeg > 0;
-
+    const elevDeg = this._solarElevDeg(hour);
+    const np      = this._nightPhaseForHour(hour);
+    const lampOn  = np > 0.25;
     const pill = (icon, label, active, color) =>
       `<div class="tod-pill ${active ? 'active' : ''}" style="--pill-color:${color}">
         <span>${icon}</span><span>${label}</span>
       </div>`;
-
     this.$todIndicators.innerHTML =
-      pill('☀', 'Sun',   sunActive,  '#ffd060') +
-      pill('☽', 'Moon',  np > 0.15,  '#c8d8ff') +
-      pill('★', 'Stars', np > 0.3,   '#aac8ff') +
-      pill('◎', 'Lamps', lampOn,     '#ffa040');
+      pill('☀', 'Sun',   elevDeg > 0,  '#ffd060') +
+      pill('☽', 'Moon',  np > 0.15,    '#c8d8ff') +
+      pill('★', 'Stars', np > 0.3,     '#aac8ff') +
+      pill('◎', 'Lamps', lampOn,       '#ffa040');
   }
 
   _bindEvents() {
@@ -572,13 +926,8 @@ export class UIController {
       if (e.key === 'Enter') this._geocode();
     });
 
-    // Collapsible sections
-    if (this.$todToggle) {
-      this.$todToggle.addEventListener('click', () => this._toggleCollapsible(this.$todToggle, this.$todBody));
-    }
-    if (this.$cloudToggle) {
-      this.$cloudToggle.addEventListener('click', () => this._toggleCollapsible(this.$cloudToggle, this.$cloudBody));
-    }
+    if (this.$todToggle)   this.$todToggle.addEventListener('click',   () => this._toggleCollapsible(this.$todToggle, this.$todBody));
+    if (this.$cloudToggle) this.$cloudToggle.addEventListener('click', () => this._toggleCollapsible(this.$cloudToggle, this.$cloudBody));
 
     this.$latInput.addEventListener('change', () => {
       this.lat = parseFloat(this.$latInput.value) || this.lat;
@@ -597,34 +946,23 @@ export class UIController {
       this._updateMinimap();
     });
 
-    // Manual time slider
     if (this.$todSlider) {
       this.$todSlider.addEventListener('input', () => {
         if (this._deviceTimeMode) return;
         this.timeOfDay = parseFloat(this.$todSlider.value);
         this._applyTimeOfDay(this.timeOfDay);
       });
-      this.$todSlider.addEventListener('mousedown', () => { this._sliderDragging = true; });
+      this.$todSlider.addEventListener('mousedown',  () => { this._sliderDragging = true; });
       this.$todSlider.addEventListener('touchstart', () => { this._sliderDragging = true; }, { passive: true });
-      this.$todSlider.addEventListener('mouseup',   () => { this._sliderDragging = false; });
-      this.$todSlider.addEventListener('touchend',  () => { this._sliderDragging = false; });
+      this.$todSlider.addEventListener('mouseup',    () => { this._sliderDragging = false; });
+      this.$todSlider.addEventListener('touchend',   () => { this._sliderDragging = false; });
     }
 
-    // Time mode buttons
-    if (this.$todManualBtn) {
-      this.$todManualBtn.addEventListener('click', () => this._setDeviceMode(false));
-    }
-    if (this.$todDeviceBtn) {
-      this.$todDeviceBtn.addEventListener('click', () => this._setDeviceMode(true));
-    }
+    if (this.$todManualBtn) this.$todManualBtn.addEventListener('click', () => this._setDeviceMode(false));
+    if (this.$todDeviceBtn) this.$todDeviceBtn.addEventListener('click', () => this._setDeviceMode(true));
 
-    // ── Cloud panel events ────────────────────────────────────
-    if (this.$cloudManualBtn) {
-      this.$cloudManualBtn.addEventListener('click', () => this._setCloudAutoMode(false));
-    }
-    if (this.$cloudAutoBtn) {
-      this.$cloudAutoBtn.addEventListener('click', () => this._setCloudAutoMode(true));
-    }
+    if (this.$cloudManualBtn) this.$cloudManualBtn.addEventListener('click', () => this._setCloudAutoMode(false));
+    if (this.$cloudAutoBtn)   this.$cloudAutoBtn.addEventListener('click',   () => this._setCloudAutoMode(true));
 
     if (this.$cloudCondSelect) {
       this.$cloudCondSelect.addEventListener('change', () => {
@@ -632,7 +970,6 @@ export class UIController {
         this._applyCloudProperties();
       });
     }
-
     if (this.$cloudCoverSlider) {
       this.$cloudCoverSlider.addEventListener('input', () => {
         this._cloudCover = parseInt(this.$cloudCoverSlider.value);
@@ -640,7 +977,6 @@ export class UIController {
         this._applyCloudProperties();
       });
     }
-
     if (this.$cloudWindSpeedSl) {
       this.$cloudWindSpeedSl.addEventListener('input', () => {
         this._windSpeed = parseInt(this.$cloudWindSpeedSl.value);
@@ -648,7 +984,6 @@ export class UIController {
         this._applyCloudProperties();
       });
     }
-
     if (this.$cloudWindAngleSl) {
       this.$cloudWindAngleSl.addEventListener('input', () => {
         this._windAngleDeg = parseInt(this.$cloudWindAngleSl.value);
@@ -656,7 +991,6 @@ export class UIController {
         this._applyCloudProperties();
       });
     }
-
     if (this.$cloudAltitudeSl) {
       this.$cloudAltitudeSl.addEventListener('input', () => {
         this._cloudAltitude = parseInt(this.$cloudAltitudeSl.value);
@@ -665,7 +999,6 @@ export class UIController {
       });
     }
 
-    // Render mode buttons
     this.$modeBtns.forEach(btn => {
       btn.addEventListener('click', () => {
         this.$modeBtns.forEach(b => b.classList.remove('active'));
@@ -676,133 +1009,77 @@ export class UIController {
     });
 
     this.$generateBtn.addEventListener('click', () => this._generate());
-    this.$canvas.addEventListener('mousemove', e => this._onMouseMove(e));
-    this.$canvas.addEventListener('mouseleave', () => this.$tooltip.classList.add('hidden'));
+    this.$canvas.addEventListener('mousemove',  e => this._onMouseMove(e));
+    this.$canvas.addEventListener('mouseleave', ()  => this.$tooltip.classList.add('hidden'));
 
-    // ── Mode transition buttons ───────────────────────────────
-    if (this.$enterSelBtn) {
-      this.$enterSelBtn.addEventListener('click', () => this._enterSelectionMode());
-    }
-    if (this.$selBackBtn) {
-      this.$selBackBtn.addEventListener('click', () => this._exitSelectionMode());
-    }
-    if (this.$enterWorldBtn) {
-      this.$enterWorldBtn.addEventListener('click', () => this._enterRoamingMode());
-    }
-    if (this.$roamBackBtn) {
-      this.$roamBackBtn.addEventListener('click', () => this._exitRoamingMode());
-    }
+    if (this.$enterSelBtn)  this.$enterSelBtn.addEventListener('click',  () => this._enterSelectionMode());
+    if (this.$selBackBtn)   this.$selBackBtn.addEventListener('click',   () => this._exitSelectionMode());
+    if (this.$enterWorldBtn) this.$enterWorldBtn.addEventListener('click', () => this._enterRoamingMode());
+    if (this.$roamBackBtn)  this.$roamBackBtn.addEventListener('click',  () => this._exitRoamingMode());
   }
 
   // ── App Mode State Machine ────────────────────────────────────
-  
+
   _enterSelectionMode() {
     if (!this._worldGenerated) return;
     this._appMode = 'location-selection';
-    if (this._overlay) this._overlay.setAppMode(this._appMode);
-    if (this._leftPanel) this._leftPanel.setAppMode(this._appMode);
-    // Hide main UI panel, show selection panel
+    this._overlay.setAppMode(this._appMode);
+    this._leftPanel.setAppMode(this._appMode);
     this.$uiPanel.classList.add('ui-hidden');
     this.$selectionPanel.classList.remove('panel-hidden');
-    //this.$roamingPanel.classList.add('panel-hidden');
-
-    // Reset beacon state UI
     if (this.$enterWorldBtn) this.$enterWorldBtn.disabled = true;
     if (this.$enterWorldBtn) this.$enterWorldBtn.classList.remove('beacon-ready');
     if (this.$selectionHint) this.$selectionHint.textContent = '🎯 Click anywhere on the map to set your spawn point';
-
-    // Remove any existing beacon/character
     this.scene.removeBeacon();
     this.scene.removeCharacter();
     this._beaconX = null;
     this._beaconY = null;
     this._beaconZ = null;
-
-    // Tell scene to handle ground clicks
     this.scene.enterSelectionMode();
-
-    // Crosshair cursor
     document.body.classList.add('selection-active');
-
-    // Tooltip off
     this.$tooltip.classList.add('hidden');
   }
 
   _exitSelectionMode() {
     this._appMode = 'map-creation';
-    if (this._overlay) this._overlay.setAppMode(this._appMode);
-    if (this._leftPanel) this._leftPanel.setAppMode(this._appMode);
+    this._overlay.setAppMode(this._appMode);
+    this._leftPanel.setAppMode(this._appMode);
     this.$uiPanel.classList.remove('ui-hidden');
     this.$selectionPanel.classList.add('panel-hidden');
-    //this.$roamingPanel.classList.add('panel-hidden');
-
     document.body.classList.remove('selection-active');
-
     this.scene.exitSelectionMode();
     this.scene.removeBeacon();
   }
 
   _enterRoamingMode() {
     if (this._beaconX === null) return;
-
     this._appMode = 'roaming';
-    if (this._overlay) this._overlay.setAppMode(this._appMode);
-    if (this._leftPanel) this._leftPanel.setAppMode(this._appMode);
-
-    // Hide selection panel, show roaming HUD
+    this._overlay.setAppMode(this._appMode);
+    this._leftPanel.setAppMode(this._appMode);
     this.$selectionPanel.classList.add('panel-hidden');
-    //this.$roamingPanel.classList.remove('panel-hidden');
-
-    // Disable ground-click selection
     this.scene.exitSelectionMode();
     this.scene.removeBeacon();
     document.body.classList.remove('selection-active');
-
-    // Spawn character at beacon position
     this.scene.spawnCharacter(this._beaconX, this._beaconY, this._beaconZ);
-
-    // Show crosshair
     const crosshair = document.getElementById('roam-crosshair');
     if (crosshair) crosshair.classList.remove('hidden');
-
-    // Visual roaming state
     document.body.classList.add('roaming-active');
-    // Start the third-person roaming camera
-    // Uses a smooth transition first, then hands off to RoamingCamera on arrival
     const spawnVec = new THREE.Vector3(this._beaconX, this._beaconY, this._beaconZ);
     this.scene.transitionToRoaming(() => {
-      // Transition complete — activate the interactive roaming camera
-      this.scene.startRoamingCamera(spawnVec, () => {
-        // Called when player presses Escape inside roaming mode
-        this._exitRoamingMode();
-      });
-      // Start game-mode session (explore or race) after camera is live
+      this.scene.startRoamingCamera(spawnVec, () => { this._exitRoamingMode(); });
       this._startGameModeSession(spawnVec);
     });
   }
 
-  // ── Game Mode Public API ──────────────────────────────────────
+  // ── Game Mode ─────────────────────────────────────────────────
 
-  /**
-   * Set the active game mode. Only takes effect at the start of the next
-   * roaming session; calling mid-session is a no-op to avoid state corruption.
-   * @param {'explore'|'race'} mode
-   */
   setGameMode(mode) {
     if (mode !== 'explore' && mode !== 'race') return;
-    //if (this._appMode === 'roaming') return; // cannot change while in world
     this._gameMode = mode;
   }
 
-  /** Returns the current game mode string. */
   getGameMode() { return this._gameMode; }
 
-  // ── Game Mode Internals ───────────────────────────────────────
-
-  /**
-   * Called when roaming begins.  Starts the appropriate game-mode session.
-   * @param {THREE.Vector3} spawnPos
-   */
   _startGameModeSession(spawnPos) {
     if (this._gameMode === 'race') {
       this._exploreJukeboxCat = null;
@@ -810,53 +1087,30 @@ export class UIController {
       this._startRaceTimer();
       this._switchJukeboxCategory('day');
     } else {
-      // explore — sync jukebox to time of day and begin tracking transitions
       this._exploreJukeboxCat = null;
       this._syncJukeboxToTimeOfDay();
     }
   }
 
-  /** Called when roaming ends (player exits or race concludes). */
   _endGameModeSession() {
     this._stopRaceTimer();
     this._raceState = 'idle';
     this._exploreJukeboxCat = null;
   }
 
-  // ── Explore mode helpers ──────────────────────────────────────
-
-  /**
-   * Switch the jukebox to a category appropriate for the current time of day.
-   * Explore mode: day (06:00–20:00) → 'day' category, otherwise 'night'.
-   */
   _syncJukeboxToTimeOfDay() {
-    const hour = this.timeOfDay;
-    const cat  = (hour >= 6 && hour < 20) ? 'day' : 'night';
+    const cat = (this.timeOfDay >= 6 && this.timeOfDay < 20) ? 'day' : 'night';
     this._switchJukeboxCategory(cat);
   }
 
-  // ── Race mode helpers ─────────────────────────────────────────
-
-  /**
-   * Build a simple checkpoint route around the spawn point.
-   * Checkpoints are placed at cardinal offsets scaled to the world radius.
-   * This is intentionally minimal — richer procedural generation can be
-   * added later without changing the state-machine contract.
-   * @param {THREE.Vector3} spawnPos
-   */
   _setupRace(spawnPos) {
-    const r = this.radius * 0.5; // half world radius keeps checkpoints reachable
+    const r = this.radius * 0.5;
     const offsets = [
-      { x:  r,  z:  0 },
-      { x:  0,  z: -r },
-      { x: -r,  z:  0 },
-      { x:  0,  z:  r },
+      { x:  r, z:  0 }, { x:  0, z: -r },
+      { x: -r, z:  0 }, { x:  0, z:  r },
     ];
     this._raceCheckpoints = offsets.map(o => ({
-      x:      spawnPos.x + o.x,
-      y:      spawnPos.y,
-      z:      spawnPos.z + o.z,
-      radius: 12,           // capture radius in metres
+      x: spawnPos.x + o.x, y: spawnPos.y, z: spawnPos.z + o.z, radius: 12,
     }));
     this._raceNextCheckpoint = 0;
     this._raceTimeLeft       = this._raceDuration;
@@ -871,103 +1125,53 @@ export class UIController {
       this._raceRAFId = requestAnimationFrame(tick);
       const dtSec = (nowMs - (this._racePrevMs ?? nowMs)) / 1000;
       this._racePrevMs = nowMs;
-
       this._raceTimeLeft = Math.max(0, this._raceTimeLeft - dtSec);
       this._tickRaceCheckpoints();
-
-      if (this._raceTimeLeft <= 0 && this._raceState === 'running') {
-        this._onRaceLose();
-      }
+      if (this._raceTimeLeft <= 0 && this._raceState === 'running') this._onRaceLose();
     };
     this._raceRAFId = requestAnimationFrame(tick);
   }
 
   _stopRaceTimer() {
-    if (this._raceRAFId !== null) {
-      cancelAnimationFrame(this._raceRAFId);
-      this._raceRAFId = null;
-    }
+    if (this._raceRAFId !== null) { cancelAnimationFrame(this._raceRAFId); this._raceRAFId = null; }
     this._racePrevMs = null;
   }
 
-  /**
-   * Check whether the player has reached the next checkpoint.
-   * Player position is read from the scene's roaming camera character position.
-   */
   _tickRaceCheckpoints() {
     if (this._raceNextCheckpoint >= this._raceCheckpoints.length) return;
-
     const charPos = this.scene.getCharacterPosition();
     if (!charPos) return;
-
     const cp = this._raceCheckpoints[this._raceNextCheckpoint];
-    const dx = charPos.x - cp.x;
-    const dz = charPos.z - cp.z;
-    const dist2 = dx * dx + dz * dz;
-
-    if (dist2 <= cp.radius * cp.radius) {
+    const dx = charPos.x - cp.x, dz = charPos.z - cp.z;
+    if (dx * dx + dz * dz <= cp.radius * cp.radius) {
       this._raceNextCheckpoint++;
-      if (this._raceNextCheckpoint >= this._raceCheckpoints.length) {
-        this._onRaceWin();
-      }
+      if (this._raceNextCheckpoint >= this._raceCheckpoints.length) this._onRaceWin();
     }
   }
 
-  _onRaceWin() {
-    this._raceState = 'win';
-    this._stopRaceTimer();
-    this._switchJukeboxCategory('win');
-  }
+  _onRaceWin()  { this._raceState = 'win';  this._stopRaceTimer(); this._switchJukeboxCategory('win'); }
+  _onRaceLose() { this._raceState = 'lose'; this._stopRaceTimer(); this._switchJukeboxCategory('lose'); }
 
-  _onRaceLose() {
-    this._raceState = 'lose';
-    this._stopRaceTimer();
-    this._switchJukeboxCategory('lose');
-  }
-
-  // ── Jukebox category helper ───────────────────────────────────
-
-  /**
-   * Ask the overlay's Jukebox instance to switch its active playback category.
-   * Silently does nothing if the jukebox hasn't been initialised yet.
-   * The displayed tab in the UI is intentionally left unchanged — the user's
-   * tab selection and the playing category are independent.
-   * @param {'day'|'night'|'win'|'lose'} cat
-   */
   _switchJukeboxCategory(cat) {
-    if (this._overlay) {
-      this._overlay.requestAutoPlay(cat);
-    }
+    if (this._overlay) this._overlay.requestAutoPlay(cat);
   }
 
   _exitRoamingMode() {
-    // Clean up game-mode session before dismantling the roaming state
     this._endGameModeSession();
-
     this._appMode = 'location-selection';
-    if (this._overlay) this._overlay.setAppMode(this._appMode);
-    if (this._leftPanel) this._leftPanel.setAppMode(this._appMode);
-    //this.$roamingPanel.classList.add('panel-hidden');
+    this._overlay.setAppMode(this._appMode);
+    this._leftPanel.setAppMode(this._appMode);
     this.$selectionPanel.classList.remove('panel-hidden');
     this.$uiPanel.classList.add('ui-hidden');
-
-    // Hide crosshair and remove roaming body class
     const crosshair = document.getElementById('roam-crosshair');
     if (crosshair) crosshair.classList.add('hidden');
     document.body.classList.remove('roaming-active');
-    // Stop the roaming camera first (releases pointer lock, re-enables orbit)
     this.scene.stopRoamingCamera();
-
-    // Reset beacon state UI
     if (this.$enterWorldBtn) this.$enterWorldBtn.disabled = true;
     if (this.$enterWorldBtn) this.$enterWorldBtn.classList.remove('beacon-ready');
     if (this.$selectionHint) this.$selectionHint.textContent = '🎯 Click anywhere on the map to set your spawn point';
-
-    // Remove character, transition camera back to orbit
     this.scene.removeCharacter();
     this.scene.transitionToOrbit(0, 0, this.radius);
-
-    // Re-enter selection mode
     this._beaconX = null;
     this._beaconY = null;
     this._beaconZ = null;
@@ -975,31 +1179,21 @@ export class UIController {
     this.scene.enterSelectionMode();
   }
 
-  // ── Local area time mode ──────────────────────────────────────
+  // ── Local time mode ───────────────────────────────────────────
+
   _setDeviceMode(on) {
     this._deviceTimeMode = on;
-
     if (this.$todManualBtn) this.$todManualBtn.classList.toggle('active', !on);
     if (this.$todDeviceBtn) this.$todDeviceBtn.classList.toggle('active', on);
     if (this.$todSliderWrap) {
-      this.$todSliderWrap.style.opacity     = on ? '0.35' : '1';
+      this.$todSliderWrap.style.opacity       = on ? '0.35' : '1';
       this.$todSliderWrap.style.pointerEvents = on ? 'none' : '';
     }
-
-    // Clear legacy interval if any
     if (this._deviceTimerID) { clearInterval(this._deviceTimerID); this._deviceTimerID = null; }
-
-    if (on) {
-      this._syncDeviceTime();
-    }
-    // rAF loop handles both modes — restart it so it picks up the mode change
-    if (this._worldGenerated) {
-      this._stopTimeLoop();
-      this._startTimeLoop();
-    }
+    if (on) this._syncDeviceTime();
+    if (this._worldGenerated) { this._stopTimeLoop(); this._startTimeLoop(); }
   }
 
-  // ── Time progression rAF loop ─────────────────────────────────
   _startTimeLoop() {
     this._stopTimeLoop();
     this._timePrevMs = performance.now();
@@ -1011,76 +1205,52 @@ export class UIController {
   }
 
   _stopTimeLoop() {
-    if (this._timeRAFId !== null) {
-      cancelAnimationFrame(this._timeRAFId);
-      this._timeRAFId = null;
-    }
+    if (this._timeRAFId !== null) { cancelAnimationFrame(this._timeRAFId); this._timeRAFId = null; }
     this._timePrevMs = null;
   }
-  /**
-     * Called each frame while in explore mode.
-     * Detects day↔night transitions in the advancing time-of-day and
-     * switches the jukebox category accordingly.
-     * Day:   solar elevation > 0  (sun above horizon)
-     * Night: solar elevation ≤ 0  (sun at or below horizon)
-     */
+
   _tickExploreDayNight() {
-    const elevDeg = this._solarElevDeg(this.timeOfDay);
-    const cat = elevDeg > 0 ? 'day' : 'night';
+    const cat = this._solarElevDeg(this.timeOfDay) > 0 ? 'day' : 'night';
     if (cat !== this._exploreJukeboxCat) {
       this._exploreJukeboxCat = cat;
       this._switchJukeboxCategory(cat);
     }
   }
+
   _tickTimeLoop(nowMs) {
     if (this._timePrevMs === null) { this._timePrevMs = nowMs; return; }
     const dtSec = (nowMs - this._timePrevMs) / 1000;
     this._timePrevMs = nowMs;
-
     if (this._deviceTimeMode) {
-      // ── Local time: read real area clock every frame ────────
       const areaHour = this._getAreaHour();
-      // Only update if visibly different (avoid thrashing every frame)
       if (Math.abs(areaHour - this.timeOfDay) > 0.0005) {
         this.timeOfDay = areaHour;
         if (this.$todSlider) this.$todSlider.value = areaHour;
         this._applyTimeOfDay(areaHour);
       }
     } else {
-      // ── Manual mode: advance at TIME_RATE_MANUAL ─────────
-      if (this._sliderDragging) return; // pause while user drags
+      if (this._sliderDragging) return;
       this.timeOfDay = (this.timeOfDay + this._TIME_RATE_MANUAL * dtSec) % 24;
       if (this.$todSlider) this.$todSlider.value = this.timeOfDay;
       this._applyTimeOfDay(this.timeOfDay);
     }
-
-    // ── Explore mode: detect day/night transitions and update jukebox ──
-    //if (this._appMode === 'roaming' && this._gameMode === 'explore') {
-    if (this._gameMode === 'explore') {
-      this._tickExploreDayNight();
-    }
+    if (this._gameMode === 'explore') this._tickExploreDayNight();
   }
 
-  // Returns the current local time for the searched area as a decimal hour (0–24).
-  // Uses the area's IANA timezone if available; falls back to device local time.
   _getAreaHour() {
-    const tz = this._localTimezone;
     try {
       const now = new Date();
-      if (tz) {
-        // Use Intl to get the time in the area's timezone
+      if (this._localTimezone) {
         const parts = new Intl.DateTimeFormat('en-US', {
-          timeZone: tz,
-          hour: 'numeric', minute: 'numeric', second: 'numeric',
-          hour12: false,
+          timeZone: this._localTimezone,
+          hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false,
         }).formatToParts(now);
         const get = type => parseInt(parts.find(p => p.type === type)?.value ?? '0');
         let h = get('hour');
-        if (h === 24) h = 0; // midnight edge case
+        if (h === 24) h = 0;
         return h + get('minute') / 60 + get('second') / 3600;
       }
     } catch (_) {}
-    // Fallback: device local time
     const now = new Date();
     return now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
   }
@@ -1092,33 +1262,22 @@ export class UIController {
     this._applyTimeOfDay(hour);
   }
 
-  // ── Apply time: drives scene + updates UI ─────────────────────
   _applyTimeOfDay(hour) {
     this.scene.setTimeOfDay(hour);
-
-    // Throttle expensive canvas redraws to ~10fps — the 3D scene updates every frame
-    // but the arc preview and indicator pills don't need sub-frame precision.
     const nowMs = performance.now();
     if (!this._lastArcDrawMs || nowMs - this._lastArcDrawMs >= 100) {
       this._lastArcDrawMs = nowMs;
       this._drawArc(hour);
       this._updateIndicators(hour);
     }
-
     const h  = Math.floor(hour) % 24;
     const m  = Math.round((hour % 1) * 60);
-    const hh = String(h).padStart(2, '0');
-    const mm = String(m).padStart(2, '0');
     const np = this._nightPhaseForHour(hour);
-    const icon = np > 0.5 ? '☽' : '☀';
-    const label = `${icon} ${hh}:${mm}`;
+    const label = `${np > 0.5 ? '☽' : '☀'} ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
     if (this.$todLabel) this.$todLabel.textContent = label;
     if (this.$todMeta)  this.$todMeta.textContent  = label;
-
-    // Show timezone badge when in local-time mode and timezone is known
     if (this.$todTzLabel) {
       if (this._deviceTimeMode && this._localTimezone) {
-        // Show short city name from IANA string (e.g. "Asia/Tokyo" → "Tokyo")
         const city = this._localTimezone.split('/').pop().replace(/_/g, ' ');
         this.$todTzLabel.textContent = `🌐 ${city}`;
       } else {
@@ -1142,11 +1301,9 @@ export class UIController {
       this.lng = result.lng;
       this.$latInput.value = result.lat.toFixed(6);
       this.$lngInput.value = result.lng.toFixed(6);
-      this._setStatus(`📍 ${result.display.split(',').slice(0, 2).join(',')}`, '');
+      this._setStatus(`📍 ${result.display.split(',').slice(0,2).join(',')}`, '');
       this._updateMinimap();
-      // Update SPA location immediately so manual slider is accurate for new coords
       this.scene.setLocation(this.lat, this.lng);
-      // If local-time mode is active, fetch timezone and sync
       if (this._deviceTimeMode) {
         this.fetcher.fetchWeather(this.lat, this.lng).then(w => {
           if (w.timezone) { this._localTimezone = w.timezone; this._syncDeviceTime(); }
@@ -1156,9 +1313,11 @@ export class UIController {
       this._setStatus(`Geocoding failed: ${err.message}`, 'error');
     }
   }
+
   _getMapKey() {
     return `${this.lat.toFixed(5)}|${this.lng.toFixed(5)}|${this.radius}`;
   }
+
   async _generate() {
     this.$generateBtn.disabled = true;
     if (this.$enterSelBtn) {
@@ -1170,51 +1329,29 @@ export class UIController {
     this._stopTimeLoop();
     this._worldGenerated = false;
     this._setStatus('Fetching map data…', 'active loading');
-
     try {
-      // In auto mode, fetch weather from API; in manual mode skip weather fetch
       let weatherPromise;
       if (this._cloudAutoMode) {
         weatherPromise = this.fetcher.fetchWeather(this.lat, this.lng);
       } else {
-        // Resolve immediately with current manual values
         const wmoCode = [0, 2, 3, 45, 61, 95][this._cloudCondition] ?? 1;
-        weatherPromise = Promise.resolve({
-          cloudCover:  this._cloudCover,
-          weatherCode: wmoCode,
-        });
+        weatherPromise = Promise.resolve({ cloudCover: this._cloudCover, weatherCode: wmoCode });
       }
+
       const mapKey = this._getMapKey();
+      const waysPromise = (this._lastMapKey === mapKey && this._lastWays)
+        ? Promise.resolve(this._lastWays)
+        : this._fetchWithRetry(this.lat, this.lng, this.radius);
 
-      let waysPromise;
-      
-      if (this._lastMapKey === mapKey && this._lastWays) {
-        waysPromise = Promise.resolve(this._lastWays);
-      } else {
-        waysPromise = this._fetchWithRetry(this.lat, this.lng, this.radius);
-      }
-      const [ways, weather] = await Promise.all([
-        waysPromise,
-        weatherPromise,
-      ]);
-
+      const [ways, weather] = await Promise.all([waysPromise, weatherPromise]);
       if (!ways.length) throw new Error('No map features found in this area.');
-      this._lastWays = ways;
+      this._lastWays   = ways;
       this._lastMapKey = mapKey;
 
-      // Store area timezone for Local Time mode (from weather response)
       if (weather.timezone) this._localTimezone = weather.timezone;
-
-      // Tell scene the geographic location so SPA solar algorithm is accurate
       this.scene.setLocation(this.lat, this.lng);
-
-      // Apply weather (cover + condition)
       this.scene.setWeather(weather.cloudCover, weather.weatherCode);
-
-      // If in auto mode, sync UI sliders to reflect fetched weather
       if (this._cloudAutoMode) this._syncWeatherToUI(weather);
-
-      // Always apply physics properties (wind, altitude)
       this._applyCloudProperties();
 
       this._setStatus('Fetching elevation data and building world…', 'active loading');
@@ -1224,7 +1361,6 @@ export class UIController {
       this.scene.setRenderMode(this.renderMode);
       this.scene.flyTo(0, 0, this.radius);
 
-      // If local-time mode is active, re-sync to area time now that timezone is known
       if (this._deviceTimeMode) {
         this._syncDeviceTime();
       } else {
@@ -1236,16 +1372,11 @@ export class UIController {
       this.$statTris.textContent      = `${Math.round(result.triangleCount).toLocaleString()} triangles`;
       this.$stats.classList.remove('hidden');
 
-      // Mark world as generated — enables the Explore button
       this._worldGenerated = true;
-      this._startTimeLoop(); // begin real-time time progression
+      this._startTimeLoop();
 
-      // Auto-start jukebox on first world generation.
-      // Category is chosen by current time of day (day/night).
-      // requestAutoPlay defers gracefully if the jukebox tab has never been opened.
       if (this._overlay) {
-        const elevDeg = this._solarElevDeg(this.timeOfDay);
-        const initialCat = elevDeg > 0 ? 'day' : 'night';
+        const initialCat = this._solarElevDeg(this.timeOfDay) > 0 ? 'day' : 'night';
         this._overlay.requestAutoPlay(initialCat);
       }
       if (this.$enterSelBtn) {
@@ -1256,8 +1387,7 @@ export class UIController {
       const cloudDesc = this._cloudCover < 20 ? 'clear skies' :
                         this._cloudCover < 50 ? 'partly cloudy' :
                         this._cloudCover < 80 ? 'mostly cloudy' : 'overcast';
-      const modeTag = this._cloudAutoMode ? 'live weather' : 'manual';
-      this._setStatus(`World ready — ${cloudDesc} (${this._cloudCover}% · ${modeTag}). Satellite imagery loading…`, '');
+      this._setStatus(`World ready — ${cloudDesc} (${this._cloudCover}% · ${this._cloudAutoMode ? 'live weather' : 'manual'}). Satellite imagery loading…`, '');
       setTimeout(() => {
         if (this.$status.textContent.includes('Satellite')) {
           this._setStatus('Drag to orbit · Scroll to zoom · Hover to inspect', '');
@@ -1274,49 +1404,26 @@ export class UIController {
       this.$generateBtn.disabled = false;
     }
   }
+
   async _fetchWithRetry(lat, lng, radius) {
     try {
       this._setStatus('Fetching map data…', 'active loading');
-  
       const result = await this.fetcher.fetchArea(lat, lng, radius);
-  
-      // 🔒 Step 7 — HARD VALIDATION
-      if (!result || !result.ways || result.ways.length === 0) {
-        throw new Error('Empty map data');
-      }
-  
-      const hasCoreData = result.ways.some(
-        w => w.kind === 'building' || w.kind === 'road'
-      );
-  
-      if (!hasCoreData) {
-        throw new Error('Incomplete map data');
-      }
-  
-      // ✅ Status update based on source
-      if (result.source === 'cache') {
-        this._setStatus('Loaded cached map data', 'warning');
-      } else {
-        this._setStatus('Map data loaded', 'success');
-      }
-  
+      if (!result || !result.ways || result.ways.length === 0) throw new Error('Empty map data');
+      const hasCoreData = result.ways.some(w => w.kind === 'building' || w.kind === 'road');
+      if (!hasCoreData) throw new Error('Incomplete map data');
+      this._setStatus(result.source === 'cache' ? 'Loaded cached map data' : 'Map data loaded', '');
       return result.ways;
-  
     } catch (err) {
       console.error('Map load failed:', err);
-  
       this._setStatus('Failed to load map data', 'error');
-  
-      // 🚫 CRITICAL: propagate failure
       throw err;
     }
   }
 
   _onMouseMove(e) {
-    // In selection/roaming modes, suppress building tooltip
     if (this._appMode !== 'map-creation') {
       this.$tooltip.classList.add('hidden');
-      return;
     }
   }
 
@@ -1326,16 +1433,16 @@ export class UIController {
   }
 
   _updateMinimap() {
-    this.minimap.update(this.lng, this.lat, this.radius, "streets"/*this.$styleSelect.value*/);
+    this.minimap.update(this.lng, this.lat, this.radius, 'streets');
   }
 
   _nextFrame() { return new Promise(r => requestAnimationFrame(r)); }
   _sleep(ms)   { return new Promise(r => setTimeout(r, ms)); }
 }
 
-// ── Local math helpers (no THREE import needed here) ──────────
-function THREE_MathUtils_clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-function smoothstep(x, lo, hi) {
-  const t = THREE_MathUtils_clamp((x - lo) / (hi - lo), 0, 1);
+// ── Module-level math helpers ──────────────────────────────────
+function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function _smoothstep(x, lo, hi) {
+  const t = _clamp((x - lo) / (hi - lo), 0, 1);
   return t * t * (3 - 2 * t);
 }
