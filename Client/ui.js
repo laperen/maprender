@@ -928,16 +928,16 @@ export class UIController {
   // ── Jukebox category helper ───────────────────────────────────
 
   /**
-   * Ask the overlay's Jukebox instance to switch to a given category.
+   * Ask the overlay's Jukebox instance to switch its active playback category.
    * Silently does nothing if the jukebox hasn't been initialised yet.
+   * The displayed tab in the UI is intentionally left unchanged — the user's
+   * tab selection and the playing category are independent.
    * @param {'day'|'night'|'win'|'lose'} cat
    */
   _switchJukeboxCategory(cat) {
-    const jb = this._overlay?._jukebox;
-    if (!jb) return;
-    // Activate the matching tab button inside the jukebox root
-    const btn = jb._root?.querySelector(`.jk-cat[data-cat="${cat}"]`);
-    if (btn) btn.click(); // triggers jukebox's own category-switch handler
+    if (this._overlay) {
+      this._overlay.requestAutoPlay(cat);
+    }
   }
 
   _exitRoamingMode() {
@@ -1239,6 +1239,15 @@ export class UIController {
       // Mark world as generated — enables the Explore button
       this._worldGenerated = true;
       this._startTimeLoop(); // begin real-time time progression
+
+      // Auto-start jukebox on first world generation.
+      // Category is chosen by current time of day (day/night).
+      // requestAutoPlay defers gracefully if the jukebox tab has never been opened.
+      if (this._overlay) {
+        const elevDeg = this._solarElevDeg(this.timeOfDay);
+        const initialCat = elevDeg > 0 ? 'day' : 'night';
+        this._overlay.requestAutoPlay(initialCat);
+      }
       if (this.$enterSelBtn) {
         this.$enterSelBtn.disabled = false;
         this.$enterSelBtn.classList.add('world-ready');

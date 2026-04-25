@@ -36,6 +36,11 @@ export class OverlayPanel {
     const saved = loadSettings();
     this._bgmVolume = saved?.bgmVolume  ?? 50;   // 0–100
     this._turnSens  = saved?.turnSens   ?? 100;  // 10–200, where 100 = 1.0×
+
+    // Deferred autoPlay: if autoPlay() is called before the jukebox tab has
+    // been opened (and _initJukebox() has run), we store the category here
+    // and flush it the moment the jukebox is initialised.
+    this._pendingAutoPlay = null;
   }
 
   // ── Persist current settings ──────────────────────────────────
@@ -50,6 +55,8 @@ export class OverlayPanel {
     this._cacheDOM();
     this._bindEvents();
     this._applySettings();
+    
+    this._initJukebox();
   }
 
   _updateMapPreviewVisibility() {
@@ -226,6 +233,25 @@ export class OverlayPanel {
     this._jukebox.init(mount);
     this._jukeboxReady = true;
     this._applyBGMVolume();
+    // Flush any autoPlay that was requested before the jukebox was opened
+    if (this._pendingAutoPlay) {
+      this._jukebox.autoPlay(this._pendingAutoPlay);
+      this._pendingAutoPlay = null;
+    }
+  }
+
+  /**
+   * Called by UIController after world generation.
+   * If the jukebox tab has already been opened, delegates immediately;
+   * otherwise stores the category for deferred execution on first open.
+   * @param {'day'|'night'|'win'|'lose'} cat
+   */
+  requestAutoPlay(cat) {
+    if (this._jukeboxReady && this._jukebox) {
+      this._jukebox.autoPlay(cat);
+    } else {
+      this._pendingAutoPlay = cat;
+    }
   }
 
   _updateCategoryVisibility() {

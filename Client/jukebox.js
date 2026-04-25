@@ -19,9 +19,13 @@ export class Jukebox {
     this._playbackToken  = 0;
 
     this._categories = { day: [], night: [], win: [], lose: [] };
-    this._currentCategory = 'day';
-    this._currentIndex    = 0;
-    this._currentVolume   = 0.5;
+    // _currentCategory drives the displayed list in the UI tab.
+    // _playbackCategory drives which list actually plays — changed only via
+    // autoPlay() or switchPlaybackCategory(), never by tab clicks.
+    this._currentCategory  = 'day';
+    this._playbackCategory = '';
+    this._currentIndex     = 0;
+    this._currentVolume    = 0.5;
 
     // ── DOM refs (set in init) ───────────────────────────────
     this._root = null;   // scoped root element
@@ -76,12 +80,11 @@ export class Jukebox {
       btn.addEventListener('click', () => {
         this._$catBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        this._setCategory(btn.dataset.cat);
-        // If the newly selected category is empty or volume is zero, stop playback
-        if (this._isBlocked() && this._isPlaying) {
-          this._pause();
-          this._setPlaying(false, '');
-        }
+        // Only switch the displayed list — do NOT change _playbackCategory
+        // or affect the currently playing track.
+        this._currentCategory = btn.dataset.cat;
+        this._updateAudioList();
+        this._saveToStorage();
       });
     });
 
@@ -90,19 +93,20 @@ export class Jukebox {
     this._$urlInput.addEventListener('keydown', e => {
       if (e.key === 'Enter') this._handleAdd();
     });
-
     // Playback
+    // automatically via autoPlay() when the world is first generated.
     this._$playBtn.addEventListener('click',  () => {
-      if (this._isBlocked()) return;
+      if (this._isPlaybackBlocked()) return;
       this._play();
       this._setPlaying(true, this._currentUrl());
     });
+    // Pause and next remain user-controllable.
     this._$pauseBtn.addEventListener('click', () => {
       this._pause();
       this._setPlaying(false, '');
     });
     this._$nextBtn.addEventListener('click',  () => {
-      if (this._isBlocked()) return;
+      if (this._isPlaybackBlocked()) return;
       this._next();
       setTimeout(() => this._setPlaying(true, this._currentUrl()), 80);
     });
@@ -132,9 +136,10 @@ export class Jukebox {
 
   _saveToStorage() {
     localStorage.setItem('jukebox_playlists', JSON.stringify({
-      categories:    this._categories,
-      volume:        this._currentVolume,
-      category:      this._currentCategory,
+      categories:       this._categories,
+      volume:           this._currentVolume,
+      category:         this._currentCategory,
+      playbackCategory: this._playbackCategory,
     }));
   }
 
@@ -146,16 +151,47 @@ export class Jukebox {
       if (parsed.categories) Object.assign(this._categories, parsed.categories);
       if (parsed.volume !== undefined) this._currentVolume = parsed.volume;
       if (parsed.category) this._currentCategory = parsed.category;
+      //if (parsed.playbackCategory) this._playbackCategory = parsed.playbackCategory;
     } catch (_) {}
   }
 
   // ── Category ─────────────────────────────────────────────────
 
-  _setCategory(cat) {
+  // Switch only the displayed tab list (no playback effect).
+  _setDisplayCategory(cat) {
     this._currentCategory = cat;
-    this._currentIndex    = 0;
     this._updateAudioList();
     this._saveToStorage();
+  }
+
+  /**
+   * Switch the active playback category.
+   * If tracks are available and not muted, begins playing from index 0
+   * of the new category (with crossfade from the current track).
+   * Does NOT change the displayed tab — UI and playback are independent.
+   * @param {'day'|'night'|'win'|'lose'} cat
+   */
+  switchPlaybackCategory(cat) {
+    if (!this._categories[cat] || cat == this._playbackCategory) return;
+    this._playbackCategory = cat;
+    this._currentIndex = 0;
+    this._saveToStorage();
+    // Start/crossfade into the new category if not muted and list is non-empty
+    const list = this._categories[this._playbackCategory];
+    if (list.length && !this._isMuted()) {
+      this._isTransitioning = false; // allow override of any in-progress transition
+      this._loadTrack(list[this._currentIndex]);
+    }
+  }
+
+  /**
+   * Called once by ui.js after the first world generation.
+   * Begins playback from the specified category (respects volume/mute).
+   * Subsequent calls from the same session are treated as category switches.
+   * @param {'day'|'night'|'win'|'lose'} cat
+   */
+  autoPlay(cat) {
+    this.switchPlaybackCategory(cat);
   }
 
   // ── Track list UI ────────────────────────────────────────────
@@ -230,35 +266,59 @@ export class Jukebox {
       },
     };
   }
-
   _createSoundCloudPlayer(url) {
     // Remove old iframe if any
-    if (this._scIframe) this._scIframe.remove();
-
-    this._scIframe = document.createElement('iframe');
-    this._scIframe.style.cssText = 'width:0;height:0;opacity:0;position:absolute;';
-    this._scIframe.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}`;
-    document.body.appendChild(this._scIframe);
-
-    // SC.Widget is loaded via the script tag injected by _ensureSCApi
-    const widget = window.SC.Widget(this._scIframe);
-    this._scWidget = widget;
-
-    return {
-      play:      () => widget.play(),
-      pause:     () => widget.pause(),
-      setVolume: v  => widget.setVolume(this._clamp(v) * 100),
-      onEnd: cb => {
-        let called = false;
-        const safe = () => { if (called) return; called = true; cb(); };
-        widget.bind(window.SC.Widget.Events.READY, () => {
-          widget.play();
-          widget.setVolume(this._currentVolume * 100);
-          widget.getDuration(d => setTimeout(safe, d));
-          widget.bind(window.SC.Widget.Events.FINISH, safe);
-        });
-      },
-    };
+    if (this._scIframe) {
+      this._scIframe.remove();
+      this._scIframe = null;
+      this._scWidget = null;
+    }
+  
+    // Wrap in a Promise so _createPlayer can await the widget being ready.
+    // SC.Widget internally calls iframe.contentWindow.postMessage, which throws
+    // if called before the iframe document exists. We defer Widget construction
+    // until the iframe's load event fires, guaranteeing contentWindow is non-null.
+    return new Promise((resolve) => {
+      const iframe = document.createElement('iframe');
+      iframe.style.cssText = 'width:0;height:0;opacity:0;position:absolute;pointer-events:none;';
+      // auto_play=false so the widget doesn't fire before we're ready
+      iframe.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent(url)}&auto_play=false&buying=false&sharing=false&show_artwork=false`;
+      this._scIframe = iframe;
+      document.body.appendChild(iframe);
+  
+      iframe.addEventListener('load', () => {
+        const widget = window.SC.Widget(iframe);
+        this._scWidget = widget;
+  
+        let _pendingPlay   = false;
+        let _pendingVolume = this._currentVolume;
+        let _ready         = false;
+  
+        const player = {
+          play:      () => { if (_ready) widget.play();  else _pendingPlay = true; },
+          pause:     () => { if (_ready) widget.pause(); },
+          setVolume: v  => {
+            _pendingVolume = this._clamp(v);
+            if (_ready) widget.setVolume(_pendingVolume * 100);
+          },
+          onEnd: cb => {
+            let called = false;
+            const safe = () => { if (called) return; called = true; cb(); };
+  
+            widget.bind(window.SC.Widget.Events.READY, () => {
+              _ready = true;
+              widget.setVolume(_pendingVolume * 100);
+              if (_pendingPlay) widget.play();
+              // Duration fallback in case FINISH doesn't fire
+              widget.getDuration(d => { if (d > 0) setTimeout(safe, d); });
+              widget.bind(window.SC.Widget.Events.FINISH, safe);
+            });
+          },
+        };
+  
+        resolve(player);
+      }, { once: true });
+    });
   }
 
   async _createAudiusPlayer(url) {
@@ -331,7 +391,7 @@ export class Jukebox {
   }
 
   _play() {
-    const list = this._categories[this._currentCategory];
+    const list = this._categories[this._playbackCategory];
     if (!list.length) return;
     if (this._activePlayer && !this._isPlaying) {
       this._activePlayer.play();
@@ -348,9 +408,11 @@ export class Jukebox {
 
   _next() {
     this._isTransitioning = false;
-    const list = this._categories[this._currentCategory];
+    const list = this._categories[this._playbackCategory];
     if (!list.length || this._isMuted()) return;
-    this._currentIndex = (this._currentIndex + 1) % list.length;
+    let nextIndex = (this._currentIndex + 1) % list.length;
+    if(this._currentIndex == nextIndex){return;}
+    this._currentIndex = nextIndex;
     this._loadTrack(list[this._currentIndex]);
   }
 
@@ -363,7 +425,7 @@ export class Jukebox {
   // ── Now-playing helpers ──────────────────────────────────────
 
   _currentUrl() {
-    const list = this._categories[this._currentCategory];
+    const list = this._categories[this._playbackCategory];
     return list[this._currentIndex]?.url || '';
   }
 
@@ -426,15 +488,21 @@ export class Jukebox {
     return this._currentVolume <= 0;
   }
 
-  /** True when the active category's playlist is empty. */
+  /** True when the active playback category's playlist is empty. */
   _isListEmpty() {
-    return this._categories[this._currentCategory].length === 0;
+    return this._categories[this._playbackCategory].length === 0;
   }
 
-  /** Returns true if any user-initiated playback action should be blocked. */
-  _isBlocked() {
+  /**
+   * True when next/skip should be blocked (muted or playback list empty).
+   * The play button is intentionally disabled — use autoPlay() to start.
+   */
+  _isPlaybackBlocked() {
     return this._isMuted() || this._isListEmpty();
   }
+
+  /** @deprecated use _isPlaybackBlocked */
+  _isBlocked() { return this._isPlaybackBlocked(); }
 
   // ── Utils ────────────────────────────────────────────────────
 
