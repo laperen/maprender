@@ -32,6 +32,10 @@ const LAMP_ROAD_TYPES  = new Set([
   'tertiary', 'residential', 'service', 'living_street',
 ]);
 
+const ELEV_MIN = -500;   // below sea level (safe bound)
+const ELEV_MAX = 9000;   // Everest range
+//const ELEV_SPIKE_THRESHOLD = 120; // meters vs neighbors
+
 export class WorldBuilder {
   constructor(sceneManager) {
     this.scene         = sceneManager;
@@ -85,20 +89,64 @@ export class WorldBuilder {
     try {
       elevGrid = await fetchElevationGrid(lat, lng, radiusMeters, gridSize);
     } catch (_) {}
-  
+    const rawSample = (c, r) => {
+      if (!elevGrid) return 0;
+    
+      const h = elevGrid[r * gridSize + c];
+    
+      // 🚨 hard validation
+      if (!Number.isFinite(h) || h < ELEV_MIN || h > ELEV_MAX) {
+        return null;
+      }
+    
+      return h;
+    };
     const rawElev = (x, z) => {
       if (!elevGrid) return 0;
+    
       const halfR = radiusMeters;
+    
       const fc = (x + halfR) / (halfR * 2) * (gridSize - 1);
       const fr = (z + halfR) / (halfR * 2) * (gridSize - 1);
+    
       const c0 = Math.max(0, Math.min(gridSize - 2, Math.floor(fc)));
       const r0 = Math.max(0, Math.min(gridSize - 2, Math.floor(fr)));
       const c1 = c0 + 1, r1 = r0 + 1;
-      const tc = fc - c0, tr = fr - r0;
-      return elevGrid[r0*gridSize+c0]*(1-tc)*(1-tr)
-           + elevGrid[r0*gridSize+c1]*   tc *(1-tr)
-           + elevGrid[r1*gridSize+c0]*(1-tc)*   tr
-           + elevGrid[r1*gridSize+c1]*   tc *   tr;
+    
+      const tc = fc - c0;
+      const tr = fr - r0;
+    
+      // ✅ fetch samples safely
+      let h00 = rawSample(c0, r0);
+      let h10 = rawSample(c1, r0);
+      let h01 = rawSample(c0, r1);
+      let h11 = rawSample(c1, r1);
+    
+      // 🚨 if any sample is bad → repair using neighbors
+      const samples = [h00, h10, h01, h11].filter(v => v !== null);
+    
+      if (samples.length === 0) return 0;
+    
+      const fallback = samples.reduce((a, b) => a + b, 0) / samples.length;
+    
+      if (h00 === null) h00 = fallback;
+      if (h10 === null) h10 = fallback;
+      if (h01 === null) h01 = fallback;
+      if (h11 === null) h11 = fallback;
+    
+      // 🎯 normal bilinear interpolation
+      let h =
+        h00 * (1 - tc) * (1 - tr) +
+        h10 * tc       * (1 - tr) +
+        h01 * (1 - tc) * tr +
+        h11 * tc       * tr;
+
+      const neighborAvg = (h00 + h10 + h01 + h11) * 0.25;
+      const ELEV_SPIKE_THRESHOLD = Math.max(50, Math.abs(neighborAvg) * 0.5);
+      if (Math.abs(h - neighborAvg) > ELEV_SPIKE_THRESHOLD) {
+        h = neighborAvg;
+      }
+      return h;
     };
   
     const centreElev = rawElev(0, 0);
