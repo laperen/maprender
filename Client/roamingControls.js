@@ -1,42 +1,11 @@
 // roamingControls.js — Third-person boom-arm camera + capsule-collision physics.
-//
-// Movement model ported from customMovement.js / customCollision.js:
-//   • Capsule collider resolved via three-mesh-bvh shapecast (same BVH already
-//     built by WorldBuilder for the terrain mesh).
-//   • Inertia-based ground movement with air nudge and wall-ride detection.
-//   • Gravity accumulator; double-jump with inertia gating.
-//   • Wall-ride: player can run along steep surfaces briefly before gravity wins.
-//
-// Camera model retained from the original roamingControls.js:
-//   • Boom-arm (yaw + pitch) with smooth lerp and geometry push-back.
 
 import * as THREE from 'three';
 import {StartCloneUse,GetMiscVect,CloneVector3} from './mrUtils.js';
 
-// ── Tunables — camera ─────────────────────────────────────────
-const BOOM_LENGTH     = 10;
-const BOOM_MIN        =  2;
-const BOOM_MAX        = 28;
-const BOOM_ZOOM_SPD   =  2.5;
-const PITCH_MIN       = -55;   // degrees
-const PITCH_MAX       =  70;
-const MOUSE_SENS_X    =  0.18;
-const MOUSE_SENS_Y    =  0.14;
-const LERP_CAM_K      = 14;
-const USE_HEIGHT      =  1.6;  // eye offset above feet
-const CAM_COLLISION_R =  0.6;
-
 // ── Tunables — character ──────────────────────────────────────
 const CAPSULE_RADIUS  =  0.5;   // metres — half-width of collision capsule
 const CAPSULE_HEIGHT  =  0.7;   // inner segment length (total = height + 2*radius)
-
-const FRICTION = 1.5;
-// for collision, Tune this value (smaller = more accurate, more expensive)
-const MAX_STEP = 0.5;
-
-// Slope angle (radians) beyond which a surface is a wall, not ground
-const SLOPE_LIMIT     = Math.PI / 4;  // 45°
-const rad90 = Math.PI/2;// 90°
 
 // ── Key map ───────────────────────────────────────────────────
 const KEYS = {
@@ -68,26 +37,6 @@ export class RoamingControls {
     // Set externally by WorldBuilder / SceneManager after each world build.
     // Each entry is a THREE.Mesh whose geometry already has a boundsTree (BVH).
     this.collidables = [];
-
-    // ── Camera state ─────────────────────────────────────────
-    this._yaw      = 0;
-    this._pitch    = -10;
-    this._boomLen  = BOOM_LENGTH;
-    this._camTarget = new THREE.Vector3();
-    this._firstTick = true;
-
-    // Instance-level sensitivity (can be overridden by Settings panel)
-    this._mouseSensX = MOUSE_SENS_X;
-    this._mouseSensY = MOUSE_SENS_Y;
-
-    // Scratch — camera
-    this._boomDir  = new THREE.Vector3();
-    this._pivot    = new THREE.Vector3();
-    this._idealCam = new THREE.Vector3();
-    this._camDir   = new THREE.Vector3();
-    this._camRay   = new THREE.Raycaster();
-    this._camRay.firstHitOnly = true;
-
     // ── Character physics state ───────────────────────────────
     // Feet position (bottom of capsule)
     this._charPos     = new THREE.Vector3();
@@ -101,31 +50,6 @@ export class RoamingControls {
       scene.add(m);
       return m;
     })();
-
-    // Velocity components — mirrors customMovement.js split
-    this._accelAccum    = new THREE.Vector3();  // ground horizontal inertia
-    this._airNudgeAccum = new THREE.Vector3();  // air lateral nudge
-    this._gravityAccum  = 0;                    // vertical accumulator (signed)
-    this._velocity      = new THREE.Vector3();  // composite each frame
-
-    // Surface state
-    this._onSurface    = false;   // touching any collidable surface this frame
-    this._targetUp     = new THREE.Vector3(0, 1, 0); // current "up" for the character
-    this._wallRiding   = false;
-    this._wallRideAngle = 0;      // angle between targetUp and world up
-    this._inertiaMax   = 0;
-    this._inertiaCurr  = 0;
-    this._inertiaRefreshCurr = 0;
-    this._airJumpCount = 0;       // mid-air jumps used
-
-    // Input helpers
-    this._prevJump = false;
-
-    // Probe ray (fallback when BVH not available)
-    this._probeRay    = new THREE.Raycaster();
-    this._probeRay.firstHitOnly = true;
-    this._probeOrigin = new THREE.Vector3();
-    this._probeDown   = new THREE.Vector3(0, -1, 0);
 
     // ── Input state ───────────────────────────────────────────
     this._keys = {};
@@ -148,28 +72,7 @@ export class RoamingControls {
   activate(spawnPos, yawDeg = 0) {
     if (this._active) return;
     this._active    = true;
-    this._yaw       = THREE.MathUtils.degToRad(yawDeg);
-    this._pitch     = -10;
-    this._boomLen   = BOOM_LENGTH;
-    this._firstTick = true;
-
-    // Place character at spawn
-    this._charPos.copy(spawnPos);
-    this._syncColliderToFeet();
-
-    // Reset physics
-    this._accelAccum.set(0, 0, 0);
-    this._airNudgeAccum.set(0, 0, 0);
-    this._gravityAccum  = 0;
-    this._velocity.set(0, 0, 0);
-    this._onSurface     = false;
-    this._wallRiding    = false;
-    this._targetUp.set(0, 1, 0);
-    this._airJumpCount  = 0;
-    this._inertiaMax    = 0;
-    this._inertiaCurr   = 0;
-    this._prevJump      = false;
-
+    //
     this._bindEvents();
     this._requestPointerLock();
   }
@@ -187,108 +90,15 @@ export class RoamingControls {
    */
   tick(dt) {
     if (!this._active) return this._charPos;
-    //this._updatePhysics(dt);
-    this._positionCamera(dt);
+    //run updates here
     return this._charPos;
   }
 
   get isActive() { return this._active; }
 
-
-  // ── Helpers ───────────────────────────────────────────────────
-
-  /** Sync the invisible collider's centre Y from the feet position. */
-  _syncColliderToFeet() {
-    this._colliderMesh.position.set(
-      this._charPos.x,
-      this._charPos.y + CAPSULE_RADIUS + CAPSULE_HEIGHT * 0.5,
-      this._charPos.z
-    );
-    this._colliderMesh.updateMatrixWorld();
+  _teleportOOB() {
+    //teleport to last grounded position when out of bounds
   }
-
-  /** Derive feet from collider centre (inverse of above). */
-  _syncFeetFromCollider() {
-    this._charPos.set(
-      this._colliderMesh.position.x,
-      this._colliderMesh.position.y - CAPSULE_RADIUS - CAPSULE_HEIGHT * 0.5,
-      this._colliderMesh.position.z
-    );
-  }
-
-  /** Return the triangle normal with the highest Y component (most "ground-like"). */
-  _flattest(list) {
-    if (!list || !list.length) return null;
-    let best = null, bestY = -Infinity;
-    for (const n of list) {
-      if (n.y > bestY) { bestY = n.y; best = n; }
-    }
-    return best;
-  }
-
-  _teleportToOrigin() {
-    this._charPos.set(0, 5, 0);
-    this._syncColliderToFeet();
-    this._accelAccum.set(0, 0, 0);
-    this._airNudgeAccum.set(0, 0, 0);
-    this._gravityAccum = 0;
-    this._targetUp.set(0, 1, 0);
-  }
-
-  // ═══════════════════════════════════════════════════════════
-  // CAMERA  (retained from original roamingControls.js)
-  // ═══════════════════════════════════════════════════════════
-
-  _positionCamera(dt) {
-    const pitchRad = THREE.MathUtils.degToRad(this._pitch);
-    const cosPitch = Math.cos(pitchRad);
-    const sinPitch = Math.sin(pitchRad);
-
-    // Eye pivot — character feet + use-height
-    this._pivot.copy(this._charPos);
-    this._pivot.y += USE_HEIGHT;
-
-    this._boomDir.set(
-      -Math.sin(this._yaw) * cosPitch,
-       sinPitch,
-      -Math.cos(this._yaw) * cosPitch
-    ).normalize();
-
-    this._idealCam.copy(this._pivot).addScaledVector(this._boomDir, this._boomLen);
-
-    const finalCam = this._resolveCamera(this._pivot, this._idealCam);
-
-    if (this._firstTick) {
-      this._camTarget.copy(finalCam);
-      this._firstTick = false;
-    } else {
-      this._camTarget.lerp(finalCam, 1 - Math.exp(-LERP_CAM_K * dt));
-    }
-
-    this._camera.position.copy(this._camTarget);
-    this._camera.lookAt(this._pivot);
-  }
-
-  _resolveCamera(pivot, idealPos) {
-    StartCloneUse();
-    
-    this._camDir.subVectors(idealPos, pivot).normalize();
-    const dist = pivot.distanceTo(idealPos);
-    this._camRay.set(pivot, this._camDir);
-    this._camRay.far = dist + CAM_COLLISION_R;
-
-    if (!this.collidables || !this.collidables.length) return idealPos;
-
-    for (const mesh of this.collidables) {
-      const hits = this._camRay.intersectObject(mesh, false);
-      if (hits.length && hits[0].distance < dist) {
-        const safeDist = Math.max(1.5, hits[0].distance - CAM_COLLISION_R);
-        return CloneVector3(pivot).addScaledVector(this._camDir, safeDist);
-      }
-    }
-    return idealPos;
-  }
-
   // ═══════════════════════════════════════════════════════════
   // INPUT
   // ═══════════════════════════════════════════════════════════
@@ -299,32 +109,25 @@ export class RoamingControls {
     if (!this._active) return;
     this._keys[e.code] = true;
     if (e.code === 'Space') e.preventDefault();
-    // Escape: exit roaming
-    /*
-    if (e.code === 'Escape') {
-      if (typeof this.onExit === 'function') this.onExit();
-    }
-    */
   }
 
   _onKeyUp(e) { this._keys[e.code] = false; }
 
   _onMouseMove(e) {
     if (!this._active || !document.pointerLockElement) return;
-    this._yaw   -= (e.movementX ?? 0) * this._mouseSensX * (Math.PI / 180);
-    this._pitch  = THREE.MathUtils.clamp(
-      this._pitch + (e.movementY ?? 0) * this._mouseSensY,
-      PITCH_MIN, PITCH_MAX
-    );
+    //
   }
 
   _onWheel(e) {
     if (!this._active) return;
     e.preventDefault();
+    //adapt for zooming 
+    /*
     this._boomLen = THREE.MathUtils.clamp(
       this._boomLen + (e.deltaY > 0 ? 1 : -1) * BOOM_ZOOM_SPD,
       BOOM_MIN, BOOM_MAX
     );
+    */
   }
 
   _onCanvasClick() {

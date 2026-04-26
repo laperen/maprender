@@ -293,6 +293,7 @@ export class SceneManager {
 
     this.camera = new THREE.PerspectiveCamera(55, w / h, 1, 30000);
     this.camera.position.set(0, 600, 1200);
+    this.camera.rotation.order = 'YXZ';
     this.camera.lookAt(0, 0, 0);
 
     this.controls = new OrbitControlsImpl(this.camera, this.renderer.domElement);
