@@ -1,7 +1,7 @@
 // roamingControls.js — Third-person boom-arm camera + capsule-collision physics.
 
 import * as THREE from 'three';
-import {StartCloneUse,GetMiscVect,CloneVector3} from './mrUtils.js';
+import {StartCloneUse,GetMiscVect,CloneVector3,CheckVector3Equals} from './mrUtils.js';
 
 let player = {
   //rendering settings
@@ -62,6 +62,8 @@ let keyStates = {};
 // ── Tunables — character ──────────────────────────────────────
 const CAPSULE_RADIUS  =  0.5;   // metres — half-width of collision capsule
 const CAPSULE_HEIGHT  =  0.7;   // inner segment length (total = height + 2*radius)
+const closeToZero = 0.001 * 0.001;
+const zerovect = new THREE.Vector3(0,0,0);
 
 // ── Key map ───────────────────────────────────────────────────
 const KEYS = {
@@ -141,6 +143,15 @@ export class RoamingControls {
 
     this._spawnPos;
     this.surfacehit;
+
+    this.tempBox = new THREE.Box3();
+    this.tempMat = new THREE.Matrix4();
+    this.tempSegment = new THREE.Line3();
+    this.triclone = new THREE.Triangle();
+    this.tempVector2 = new THREE.Vector3();
+    this.slopelimit = Math.PI/4;
+    this.charraycaster = new THREE.Raycaster();
+    this.charraycaster.firstHitOnly = true;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -154,7 +165,12 @@ export class RoamingControls {
     //
     this._bindEvents();
     this._requestPointerLock();
+    player.airMovePercentage = (player.maxSpeed-player.airNudge)/player.maxSpeed;
     player.useHeight = player.charHeight - CAPSULE_RADIUS;
+    player.maxSpeedSqr = player.maxSpeed * player.maxSpeed;
+    player.wallRideThresholdSqr = player.wallRideThreshold * player.wallRideThreshold;
+    this.charraycaster.far = CAPSULE_RADIUS + 0.3;
+    this.capsueleSegment = new THREE.Line3( new THREE.Vector3(0,0,0), new THREE.Vector3(0,player.useHeight-CAPSULE_RADIUS,0) )
     this._colliderMesh.position.copy(this._spawnPos);//.set(this.spawnPos.x,this.spawnPos.y,this.spawnPos.z);
     this.SetupCamera(player);
     this.camvert.add(this._camera);
@@ -224,6 +240,217 @@ export class RoamingControls {
     this.camraycaster.far = this.maxCamDist;
   }
 
+  // ═══════════════════════════════════════════════════════════
+  // COLLISION
+  // ═══════════════════════════════════════════════════════════
+
+  WorldCollision(deltaPosition){
+    StartCloneUse();
+    // adjust player position based on collisions
+    this._colliderMesh.updateMatrixWorld();
+    let gtp = [];
+    //let ctp = [];
+    //let wtp = [];
+    let tp = [];
+    let ngtp = [];
+    this.tempBox.makeEmpty();
+    let intersection = false;
+    let largestDelta = GetMiscVect();
+    let miscvect = GetMiscVect();
+    for(let i = 0, max = this.collidables.length; i < max; i++){
+      let mesh = this.collidables[i];
+      this.tempMat.copy(mesh.matrixWorld).invert();
+      this.tempSegment.copy(this.capsueleSegment);
+      // get the position of the capsule in the local space of the collider
+      this.tempSegment.start.applyMatrix4(this._colliderMesh.matrixWorld ).applyMatrix4( this.tempMat );
+      this.tempSegment.end.applyMatrix4(this._colliderMesh.matrixWorld ).applyMatrix4( this.tempMat );
+      // get the axis aligned bounding box of the capsule
+      this.tempBox.expandByPoint( this.tempSegment.start );
+      this.tempBox.expandByPoint( this.tempSegment.end );
+      this.tempBox.min.addScalar( - CAPSULE_RADIUS );
+      this.tempBox.max.addScalar( CAPSULE_RADIUS );
+
+
+
+
+
+      mesh.geometry.boundsTree.shapecast( {
+        intersectsBounds: box => box.intersectsBox( this.tempBox ),
+        intersectsTriangle: tri => {
+          // check if the triangle is intersecting the capsule and adjust the
+          // capsule position if it is.
+          const triPoint = deltaPosition;
+          const capsulePoint = this.tempVector2;
+          const distance = tri.closestPointToSegment( this.tempSegment, triPoint, capsulePoint );
+          if ( distance < CAPSULE_RADIUS) {
+            const depth = CAPSULE_RADIUS - distance;
+            const direction = capsulePoint.sub( triPoint ).normalize();
+    
+            this.tempSegment.start.addScaledVector( direction, depth );
+            this.tempSegment.end.addScaledVector( direction, depth );
+    
+            tri.getNormal(miscvect);
+            
+            //let ysq = miscvect.y * miscvect.y;
+            //let xz =  (miscvect.x * miscvect.x) + (miscvect.z * miscvect.z);
+            this.triclone.copy(tri);
+            let mini = {
+              x: miscvect.x,
+              y: miscvect.y,
+              z: miscvect.z
+            };
+            tp.push(mini);
+            //if(ysq > xz){
+            if(upVector.angleTo(miscvect) < this.slopelimit){//ground tri points not being properly discerned, but ignoring that for now to fix camera rotation
+              if(mini.y < 0){
+                //ctp.push(mini);
+                ngtp.push(mini);
+              }else{
+                gtp.push(mini);
+              }
+            }else{
+              if(mini.y >= 0 ){
+                //wtp.push(mini);
+                ngtp.push(mini);
+              }
+            }
+          }
+        }
+      } );
+      const newPosition = deltaPosition;
+      newPosition.copy( this.tempSegment.start ).applyMatrix4(mesh.matrixWorld );
+      // check how much the collider was moved
+      const deltaVector = this.tempVector2;
+      deltaVector.subVectors( newPosition, this._colliderMesh.position );
+      const offset = Math.max( 0.0, deltaVector.length() - 1e-5 );
+      deltaVector.normalize().multiplyScalar( offset );
+      let lsq = deltaVector.lengthSq();
+      if(!intersection){
+        intersection = lsq > 0;
+      }
+      if(largestDelta.lengthSq() > lsq){
+        largestDelta.copy(deltaVector);
+      }
+    }
+  
+    // get the adjusted position of the capsule collider in world space after checking
+    // triangle collisions and moving it. capsuleInfo.segment.start is assumed to be
+    // the origin of the player model.
+    return {
+        intersects: intersection,
+        delta: largestDelta,
+        tripoints: tp,
+        groundtripoints: gtp,
+        //ceiltripoints: ctp,
+        //walltripoints: wtp,
+        notgroundpoints: ngtp
+    }
+  }
+  GetFlatestTriPoint(list){
+    if(null == list || list.length <= 0){
+      return null;
+    }
+    let ycheck = -1;
+    let retval;
+      for(let i = 0, max = list.length; i < max; i++){
+          let tri = list[i];
+          if(tri.y > ycheck){
+              ycheck = tri.y;
+              retval = tri;
+          }
+      }
+    return retval;
+  }
+  checkOnSurface(actor, normal){
+    StartCloneUse();
+    this.charraycaster.ray.origin.copy(this._colliderMesh.position);
+    let miscvect = CloneVector3(normal);//miscvect.copy(normal);
+    this.charraycaster.ray.direction.copy(miscvect.negate());
+    return this.worldIntersect(this.charraycaster);
+  }
+  SurfaceDetection(actor, deltaTime){
+      StartCloneUse();
+      let miscvect = CloneVector3(actor.velocity);
+      miscvect.multiplyScalar( deltaTime );
+      let prevpos = CloneVector3(this._colliderMesh.position);
+      this._colliderMesh.position.add( miscvect );
+      let worldCollisionResult = this.WorldCollision(miscvect);//each collision check will be done this way
+      this._colliderMesh.position.add( worldCollisionResult.delta );
+      let tempUp = CloneVector3(actor.targetup);
+      let truespeed = prevpos.sub(this._colliderMesh.position).lengthSq()/(deltaTime * deltaTime);
+      //set gravity
+      if(worldCollisionResult.intersects){
+          if(actor.intersects != worldCollisionResult.intersects && actor.accelAccum.y > 2){
+              actor.accelAccum.y = 0;
+          }
+          let gp = this.GetFlatestTriPoint(worldCollisionResult.groundtripoints);
+          if(gp){
+              tempUp.set(gp.x, gp.y, gp.z);
+              actor.wallriding = false;
+          } else {
+              let wp = this.GetFlatestTriPoint(worldCollisionResult.notgroundpoints);
+              if(wp && truespeed > actor.wallRideThresholdSqr && actor.accelAccum.lengthSq() > actor.wallRideThresholdSqr){
+                  actor.wallriding = actor.wallrideangle >= this.slopelimit;
+                  tempUp.set(wp.x, wp.y, wp.z);
+              }
+          }
+      }
+      actor.gravityAccum += deltaTime * actor.gravity;
+      let anglediff = actor.targetup.angleTo(tempUp);
+      if(anglediff > this.slopelimit){
+          actor.majorAxisChange = true;
+          actor.axisOfChange.copy(actor.targetup).cross(tempUp);
+          actor.angleOfChange = anglediff;
+      }
+      actor.inertiacurr = THREE.MathUtils.clamp(actor.inertiacurr - deltaTime, 0, actor.inertiamax); 
+      if(actor.wallriding){
+          //reduce inertia resource
+          /*
+          if(isplayer){ 
+              inertiaback.style.display = "block";
+              inertiabar.style.width = `${actor.inertiacurr/actor.inertiamax * 100}%`;
+          }
+              */
+          if(actor.inertiacurr <= 0){
+              tempUp.copy(upVector);
+              actor.wallriding = false;
+          }
+      }else{
+          if(this.surfacehit){
+              actor.inertiamax = 0;
+          }
+          if(actor.inertiamax <= 0 && anglediff > this.slopelimit){//mainly for transitioning from ground to wall
+              let vlength = actor.accelAccum.length() * 0.8 * actor.gravityAccum>0?2:1;
+              actor.inertiamax = vlength;
+              actor.inertiacurr = vlength;
+          }
+          /*
+          if(isplayer){ 
+              inertiaback.style.display = "none";
+          }
+              */
+      }
+      this.surfacehit = this.checkOnSurface(actor, tempUp);
+      if(actor.wallriding){
+          actor.currRefresh = THREE.MathUtils.clamp(actor.currRefresh - deltaTime, 0, actor.inertiaRefeshTime);
+          if(actor.currRefresh <= 0 && this.surfacehit && !CheckVector3Equals(actor.targetup, this.surfacehit.normal)){
+              actor.inertiacurr = THREE.MathUtils.clamp(actor.inertiacurr + (actor.inertiamax * 0.1), 0, actor.inertiamax); 
+              actor.currRefresh = actor.inertiaRefeshTime;
+          }
+      }
+      if(this.surfacehit){
+          if(worldCollisionResult.intersects){
+              actor.airNudgeAccum.set(0,0,0);
+              if(!actor.wallriding || (actor.wallriding && actor.inertiamax > 0 && actor.inertiacurr > 0)){
+                  actor.gravityAccum = deltaTime * actor.gravity;
+              }
+          }
+          actor.targetup.copy(this.surfacehit.normal);
+      }
+      actor.wallrideangle = actor.targetup.angleTo(upVector);
+      actor.intersects = worldCollisionResult.intersects;
+  }
+
   SetFacings(actor){
     //set collider
     StartCloneUse();
@@ -235,6 +462,7 @@ export class RoamingControls {
     let miscvect = CloneVector3(actor.forwardDir);
     miscvect.cross(actor.targetup).add(this._colliderMesh.position);
     this._colliderMesh.lookAt(miscvect);
+    //TODO how to bring visual here
     /*
     //set visuals
     if(actor.visualMesh){
@@ -279,8 +507,54 @@ export class RoamingControls {
     actor.moving = (forward || backward || right || left);
     actor.inputDir.set( left?-1:right?1:0, 0, forward?-1:backward?1:0 ).transformDirection(this._colliderMesh.matrixWorld);
     actor.forwardDir.set(1,0,0).transformDirection(this._colliderMesh.matrixWorld).applyAxisAngle(actor.targetup, this.camYDelta);
-
     this.prevmcount = this.mcount;
+  }
+  //TODO player falls through the buildings and ground eventually, even when standing still.
+  GroundMovement(actor, deltaTime, reverseDamping){
+    StartCloneUse();
+    let miscvect = GetMiscVect();
+    let speedDelta = deltaTime * actor.maxSpeed;
+    if(actor.moving){
+        miscvect.copy(actor.inputDir).setLength(speedDelta);
+        actor.accelAccum.add(miscvect);
+        actor.accelAccum.x *= reverseDamping;
+        actor.accelAccum.z *= reverseDamping;
+    }else{
+        miscvect.copy(actor.accelAccum).setLength(speedDelta * 0.5);
+        actor.accelAccum.sub(miscvect);
+    }
+    actor.accelAccum.y *= reverseDamping;
+    if(actor.jump){
+        let wallpercent = actor.wallrideangle/rad90;
+
+        actor.accelAccum.multiplyScalar(actor.airMovePercentage);
+        actor.accelAccum.reflect(actor.targetup);
+        miscvect.copy(actor.targetup).setLength(actor.jumpForce * wallpercent);
+        actor.accelAccum.add(miscvect);
+
+        //ArrowHelper(actor, actor.targetup);
+        actor.gravityAccum = actor.jumpForce * (1-wallpercent) + actor.accelAccum.y;
+        actor.accelAccum.y = 0;
+
+        if(actor.wallriding){
+            actor.forwardDir.applyAxisAngle(upVector, Math.PI);
+        }
+        actor.targetup.copy(upVector);
+        actor.inertiamax = 0;
+    }
+  }
+  AirMovement(actor, deltaTime, reverseDamping){
+    StartCloneUse();
+    let miscvect = GetMiscVect();
+    if(actor.moving){
+        miscvect.copy(actor.inputDir).setLength(actor.airNudge * deltaTime);
+        actor.airNudgeAccum.add(miscvect);
+        actor.airNudgeAccum.multiplyScalar(reverseDamping);
+    }
+    if(actor.jump){
+        //mid air jump
+        actor.targetup.copy(upVector);
+    }
   }
   ApplyControls(actor, deltaTime){
       let jumpinput = keyStates[ 'Space' ];
@@ -290,9 +564,9 @@ export class RoamingControls {
       actor.prevJump = jumpinput;
       let reverseDamping = Math.exp( - 4 * deltaTime );
       if(this.surfacehit){
-        //GroundMovement(actor, deltaTime, reverseDamping);
+        this.GroundMovement(actor, deltaTime, reverseDamping);
       }else{
-        //AirMovement(actor, deltaTime, reverseDamping);
+        this.AirMovement(actor, deltaTime, reverseDamping);
       }
   }
   worldIntersect(raycaster){
@@ -306,6 +580,16 @@ export class RoamingControls {
     }
     return camhit;
   }
+  GetCloseToZero(vect){
+    let magnitude = vect.lengthSq();
+    return magnitude <= closeToZero?zerovect:vect;
+  }
+  ApplyVelocity(actor){
+    //composite velocity
+    actor.velocity.copy(this.GetCloseToZero(actor.accelAccum));
+    actor.velocity.y += actor.gravityAccum;
+    actor.velocity.add(this.GetCloseToZero(actor.airNudgeAccum));
+  }
   SetupCamera(actor){
     this.camraycaster.far = this.maxCamDist;
     this.camvert.position.set(0,actor.useHeight,0);
@@ -313,29 +597,30 @@ export class RoamingControls {
     this._camera.position.set(0,0,this.maxCamDist);
   }
   updateCamera(actor, deltaTime){
-      StartCloneUse();
-      this.camboom.position.copy(this._colliderMesh.position);
-      this.camboom.up.lerp(actor.targetup, deltaTime * 2);
-      let miscvect = CloneVector3(actor.forwardDir);
-      miscvect.cross(this.camboom.up).add(this._colliderMesh.position);
-      this.camboom.lookAt(miscvect);
-      
-      this.camvert.rotation.x = this.camX;
-      miscvect.copy(this.camboom.up).setLength(actor.useHeight);
-      this.camraycaster.ray.origin.copy(this._colliderMesh.position).add(miscvect);
-      this._camera.getWorldDirection(miscvect);
-      this.camraycaster.ray.direction.copy(miscvect.negate());
-      const camhit = this.worldIntersect(this.camraycaster);// this.camraycaster.intersectObject(world.layers[CollisionTags.Environment].collider )[ 0 ];
-      let camdist = camhit?camhit.distance:this.maxCamDist;
-      this._camera.position.z = camdist;
+    StartCloneUse();
+    this.camboom.position.copy(this._colliderMesh.position);
+    this.camboom.up.lerp(actor.targetup, deltaTime * 2);
+    let miscvect = CloneVector3(actor.forwardDir);
+    miscvect.cross(this.camboom.up).add(this._colliderMesh.position);
+    this.camboom.lookAt(miscvect);
+    
+    this.camvert.rotation.x = this.camX;
+    miscvect.copy(this.camboom.up).setLength(actor.useHeight);
+    this.camraycaster.ray.origin.copy(this._colliderMesh.position).add(miscvect);
+    this._camera.getWorldDirection(miscvect);
+    this.camraycaster.ray.direction.copy(miscvect.negate());
+    const camhit = this.worldIntersect(this.camraycaster);// this.camraycaster.intersectObject(world.layers[CollisionTags.Environment].collider )[ 0 ];
+    let camdist = camhit?camhit.distance:this.maxCamDist;
+    this._camera.position.z = camdist;
   }
   UpdateActor(actor, deltaTime){
-    //surface detection here
+    this.SurfaceDetection(actor, deltaTime);//must come before playerControls for surface conforming movement and y rotation to work properly
     this.playerControls(actor, deltaTime);
     this.ApplyControls(actor, deltaTime);
     this.updateCamera(actor, deltaTime);
     this._teleportOOB(actor);
     this.SetFacings(actor);
+    this.ApplyVelocity(actor);
     //apply velocity here
   }
 

@@ -293,7 +293,6 @@ export class SceneManager {
 
     this.camera = new THREE.PerspectiveCamera(55, w / h, 1, 30000);
     this.camera.position.set(0, 600, 1200);
-    this.camera.rotation.order = 'YXZ';
     this.camera.lookAt(0, 0, 0);
 
     this.controls = new OrbitControlsImpl(this.camera, this.renderer.domElement);
@@ -1389,44 +1388,29 @@ export class SceneManager {
   // CHARACTER
   // ═══════════════════════════════════════════════════════════════
 
-  spawnCharacter(x, y, z) {
+  spawnCharacter(x, y, z) {//TODO spawned character done here, how to reference into roamingControls.js?
     this.removeCharacter();
 
     const group = new THREE.Group();
     group.name = 'character';
 
-    // Body (capsule approximated as cylinder + two hemispheres)
-    const bodyH  = 1.2;
+    // Body (single capsule)
     const capR   = 0.38;
+    const bodyH  = 1.2;
     const totalH = bodyH + capR * 2;
 
-    // Main body cylinder
-    const bodyGeo = new THREE.CylinderGeometry(capR, capR * 0.88, bodyH, 16, 1);
+    const bodyGeo = new THREE.CapsuleGeometry(capR, bodyH, 8, 16);
     const bodyMat = new THREE.MeshToonMaterial({ color: 0x3d8eff });
     const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.y = capR + bodyH / 2;
+    body.position.y = totalH / 2;   // CapsuleGeometry is centred at origin
     body.castShadow = true;
     group.add(body);
-
-    // Top cap
-    const topCapGeo = new THREE.SphereGeometry(capR, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2);
-    const cap = new THREE.Mesh(topCapGeo, bodyMat);
-    cap.position.y = capR + bodyH;
-    cap.castShadow = true;
-    group.add(cap);
-
-    // Bottom cap
-    const botCapGeo = new THREE.SphereGeometry(capR * 0.88, 16, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
-    const botCap = new THREE.Mesh(botCapGeo, bodyMat);
-    botCap.position.y = capR;
-    botCap.castShadow = true;
-    group.add(botCap);
 
     // Head
     const headGeo = new THREE.SphereGeometry(capR * 0.72, 16, 12);
     const headMat = new THREE.MeshToonMaterial({ color: 0xf5c9a0 });
     const head = new THREE.Mesh(headGeo, headMat);
-    head.position.y = capR + bodyH + capR * 0.9;
+    head.position.y = totalH + capR * 0.5;
     head.castShadow = true;
     group.add(head);
 
