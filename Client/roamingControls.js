@@ -264,7 +264,9 @@ export class RoamingControls {
     this.tempBox.makeEmpty();
     let intersection = false;
     let useDelta = GetMiscVect();
-    let useDeltaY = GetMiscVect();
+    let farx = 0;
+    let fary = 0;
+    let farz = 0;
     let miscvect = GetMiscVect();
     for(let i = 0, max = this.collidables.length; i < max; i++){
       let mesh = this.collidables[i];
@@ -278,10 +280,6 @@ export class RoamingControls {
       this.tempBox.expandByPoint( this.tempSegment.end );
       this.tempBox.min.addScalar( - CAPSULE_RADIUS );
       this.tempBox.max.addScalar( CAPSULE_RADIUS );
-
-
-
-
 
       mesh.geometry.boundsTree.shapecast( {
         intersectsBounds: box => box.intersectsBox( this.tempBox ),
@@ -337,19 +335,21 @@ export class RoamingControls {
       if(!intersection){
         intersection = lsq > 0;
       }
-      if (useDelta.lengthSq() > lsq) {
-        useDelta.copy(deltaVector);
-        useDelta.y = 0;
+      if (Math.abs(deltaVector.x) > Math.abs(farx)) {
+        farx = deltaVector.x;
       }
-      if (deltaVector.y > useDeltaY.y) {
-        useDeltaY.y = deltaVector.y;
+      if (Math.abs(deltaVector.y) > Math.abs(fary)) {
+        fary = deltaVector.y;
+      }
+      if (Math.abs(deltaVector.z) > Math.abs(farz)) {
+        farz = deltaVector.z;
       }
     }
   
     // get the adjusted position of the capsule collider in world space after checking
     // triangle collisions and moving it. capsuleInfo.segment.start is assumed to be
     // the origin of the player model.
-    useDelta.y = useDeltaY.y;
+    useDelta.set(farx, fary, farz);
     return {
         intersects: intersection,
         delta: useDelta,
