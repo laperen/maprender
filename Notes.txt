@@ -2,7 +2,7 @@ WIP
 
 character movement
 remaining issues:
-unintended behavior in collision and reorienting.
+player seems to be phasing through buildings, and automatically reacting to building surface by reorienting to wall normal.
 position reset using _teleportToOrigin should be changed to resetting to last grounded position instead
 
 settings menu
