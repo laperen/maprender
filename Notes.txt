@@ -2,12 +2,8 @@ WIP
 
 character movement
 remaining issues:
-character orientation isn't changed while wallriding, not sure if that is preventing movement up the wall.
+unintended behavior in collision and reorienting.
 position reset using _teleportToOrigin should be changed to resetting to last grounded position instead
------------------------
-thinking of giving up on prompting this out and doing it manually. 
-taking a hatchet to roamingControls.js for not just removing movement but also camera controls however, will require more thought in case there are references elsewhere.
-
 
 settings menu
 - clearing map cache?

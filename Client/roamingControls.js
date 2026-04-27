@@ -159,9 +159,11 @@ export class RoamingControls {
   // ═══════════════════════════════════════════════════════════
 
   activate(spawnPos, yawDeg = 0) {
+    StartCloneUse();
     if (this._active) return;
     this._active    = true;
-    this._spawnPos = spawnPos;
+    this._spawnPos = CloneVector3(spawnPos);
+    this._spawnPos.y += 5;
     //
     this._bindEvents();
     this._requestPointerLock();
@@ -170,7 +172,7 @@ export class RoamingControls {
     player.maxSpeedSqr = player.maxSpeed * player.maxSpeed;
     player.wallRideThresholdSqr = player.wallRideThreshold * player.wallRideThreshold;
     this.charraycaster.far = CAPSULE_RADIUS + 0.3;
-    this.capsueleSegment = new THREE.Line3( new THREE.Vector3(0,0,0), new THREE.Vector3(0,player.useHeight-CAPSULE_RADIUS,0) )
+    this.capsuleSegment = new THREE.Line3( new THREE.Vector3(0,0,0), new THREE.Vector3(0,player.useHeight-CAPSULE_RADIUS,0) )
     this._colliderMesh.position.copy(this._spawnPos);//.set(this.spawnPos.x,this.spawnPos.y,this.spawnPos.z);
     this.SetupCamera(player);
     this.camvert.add(this._camera);
@@ -193,8 +195,14 @@ export class RoamingControls {
     //run updates here
 	  const deltaTime = Math.min( dt, 0.1 ) / STEPS_PER_FRAME;
     for ( let i = 0; i < STEPS_PER_FRAME; i ++ ) {
-      this.UpdateActor(player, deltaTime);
+      this.SurfaceDetection(player, deltaTime);//must come before playerControls for surface conforming movement and y rotation to work properly
     }
+    this.playerControls(player, dt);
+    this.ApplyControls(player, dt);
+    this.updateCamera(player, dt);
+    this._teleportOOB(player);
+    this.SetFacings(player);
+    this.ApplyVelocity(player);
     return this._charPos;
   }
 
@@ -255,12 +263,13 @@ export class RoamingControls {
     let ngtp = [];
     this.tempBox.makeEmpty();
     let intersection = false;
-    let largestDelta = GetMiscVect();
+    let useDelta = GetMiscVect();
+    let useDeltaY = GetMiscVect();
     let miscvect = GetMiscVect();
     for(let i = 0, max = this.collidables.length; i < max; i++){
       let mesh = this.collidables[i];
       this.tempMat.copy(mesh.matrixWorld).invert();
-      this.tempSegment.copy(this.capsueleSegment);
+      this.tempSegment.copy(this.capsuleSegment);
       // get the position of the capsule in the local space of the collider
       this.tempSegment.start.applyMatrix4(this._colliderMesh.matrixWorld ).applyMatrix4( this.tempMat );
       this.tempSegment.end.applyMatrix4(this._colliderMesh.matrixWorld ).applyMatrix4( this.tempMat );
@@ -328,21 +337,24 @@ export class RoamingControls {
       if(!intersection){
         intersection = lsq > 0;
       }
-      if(largestDelta.lengthSq() > lsq){
-        largestDelta.copy(deltaVector);
+      if (useDelta.lengthSq() > lsq) {
+        useDelta.copy(deltaVector);
+        useDelta.y = 0;
+      }
+      if (deltaVector.y > useDeltaY.y) {
+        useDeltaY.y = deltaVector.y;
       }
     }
   
     // get the adjusted position of the capsule collider in world space after checking
     // triangle collisions and moving it. capsuleInfo.segment.start is assumed to be
     // the origin of the player model.
+    useDelta.y = useDeltaY.y;
     return {
         intersects: intersection,
-        delta: largestDelta,
+        delta: useDelta,
         tripoints: tp,
         groundtripoints: gtp,
-        //ceiltripoints: ctp,
-        //walltripoints: wtp,
         notgroundpoints: ngtp
     }
   }
@@ -420,9 +432,9 @@ export class RoamingControls {
               actor.inertiamax = 0;
           }
           if(actor.inertiamax <= 0 && anglediff > this.slopelimit){//mainly for transitioning from ground to wall
-              let vlength = actor.accelAccum.length() * 0.8 * actor.gravityAccum>0?2:1;
-              actor.inertiamax = vlength;
-              actor.inertiacurr = vlength;
+            let vlength = actor.accelAccum.length() * 0.8 * actor.gravityAccum>0?2:1;
+            actor.inertiamax = vlength;
+            actor.inertiacurr = vlength;
           }
           /*
           if(isplayer){ 
@@ -432,17 +444,17 @@ export class RoamingControls {
       }
       this.surfacehit = this.checkOnSurface(actor, tempUp);
       if(actor.wallriding){
-          actor.currRefresh = THREE.MathUtils.clamp(actor.currRefresh - deltaTime, 0, actor.inertiaRefeshTime);
-          if(actor.currRefresh <= 0 && this.surfacehit && !CheckVector3Equals(actor.targetup, this.surfacehit.normal)){
-              actor.inertiacurr = THREE.MathUtils.clamp(actor.inertiacurr + (actor.inertiamax * 0.1), 0, actor.inertiamax); 
-              actor.currRefresh = actor.inertiaRefeshTime;
-          }
+        actor.currRefresh = THREE.MathUtils.clamp(actor.currRefresh - deltaTime, 0, actor.inertiaRefeshTime);
+        if(actor.currRefresh <= 0 && this.surfacehit && !CheckVector3Equals(actor.targetup, this.surfacehit.normal)){
+          actor.inertiacurr = THREE.MathUtils.clamp(actor.inertiacurr + (actor.inertiamax * 0.1), 0, actor.inertiamax); 
+          actor.currRefresh = actor.inertiaRefeshTime;
+        }
       }
       if(this.surfacehit){
           if(worldCollisionResult.intersects){
               actor.airNudgeAccum.set(0,0,0);
               if(!actor.wallriding || (actor.wallriding && actor.inertiamax > 0 && actor.inertiacurr > 0)){
-                  actor.gravityAccum = deltaTime * actor.gravity;
+                  actor.gravityAccum = 0;//deltaTime * actor.gravity;
               }
           }
           actor.targetup.copy(this.surfacehit.normal);
@@ -612,16 +624,6 @@ export class RoamingControls {
     const camhit = this.worldIntersect(this.camraycaster);// this.camraycaster.intersectObject(world.layers[CollisionTags.Environment].collider )[ 0 ];
     let camdist = camhit?camhit.distance:this.maxCamDist;
     this._camera.position.z = camdist;
-  }
-  UpdateActor(actor, deltaTime){
-    this.SurfaceDetection(actor, deltaTime);//must come before playerControls for surface conforming movement and y rotation to work properly
-    this.playerControls(actor, deltaTime);
-    this.ApplyControls(actor, deltaTime);
-    this.updateCamera(actor, deltaTime);
-    this._teleportOOB(actor);
-    this.SetFacings(actor);
-    this.ApplyVelocity(actor);
-    //apply velocity here
   }
 
 

@@ -2,6 +2,8 @@ import * as THREE from 'three';
 
 let miscs = []
 let usedMiscs = 0;
+const vectorepsilon = 0.0005
+
 function StartCloneUse(){
   usedMiscs = 0;
 }
