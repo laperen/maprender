@@ -537,7 +537,9 @@ export class SceneManager {
     this._nightAmbient = null;
     this._nightPhase   = 0;
     this._starTime     = 0;
-    this._lampMeshes   = [];
+    // _lampEntries: array of { globeInstanced, haloMesh, positions, type }
+    // positions is Float32Array [x,y,z per globe] used for distance-based LOD.
+    this._lampEntries  = [];
     this._collidables = [];
     if (this._roamingCam) this._roamingCam.collidables = [];
 
@@ -1130,14 +1132,15 @@ export class SceneManager {
       1
     );
   
-    for (const mesh of this._lampMeshes) {
-      const mat = mesh.material;
-  
-      if (mesh.userData.isLampGlobe) {
-        mat.emissiveIntensity = lampPhase;
-      } else if (mesh.userData.isLampHalo) {
-        mat.opacity = lampPhase * 0.85;
-        mat.needsUpdate = true;
+    for (const entry of this._lampEntries) {
+      // Globe InstancedMesh — one material.emissiveIntensity affects all instances
+      if (entry.globeInstanced) {
+        entry.globeInstanced.material.emissiveIntensity = lampPhase;
+      }
+      // Merged halo mesh — single material opacity
+      if (entry.haloMesh) {
+        entry.haloMesh.material.opacity = lampPhase * 0.85;
+        entry.haloMesh.material.needsUpdate = true;
       }
     }
 
@@ -1154,8 +1157,23 @@ export class SceneManager {
     }
   }
 
+  /**
+   * Called by WorldBuilder after building street lamps or aviation lights.
+   * Stores references needed for LOD (globe InstancedMesh + position array)
+   * and time-of-day intensity/opacity updates.
+   *
+   * @param {{ globeInstanced: THREE.InstancedMesh,
+   *            haloMesh: THREE.Mesh|null,
+   *            positions: Float32Array|null,
+   *            type: 'street'|'aviation' }} entry
+   */
+  registerLampInstanced({ globeInstanced, haloMesh, positions, type }) {
+    this._lampEntries.push({ globeInstanced, haloMesh, positions, type });
+  }
+
+  /** @deprecated — kept for backward-compat; prefer registerLampInstanced */
   registerLampMeshes(meshes) {
-    this._lampMeshes.push(...meshes);
+    // no-op: old per-mesh path no longer used
   }
 
   _tickNight(dt) {
@@ -1284,11 +1302,46 @@ export class SceneManager {
     const camPos  = this.camera.position;
     const THRESH2 = 600 * 600;
 
-    for (const mesh of this._lampMeshes) {
-      const dx = mesh.position.x - camPos.x;
-      const dy = mesh.position.y - camPos.y;
-      const dz = mesh.position.z - camPos.z;
-      mesh.visible = (dx * dx + dy * dy + dz * dz) < THRESH2;
+    // Reusable matrices — allocated once per tick call, not per instance
+    const mShow = new THREE.Matrix4();
+    const mHide = new THREE.Matrix4().makeScale(0, 0, 0);
+
+    for (const entry of this._lampEntries) {
+      const { globeInstanced, positions, type } = entry;
+      if (!globeInstanced) continue;
+
+      // Aviation lights have no positions array — always fully visible
+      if (!positions) continue;
+
+      const count = globeInstanced.count;
+      let   dirty = false;
+
+      for (let i = 0; i < count; i++) {
+        const ix = positions[i * 3];
+        const iy = positions[i * 3 + 1];
+        const iz = positions[i * 3 + 2];
+        const dx = ix - camPos.x;
+        const dy = iy - camPos.y;
+        const dz = iz - camPos.z;
+        const inRange = (dx * dx + dy * dy + dz * dz) < THRESH2;
+
+        // Read current matrix scale to avoid redundant writes
+        globeInstanced.getMatrixAt(i, mShow);
+        const curScale = mShow.elements[0]; // [0] = m11, which is sx for a pure TRS matrix
+        const isShown  = curScale > 0.5;
+
+        if (inRange !== isShown) {
+          if (inRange) {
+            mShow.makeTranslation(ix, iy, iz);
+            globeInstanced.setMatrixAt(i, mShow);
+          } else {
+            globeInstanced.setMatrixAt(i, mHide);
+          }
+          dirty = true;
+        }
+      }
+
+      if (dirty) globeInstanced.instanceMatrix.needsUpdate = true;
     }
   }
 
@@ -1338,8 +1391,8 @@ export class SceneManager {
         }
       });
     }
-    this._objects    = [];
-    this._lampMeshes = [];
+    this._objects      = [];
+    this._lampEntries  = [];
 
     if (this._groundMesh) {
       if (this._groundMesh.material.map) {

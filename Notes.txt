@@ -7,7 +7,6 @@ position reset using _teleportToOrigin should be changed to resetting to last gr
 
 3d world
 - have lamp halos conform to surface
-- convert lamp globes, lamp halos, and aviation lights, to instanced meshes instead.
 
 settings menu
 - clearing map cache?

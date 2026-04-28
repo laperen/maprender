@@ -42,7 +42,8 @@ export class WorldBuilder {
     this._toonGradient = makeToonGradient();
 
     this._lampPostMat = new THREE.MeshLambertMaterial({ color: 0x888890 });
-    // Globe is now a small box — much lower tri count than a sphere
+    // Single shared materials — InstancedMesh uses one material for all instances,
+    // so emissiveIntensity changes on the material affect all instances at once.
     this._lampGlobeMat = new THREE.MeshLambertMaterial({
       color:             0xfff0c0,
       emissive:          new THREE.Color(0xffa040),
@@ -50,16 +51,17 @@ export class WorldBuilder {
     });
     this._lampHaloTex = this._makeLampHaloTexture();
 
-    // Aviation obstruction lights — red, flashing emissive boxes on tall buildings
+    // Aviation obstruction lights — red emissive boxes on tall buildings
     this._aviatMat = new THREE.MeshLambertMaterial({
       color:             0xff1a00,
       emissive:          new THREE.Color(0xff2200),
-      emissiveIntensity: 0,   // driven by setTimeOfDay via isLampGlobe flag
+      emissiveIntensity: 0,
     });
-    // Shared geometries (constructed once, instanced by reference)
+    // Shared geometries (constructed once, reused for InstancedMesh)
     this._globeGeo  = new THREE.BoxGeometry(0.7, 0.5, 0.7);
     this._aviatGeo  = new THREE.BoxGeometry(0.6, 0.6, 0.6);
     this._postGeo   = new THREE.CylinderGeometry(0.12, 0.16, 6.5, 6, 1);
+    // Halo geometry — one shared PlaneGeometry, merged into a single BufferGeometry
     this._haloGeo   = new THREE.PlaneGeometry(14, 14);
 
     this.raycaster = new THREE.Raycaster();
@@ -303,39 +305,45 @@ export class WorldBuilder {
       tris += draped.idx.length / 3;
     }
 
-    // 💡 lamps — globes/halos stay as individual meshes; posts are merged
-    // into a single BVH-accelerated mesh and registered as a collidable.
+    // 💡 lamps — globes are InstancedMesh; halos are a single merged BufferGeometry;
+    // posts remain a merged BVH-collidable mesh (unchanged).
     if (roadWays.length) {
-      const lampGroup = this._buildStreetLamps(roadWays, elev, terrainMesh);
-      if (lampGroup) {
-        // Add whole group to scene (non-collidable at group level)
-        this.scene.addObject(lampGroup, false);
+      const lampResult = this._buildStreetLamps(roadWays, elev, terrainMesh);
+      if (lampResult) {
+        const { group, globeInstanced, haloMesh, positions } = lampResult;
 
-        const lampMeshes = [];
-        lampGroup.traverse(c => {
-          if (!c.isMesh) return;
-          if (c.userData.isLampGlobe || c.userData.isLampHalo) {
-            lampMeshes.push(c);
-          }
-          // Register the merged post mesh now that its BVH exists
-          if (c.userData.isLampPostMerged && c.geometry?.boundsTree) {
+        // Add whole group to scene (non-collidable at group level)
+        this.scene.addObject(group, false);
+
+        // Register merged post collidable
+        group.traverse(c => {
+          if (c.isMesh && c.userData.isLampPostMerged && c.geometry?.boundsTree) {
             this.scene.registerCollidable(c);
           }
         });
-        this.scene.registerLampMeshes(lampMeshes);
+
+        // Register instanced globe + merged halo for LOD & time-of-day updates
+        this.scene.registerLampInstanced({
+          globeInstanced,
+          haloMesh,
+          positions,
+          type: 'street',
+        });
       }
     }
   
-    // ✈️ aviation lights
+    // ✈️ aviation lights — InstancedMesh, no LOD (always visible, few instances)
     if (tallBuildings.length) {
-      const aviatGroup = this._buildAviationLights(tallBuildings);
-      if (aviatGroup) {
-        this.scene.addObject(aviatGroup, false);
-        const aviatMeshes = [];
-        aviatGroup.traverse(c => {
-          if (c.isMesh && c.userData.isLampGlobe) aviatMeshes.push(c);
+      const aviatResult = this._buildAviationLights(tallBuildings);
+      if (aviatResult) {
+        const { group, aviatInstanced } = aviatResult;
+        this.scene.addObject(group, false);
+        this.scene.registerLampInstanced({
+          globeInstanced: aviatInstanced,
+          haloMesh:       null,
+          positions:      null,
+          type: 'aviation',
         });
-        this.scene.registerLampMeshes(aviatMeshes);
       }
     }
   
@@ -358,31 +366,13 @@ export class WorldBuilder {
     return hits.length > 0 ? hits[0].point.y + bias : elev(x, z) + bias;
   };
   _buildStreetLamps(roadWays, elev, terrainMesh) {
-    const group = new THREE.Group();
-    group.name  = 'streetLamps';
-
-    // Use shared geometries defined in constructor
-    const globeGeo = this._globeGeo;   // box, not sphere
-    const haloGeo  = this._haloGeo;
-
-    // ── Pre-compute the post geometry's raw arrays once ──────────
-    // We'll manually transform each instance into merged buffers.
-    const postGeoIndex    = this._postGeo.index.array;
-    const postGeoPos      = this._postGeo.attributes.position.array;
-    const postGeoNrm      = this._postGeo.attributes.normal.array;
-    const postVertCount   = postGeoPos.length / 3;
-    const postIndexCount  = postGeoIndex.length;
-
-    // Merged post buffers — filled as we place each lamp post.
-    const mergedPos = [];
-    const mergedNrm = [];
-    const mergedIdx = [];
-    let   postBase  = 0;  // running vertex index offset
-
-    // Spatial deduplication: quantise to LAMP_DEDUP_CELL grid.
-    const placed = new Set();
+    // ── First pass: collect all unique lamp positions ─────────────
+    const placed   = new Set();
     const dedupKey = (x, z) =>
       `${Math.round(x / LAMP_DEDUP_CELL)},${Math.round(z / LAMP_DEDUP_CELL)}`;
+
+    // Accumulate lamp data before allocating instanced buffers
+    const lampData = [];   // { lx, lz, baseY }
 
     for (const way of roadWays) {
       const coords = way.coords;
@@ -398,71 +388,161 @@ export class WorldBuilder {
         const len  = Math.sqrt(dx * dx + dz * dz) || 1;
         const nx   = -dz / len, nz =  dx / len;
 
-        // One lamp, left side only (avoids paired duplicates on narrow roads)
         const lx = centreline[i].x + nx * LAMP_SIDE_OFFSET;
         const lz = centreline[i].z + nz * LAMP_SIDE_OFFSET;
         const k  = dedupKey(lx, lz);
         if (placed.has(k)) continue;
         placed.add(k);
 
-        const baseY  = this._snapY(lx, lz, elev, terrainMesh, 0);
-        const postCY = baseY + 3.25;   // CylinderGeometry centre Y (same as before)
-
-        // ── Merge post geometry: translate each vertex into world space ──
-        for (let v = 0; v < postVertCount; v++) {
-          const vi = v * 3;
-          mergedPos.push(
-            postGeoPos[vi]     + lx,
-            postGeoPos[vi + 1] + postCY,
-            postGeoPos[vi + 2] + lz,
-          );
-          mergedNrm.push(postGeoNrm[vi], postGeoNrm[vi + 1], postGeoNrm[vi + 2]);
-        }
-        for (let t = 0; t < postIndexCount; t++) {
-          mergedIdx.push(postGeoIndex[t] + postBase);
-        }
-        postBase += postVertCount;
-
-        // Globe — unchanged, individual mesh per lamp
-        const globe = new THREE.Mesh(globeGeo, this._lampGlobeMat.clone());
-        globe.position.set(lx, baseY + 6.8, lz);
-        globe.userData.isLampGlobe = true;
-        group.add(globe);
-
-        // Ground halo — unchanged, individual mesh per lamp
-        const haloMat = new THREE.MeshBasicMaterial({
-          map:         this._lampHaloTex,
-          transparent: true,
-          opacity:     0,
-          depthWrite:  false,
-          blending:    THREE.AdditiveBlending,
-        });
-        const halo = new THREE.Mesh(haloGeo, haloMat);
-        halo.rotation.x = -Math.PI / 2;
-        halo.position.set(lx, baseY + 0.08, lz);
-        halo.renderOrder     = 1;
-        halo.userData.isLampHalo = true;
-        group.add(halo);
+        const baseY = this._snapY(lx, lz, elev, terrainMesh, 0);
+        lampData.push({ lx, lz, baseY });
       }
     }
 
-    if (!group.children.length && !mergedPos.length) return null;
+    if (!lampData.length) return null;
 
-    // ── Build single merged post mesh with BVH ───────────────────
-    if (mergedIdx.length) {
-      const postGeom = new THREE.BufferGeometry();
-      postGeom.setAttribute('position', new THREE.Float32BufferAttribute(mergedPos, 3));
-      postGeom.setAttribute('normal',   new THREE.Float32BufferAttribute(mergedNrm, 3));
-      postGeom.setIndex(mergedIdx);
-      try { postGeom.boundsTree = new MeshBVH(postGeom); } catch (_) {}
+    const count  = lampData.length;
+    const group  = new THREE.Group();
+    group.name   = 'streetLamps';
 
-      const postMesh = new THREE.Mesh(postGeom, this._lampPostMat);
-      postMesh.castShadow = true;
-      postMesh.userData.isLampPostMerged = true;
-      group.add(postMesh);
+    // ── Merged post buffers (unchanged from before) ───────────────
+    const postGeoIndex  = this._postGeo.index.array;
+    const postGeoPos    = this._postGeo.attributes.position.array;
+    const postGeoNrm    = this._postGeo.attributes.normal.array;
+    const postVertCount = postGeoPos.length / 3;
+    const postIdxCount  = postGeoIndex.length;
+
+    const mergedPos = new Float32Array(count * postVertCount * 3);
+    const mergedNrm = new Float32Array(count * postVertCount * 3);
+    const mergedIdx = new Uint32Array(count * postIdxCount);
+
+    // ── InstancedMesh for globes ──────────────────────────────────
+    const globeInstanced = new THREE.InstancedMesh(
+      this._globeGeo,
+      this._lampGlobeMat,
+      count,
+    );
+    globeInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    globeInstanced.frustumCulled = false;
+    globeInstanced.castShadow    = false;
+    // Start all instances hidden (scale=0); LOD tick enables them
+    globeInstanced.count = count;
+    globeInstanced.userData.isGlobeInstanced = true;
+
+    // ── Parallel world positions array for LOD distance checks ────
+    // Float32Array [x0,y0,z0, x1,y1,z1, …]  (globe heads, not feet)
+    const positions = new Float32Array(count * 3);
+
+    // ── Merged halo BufferGeometry ────────────────────────────────
+    // Each halo is a 14×14 plane (2 triangles = 6 indices, 4 verts)
+    // rotated -90° around X and placed at terrain Y + 0.08.
+    // We bake the rotation and world position directly into vertex data
+    // so the single merged mesh needs no per-frame matrix updates.
+    const HALO_VERTS = 4;
+    const HALO_IDX   = 6;
+    const haloPos = new Float32Array(count * HALO_VERTS * 3);
+    const haloUV  = new Float32Array(count * HALO_VERTS * 2);
+    const haloIdx = new Uint32Array(count * HALO_IDX);
+    // PlaneGeometry(14,14) local vertices (before rotation), in XZ after -90° X:
+    //   local plane is in XY → after rotateX(-PI/2) Y becomes -Z, Z becomes Y
+    //   local verts: (-7,-7,0),(7,-7,0),(7,7,0),(-7,7,0)  (CCW in XY)
+    //   after -PI/2 rotation around X: y' = z_local = 0, z' = -y_local
+    //   so: (-7, 0, 7),( 7, 0, 7),( 7, 0,-7),(-7, 0,-7)
+    const HLX = [-7,  7,  7, -7];
+    const HLZ = [ 7,  7, -7, -7];
+    const HUU = [ 0,  1,  1,  0];
+    const HUV = [ 1,  1,  0,  0];
+    // CCW winding viewed from above: 0,1,2,  0,2,3
+    const HIDX = [0, 1, 2,  0, 2, 3];
+
+    const dummy = new THREE.Matrix4();
+    const scaleZero  = new THREE.Matrix4().makeScale(0, 0, 0);
+
+    for (let i = 0; i < count; i++) {
+      const { lx, lz, baseY } = lampData[i];
+      const globeY = baseY + 6.8;
+      const postCY = baseY + 3.25;
+
+      // ── Position record ─────────────────────────────────────────
+      positions[i * 3]     = lx;
+      positions[i * 3 + 1] = globeY;
+      positions[i * 3 + 2] = lz;
+
+      // ── Globe instance matrix — start hidden (scale 0) ──────────
+      globeInstanced.setMatrixAt(i, scaleZero);
+
+      // ── Merge post vertices ─────────────────────────────────────
+      const vBase = i * postVertCount;
+      const vi3   = vBase * 3;
+      for (let v = 0; v < postVertCount; v++) {
+        const s = v * 3;
+        mergedPos[vi3 + s]     = postGeoPos[s]     + lx;
+        mergedPos[vi3 + s + 1] = postGeoPos[s + 1] + postCY;
+        mergedPos[vi3 + s + 2] = postGeoPos[s + 2] + lz;
+        mergedNrm[vi3 + s]     = postGeoNrm[s];
+        mergedNrm[vi3 + s + 1] = postGeoNrm[s + 1];
+        mergedNrm[vi3 + s + 2] = postGeoNrm[s + 2];
+      }
+      const iBase = i * postIdxCount;
+      for (let t = 0; t < postIdxCount; t++) {
+        mergedIdx[iBase + t] = postGeoIndex[t] + vBase;
+      }
+
+      // ── Bake halo quad into merged geometry ─────────────────────
+      const haloY   = baseY + 0.08;
+      const hvBase  = i * HALO_VERTS;
+      const hv3     = hvBase * 3;
+      const huv2    = hvBase * 2;
+      for (let v = 0; v < HALO_VERTS; v++) {
+        haloPos[hv3 + v * 3]     = lx + HLX[v];
+        haloPos[hv3 + v * 3 + 1] = haloY;
+        haloPos[hv3 + v * 3 + 2] = lz + HLZ[v];
+        haloUV [huv2 + v * 2]    = HUU[v];
+        haloUV [huv2 + v * 2 + 1]= HUV[v];
+      }
+      const hiBase = i * HALO_IDX;
+      for (let t = 0; t < HALO_IDX; t++) {
+        haloIdx[hiBase + t] = HIDX[t] + hvBase;
+      }
     }
 
-    return group.children.length ? group : null;
+    globeInstanced.instanceMatrix.needsUpdate = true;
+
+    // ── Build merged post mesh ────────────────────────────────────
+    const postGeom = new THREE.BufferGeometry();
+    postGeom.setAttribute('position', new THREE.BufferAttribute(mergedPos, 3));
+    postGeom.setAttribute('normal',   new THREE.BufferAttribute(mergedNrm, 3));
+    postGeom.setIndex(new THREE.BufferAttribute(mergedIdx, 1));
+    try { postGeom.boundsTree = new MeshBVH(postGeom); } catch (_) {}
+
+    const postMesh = new THREE.Mesh(postGeom, this._lampPostMat);
+    postMesh.castShadow = true;
+    postMesh.userData.isLampPostMerged = true;
+    group.add(postMesh);
+
+    // ── Build merged halo mesh ────────────────────────────────────
+    const haloGeom = new THREE.BufferGeometry();
+    haloGeom.setAttribute('position', new THREE.BufferAttribute(haloPos, 3));
+    haloGeom.setAttribute('uv',       new THREE.BufferAttribute(haloUV,  2));
+    haloGeom.setIndex(new THREE.BufferAttribute(haloIdx, 1));
+
+    const haloMat = new THREE.MeshBasicMaterial({
+      map:         this._lampHaloTex,
+      transparent: true,
+      opacity:     0,
+      depthWrite:  false,
+      blending:    THREE.AdditiveBlending,
+    });
+    const haloMesh = new THREE.Mesh(haloGeom, haloMat);
+    haloMesh.renderOrder          = 1;
+    haloMesh.frustumCulled        = false;
+    haloMesh.userData.isLampHalo  = true;
+    group.add(haloMesh);
+
+    // ── Add instanced globe mesh to group ─────────────────────────
+    group.add(globeInstanced);
+
+    return { group, globeInstanced, haloMesh, positions };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -935,41 +1015,58 @@ export class WorldBuilder {
   // ═══════════════════════════════════════════════════════════════
 
   _buildAviationLights(tallBuildings) {
-    const group = new THREE.Group();
-    group.name  = 'aviationLights';
-
-    const geo = this._aviatGeo;
-
-    // Global dedup — one light per ~4 m cell across all buildings
+    // ── Collect all unique aviation light positions ────────────────
     const placed   = new Set();
     const dedupKey = (x, z) => `${Math.round(x / 4)},${Math.round(z / 4)}`;
+
+    const lightData = [];   // { x, y, z }
 
     for (const { verts, topY } of tallBuildings) {
       if (!verts || verts.length < 3) continue;
 
-      // Find the 4 corner candidates: vertex closest to each diagonal extreme.
-      // Score each vertex by (±x ± z) to find the 4 extremal directions.
       const corners = [
-        verts.reduce((best, v) =>  (v.x + v.z) > (best.x + best.z) ? v : best, verts[0]), // NE (+x+z)
-        verts.reduce((best, v) =>  (v.x - v.z) > (best.x - best.z) ? v : best, verts[0]), // SE (+x-z)
-        verts.reduce((best, v) => (-v.x + v.z) > (-best.x + best.z) ? v : best, verts[0]), // NW (-x+z)
-        verts.reduce((best, v) => (-v.x - v.z) > (-best.x - best.z) ? v : best, verts[0]), // SW (-x-z)
+        verts.reduce((best, v) =>  (v.x + v.z) > (best.x + best.z) ? v : best, verts[0]),
+        verts.reduce((best, v) =>  (v.x - v.z) > (best.x - best.z) ? v : best, verts[0]),
+        verts.reduce((best, v) => (-v.x + v.z) > (-best.x + best.z) ? v : best, verts[0]),
+        verts.reduce((best, v) => (-v.x - v.z) > (-best.x - best.z) ? v : best, verts[0]),
       ];
 
       for (const v of corners) {
         const k = dedupKey(v.x, v.z);
         if (placed.has(k)) continue;
         placed.add(k);
-
-        const mat   = this._aviatMat.clone();
-        const light = new THREE.Mesh(geo, mat);
-        light.position.set(v.x, topY + 0.35, v.z);
-        light.userData.isLampGlobe = true;
-        group.add(light);
+        lightData.push({ x: v.x, y: topY + 0.35, z: v.z });
       }
     }
 
-    return group.children.length ? group : null;
+    if (!lightData.length) return null;
+
+    const count = lightData.length;
+    const group = new THREE.Group();
+    group.name  = 'aviationLights';
+
+    // ── InstancedMesh — one material for all aviation lights ──────
+    const aviatInstanced = new THREE.InstancedMesh(
+      this._aviatGeo,
+      this._aviatMat,
+      count,
+    );
+    aviatInstanced.frustumCulled = false;
+    aviatInstanced.count         = count;
+    aviatInstanced.userData.isGlobeInstanced = true;
+
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < count; i++) {
+      const { x, y, z } = lightData[i];
+      dummy.position.set(x, y, z);
+      dummy.scale.set(1, 1, 1);
+      dummy.updateMatrix();
+      aviatInstanced.setMatrixAt(i, dummy.matrix);
+    }
+    aviatInstanced.instanceMatrix.needsUpdate = true;
+
+    group.add(aviatInstanced);
+    return { group, aviatInstanced };
   }
 
   _roadHalfWidth(highway) {
