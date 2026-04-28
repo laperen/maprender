@@ -1,14 +1,296 @@
 // js/scene.js — Three.js scene, camera, renderer, lights, controls
 // OrbitControlsImpl is inlined here (was orbitControls.js).
+// CloudLayer is inlined here (was clouds.js).
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
-import { CloudLayer }        from './clouds.js';
 import { RoamingControls }     from './roamingControls.js';
 import {StartCloneUse,CloneVector3} from './mrUtils.js';
 
-// ── OrbitControlsImpl (inlined from orbitControls.js) ─────────
-// Lightweight orbit controls — no R3F, vanilla Three.js.
-// Adapted from Three.js OrbitControls r128 source.
+// ═══════════════════════════════════════════════════════════════
+// CLOUD LAYER  (inlined from clouds.js)
+// ═══════════════════════════════════════════════════════════════
+
+// ── Tunables ──────────────────────────────────────────────────
+const CLOUD_FIELD      = 3000;  // half-width of cloud field (world units)
+const MAX_CLOUDS       =  80;   // hard cap on instance count
+const TEX_SIZE         = 256;   // canvas texture resolution
+
+// Defaults (can be overridden via setProperties)
+const DEFAULT_WIND_SPEED    =  18;   // world-units per second along X
+const DEFAULT_WIND_ANGLE    = 0.22;  // radians off X-axis (slight diagonal)
+const DEFAULT_ALTITUDE      = 380;   // base Y of cloud layer (metres above ground)
+const DEFAULT_ALTITUDE_SPREAD =  60; // ± random variation in Y per cloud
+
+// ── Noise helpers (no external lib) ──────────────────────────
+// Value noise: interpolate a grid of random values.
+function _smoothNoise(x, y, seed = 0) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi,        yf = y - yi;
+  const fade = t => t * t * (3 - 2 * t);
+  const fx = fade(xf), fy = fade(yf);
+  const hash = (ix, iy) => {
+    let h = (ix * 1619 + iy * 31337 + seed * 1013) >>> 0;
+    h ^= h >>> 13; h = (Math.imul(h, 0x3d6b3b59) >>> 0);
+    h ^= h >>> 16;
+    return (h >>> 0) / 0xffffffff;
+  };
+  return (
+    hash(xi,   yi  ) * (1-fx) * (1-fy) +
+    hash(xi+1, yi  ) *    fx  * (1-fy) +
+    hash(xi,   yi+1) * (1-fx) *    fy  +
+    hash(xi+1, yi+1) *    fx  *    fy
+  );
+}
+
+function _fbm(x, y, octaves = 5) {
+  let v = 0, amp = 0.5, freq = 1, max = 0;
+  for (let i = 0; i < octaves; i++) {
+    v   += _smoothNoise(x * freq, y * freq, i) * amp;
+    max += amp;
+    amp  *= 0.5;
+    freq *= 2.1;
+  }
+  return v / max;
+}
+
+// ── Build cloud texture ───────────────────────────────────────
+function _buildCloudTexture() {
+  const S = TEX_SIZE;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = S;
+  const ctx = canvas.getContext('2d');
+
+  const id  = ctx.createImageData(S, S);
+  const dat = id.data;
+
+  for (let py = 0; py < S; py++) {
+    for (let px = 0; px < S; px++) {
+      const nx = (px / S) * 4;
+      const ny = (py / S) * 4;
+      let   n  = _fbm(nx, ny);
+      n = Math.pow(n, 1.4);
+
+      const dx = (px / S - 0.5) * 2;
+      const dy = (py / S - 0.5) * 2;
+      const r  = Math.sqrt(dx*dx + dy*dy);
+      const vignette = Math.max(0, 1 - Math.pow(r / 0.85, 2.5));
+
+      const a = Math.min(255, Math.round(n * vignette * 310));
+      const idx = (py * S + px) * 4;
+      dat[idx]   = 255;
+      dat[idx+1] = 255;
+      dat[idx+2] = 255;
+      dat[idx+3] = a;
+    }
+  }
+  ctx.putImageData(id, 0, 0);
+
+  const canvas2 = document.createElement('canvas');
+  canvas2.width = canvas2.height = S;
+  const ctx2 = canvas2.getContext('2d');
+  ctx2.filter = 'blur(4px)';
+  ctx2.drawImage(canvas, 0, 0);
+  ctx2.filter = 'none';
+
+  const tex = new THREE.CanvasTexture(canvas2);
+  tex.premultiplyAlpha = false;
+  return tex;
+}
+
+// ── CloudLayer class ──────────────────────────────────────────
+class CloudLayer {
+  constructor() {
+    this._mesh      = null;
+    this._count     = 0;
+    this._positions = [];
+    this._time      = 0;
+    this._texture   = null;
+
+    // Weather-driven targets
+    this._targetOpacity  = 0.5;
+    this._targetColor    = new THREE.Color(1, 1, 1);
+    this._currentOpacity = 0.5;
+    this._currentColor   = new THREE.Color(1, 1, 1);
+
+    // Controllable properties (set via setProperties)
+    this._windSpeed   = DEFAULT_WIND_SPEED;
+    this._windAngle   = DEFAULT_WIND_ANGLE;
+    this._altitude    = DEFAULT_ALTITUDE;
+    this._altSpread   = DEFAULT_ALTITUDE_SPREAD;
+
+    // Derived wind vector (updated when speed/angle change)
+    this._windVec = new THREE.Vector2(
+      Math.cos(DEFAULT_WIND_ANGLE) * DEFAULT_WIND_SPEED,
+      Math.sin(DEFAULT_WIND_ANGLE) * DEFAULT_WIND_SPEED,
+    );
+  }
+
+  // ── setProperties — called by SceneManager ─────────────────
+  // windSpeed: world-units/sec (0–80)
+  // windAngleDeg: compass degrees (0 = east, 90 = north, etc.)
+  // altitude: metres above ground (100–1000)
+  setProperties({ windSpeed, windAngleDeg, altitude } = {}) {
+    let changed = false;
+
+    if (windSpeed !== undefined && windSpeed !== this._windSpeed) {
+      this._windSpeed = windSpeed;
+      changed = true;
+    }
+    if (windAngleDeg !== undefined) {
+      const rad = windAngleDeg * Math.PI / 180;
+      if (rad !== this._windAngle) {
+        this._windAngle = rad;
+        changed = true;
+      }
+    }
+    if (altitude !== undefined && altitude !== this._altitude) {
+      this._altitude = altitude;
+      // Re-distribute cloud Y positions to new altitude
+      const rng = (lo, hi, seed) => lo + _smoothNoise(seed * 7.3, seed * 3.1) * (hi - lo);
+      for (let i = 0; i < this._positions.length; i++) {
+        this._positions[i].y = this._altitude + rng(-this._altSpread, this._altSpread, i * 2 + 7);
+      }
+    }
+
+    if (changed) {
+      this._windVec.set(
+        Math.cos(this._windAngle) * this._windSpeed,
+        Math.sin(this._windAngle) * this._windSpeed,
+      );
+    }
+  }
+
+  // ── init ───────────────────────────────────────────────────
+  init(scene) {
+    this._scene   = scene;
+    this._texture = _buildCloudTexture();
+
+    const geo = new THREE.PlaneGeometry(1, 1);
+    geo.rotateX(-Math.PI / 2);
+
+    const mat = new THREE.MeshBasicMaterial({
+      map:         this._texture,
+      transparent: true,
+      opacity:     0,
+      depthWrite:  false,
+      side:        THREE.DoubleSide,
+      blending:    THREE.NormalBlending,
+    });
+
+    this._mesh = new THREE.InstancedMesh(geo, mat, MAX_CLOUDS);
+    this._mesh.frustumCulled = false;
+    this._mesh.renderOrder   = 2;
+    this._mesh.count         = 0;
+    scene.add(this._mesh);
+
+    const dummy = new THREE.Object3D();
+    this._positions = [];
+    const rng = (lo, hi, seed) => lo + _smoothNoise(seed * 7.3, seed * 3.1) * (hi - lo);
+
+    for (let i = 0; i < MAX_CLOUDS; i++) {
+      const x      = rng(-CLOUD_FIELD, CLOUD_FIELD, i * 2);
+      const z      = rng(-CLOUD_FIELD, CLOUD_FIELD, i * 2 + 1);
+      const y      = this._altitude + rng(-this._altSpread, this._altSpread, i * 2 + 7);
+      const rotY   = rng(0, Math.PI * 2, i * 3 + 0.5);
+      const scaleX = rng(350, 900, i * 5 + 1.1);
+      const scaleZ = rng(220, 600, i * 5 + 2.3);
+      this._positions.push({ x, y, z, rotY, scaleX, scaleZ });
+
+      dummy.position.set(x, y, z);
+      dummy.rotation.y = rotY;
+      dummy.scale.set(scaleX, 1, scaleZ);
+      dummy.updateMatrix();
+      this._mesh.setMatrixAt(i, dummy.matrix);
+    }
+    this._mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // ── setWeather ─────────────────────────────────────────────
+  setWeather(cloudCover, weatherCode) {
+    const cc = Math.max(0, Math.min(100, cloudCover));
+    this._count = Math.round((cc / 100) * MAX_CLOUDS);
+    this._targetOpacity = THREE.MathUtils.lerp(0.25, 0.82, cc / 100);
+
+    let r, g, b;
+    if (weatherCode >= 95) {
+      r = g = b = 0.30;
+    } else if (weatherCode >= 61) {
+      r = g = b = 0.52;
+    } else if (weatherCode >= 45) {
+      r = g = b = 0.72;
+    } else if (cc > 60) {
+      r = g = b = 0.85;
+    } else {
+      r = 1; g = 1; b = 1;
+    }
+    this._targetColor.setRGB(r, g, b);
+  }
+
+  // ── tick ───────────────────────────────────────────────────
+  tick(dt, cameraPosition) {
+    if (!this._mesh) return;
+
+    this._time += dt;
+
+    const lerpK = 1 - Math.pow(0.02, dt);
+    this._currentOpacity = THREE.MathUtils.lerp(this._currentOpacity, this._targetOpacity, lerpK);
+    this._currentColor.lerp(this._targetColor, lerpK);
+
+    this._mesh.material.opacity = this._currentOpacity;
+    this._mesh.material.color.copy(this._currentColor);
+    this._mesh.count = this._count;
+
+    if (this._count === 0) return;
+
+    const dummy  = new THREE.Object3D();
+    const dx     = this._windVec.x * dt;
+    const dz     = this._windVec.y * dt;
+    const wrap   = CLOUD_FIELD * 2;
+
+    for (let i = 0; i < this._count; i++) {
+      const p = this._positions[i];
+      p.x += dx;
+      p.z += dz;
+
+      if (p.x >  CLOUD_FIELD) p.x -= wrap;
+      if (p.x < -CLOUD_FIELD) p.x += wrap;
+      if (p.z >  CLOUD_FIELD) p.z -= wrap;
+      if (p.z < -CLOUD_FIELD) p.z += wrap;
+
+      dummy.position.set(
+        cameraPosition.x + p.x,
+        p.y,
+        cameraPosition.z + p.z,
+      );
+      dummy.rotation.y = p.rotY;
+      dummy.scale.set(p.scaleX, 1, p.scaleZ);
+      dummy.updateMatrix();
+      this._mesh.setMatrixAt(i, dummy.matrix);
+    }
+    this._mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  setDayBrightness(factor) {
+    const b = THREE.MathUtils.clamp(factor, 0, 1);
+    if (this._mesh) {
+      this._mesh.material.color.copy(this._currentColor).multiplyScalar(b);
+    }
+  }
+
+  dispose() {
+    if (this._mesh) {
+      this._mesh.geometry.dispose();
+      this._mesh.material.dispose();
+      if (this._texture) this._texture.dispose();
+      if (this._scene) this._scene.remove(this._mesh);
+      this._mesh = null;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ORBIT CONTROLS  (inlined from orbitControls.js)
+// ═══════════════════════════════════════════════════════════════
 
 const _OC_STATE = { NONE: -1, ROTATE: 0, DOLLY: 1, PAN: 2, TOUCH_ROTATE: 3, TOUCH_PAN: 4, TOUCH_DOLLY_PAN: 5 };
 const _OC_TWO_PI = Math.PI * 2;
@@ -320,7 +602,6 @@ export class SceneManager {
     this.raycaster  = new THREE.Raycaster();
     this.raycaster.firstHitOnly = true;
     this.mouseNDC   = new THREE.Vector2();
-    //this._pickables = [];
 
     // Clouds sit above the scene — init after scene exists
     this._clouds.init(this.scene);
@@ -347,18 +628,13 @@ export class SceneManager {
   }
 
   // ── Geographic location for accurate solar position ───────────
-  // Call this whenever the user changes location (lat/lng).
-  // SceneManager stores it so _setSkyPosition can use it every frame.
   setLocation(lat, lng) {
     this._geoLat = lat;
     this._geoLng = lng;
-    // Snap the reference date to today so declination is correct.
     this._geoDate = new Date();
   }
 
   // ── Public accessor — solar elevation in degrees for a given local hour ──
-  // Used by the UI preview arc so it stays in sync with the scene's SPA.
-  // Returns a number in the range roughly -90..+90.
   getSolarElevation(hour) {
     if (this._geoLat !== undefined && this._geoLng !== undefined) {
       return this._solarPosition(
@@ -368,27 +644,17 @@ export class SceneManager {
         this._geoDate || new Date()
       ).elevDeg;
     }
-    // Fallback: original sine arc
     const elevNorm = (hour - 6) / 12;
     return Math.max(-20, 75 * Math.sin(elevNorm * Math.PI));
   }
 
   // ── NOAA SPA solar position algorithm ─────────────────────────
-  // Returns { elevDeg, azimuthDeg } for a given local clock hour (0-24),
-  // geographic lat/lng (degrees), and calendar date.
-  // "localHour" is the wall-clock time at the location (what the slider shows).
-  // Based on the NOAA Solar Calculator equations (simplified SPA).
   _solarPosition(localHour, latDeg, lngDeg, date) {
     const D2R = Math.PI / 180;
     const R2D = 180 / Math.PI;
 
-    // ── Julian day ─────────────────────────────────────────────
-    // Build JD using localHour directly as the fractional day.
-    // The JD value doesn't need to be astronomically exact to UTC —
-    // it's only used to derive slowly-changing quantities (declination,
-    // equation of time) where a few-hour error has negligible effect.
     const Y = date.getFullYear();
-    const M = date.getMonth() + 1;   // 1-12
+    const M = date.getMonth() + 1;
     const D = date.getDate();
 
     let jd;
@@ -402,38 +668,25 @@ export class SceneManager {
            D + B - 1524.5 + localHour / 24;
     }
 
-    // ── Julian century ─────────────────────────────────────────
     const T = (jd - 2451545.0) / 36525;
-
-    // ── Geometric mean longitude of sun (deg) ──────────────────
     const L0 = (280.46646 + T * (36000.76983 + T * 0.0003032)) % 360;
-
-    // ── Geometric mean anomaly (deg) ───────────────────────────
     const M0 = 357.52911 + T * (35999.05029 - T * 0.0001537);
-
-    // ── Equation of centre ─────────────────────────────────────
     const Mrad = M0 * D2R;
     const C = Math.sin(Mrad) * (1.914602 - T * (0.004817 + 0.000014 * T))
             + Math.sin(2 * Mrad) * (0.019993 - 0.000101 * T)
             + Math.sin(3 * Mrad) * 0.000289;
 
-    // ── Sun's true longitude ────────────────────────────────────
     const sunLon = L0 + C;
-
-    // ── Sun's apparent longitude (aberration + nutation) ───────
     const omega  = 125.04 - 1934.136 * T;
     const lambda = sunLon - 0.00569 - 0.00478 * Math.sin(omega * D2R);
 
-    // ── Mean obliquity of ecliptic ─────────────────────────────
     const epsilon0 = 23 + (26 + (21.448 - T * (46.8150 + T * (0.00059 - T * 0.001813))) / 60) / 60;
     const epsilon  = epsilon0 + 0.00256 * Math.cos(omega * D2R);
 
-    // ── Sun's declination ──────────────────────────────────────
     const lambdaRad  = lambda * D2R;
     const epsilonRad = epsilon * D2R;
     const declinDeg  = R2D * Math.asin(Math.sin(epsilonRad) * Math.sin(lambdaRad));
 
-    // ── Equation of time (minutes) ─────────────────────────────
     const y      = Math.tan(epsilonRad / 2) ** 2;
     const L0rad  = L0 * D2R;
     const eot    = 4 * R2D * (
@@ -442,24 +695,15 @@ export class SceneManager {
       + 4 * 0.016708634 * y * Math.sin(Mrad) * Math.cos(2 * L0rad)
       - 0.5 * y * y * Math.sin(4 * L0rad)
       - 1.25 * 0.016708634 * 0.016708634 * Math.sin(2 * Mrad)
-    ); // minutes
+    );
 
-    // ── True solar time ────────────────────────────────────────
-    // Local time already encodes the timezone (UTC offset).
-    // The remaining correction is: longitude within the timezone strip
-    // (difference between actual lng and the timezone's reference meridian,
-    // which is lngDeg rounded to the nearest 15°), plus equation of time.
-    // Reference meridian for this timezone (nearest 15° multiple):
     const refMeridian  = Math.round(lngDeg / 15) * 15;
-    const lngCorrection = (lngDeg - refMeridian) * 4; // minutes (+4 min/degree east)
+    const lngCorrection = (lngDeg - refMeridian) * 4;
     const localMinutes  = localHour * 60;
     const trueSolarTime = ((localMinutes + eot + lngCorrection) % 1440 + 1440) % 1440;
 
-    // ── Hour angle ─────────────────────────────────────────────
-    // 0 at solar noon, positive in the afternoon
     const hourAngleDeg = trueSolarTime / 4 - 180;
 
-    // ── Solar zenith angle ─────────────────────────────────────
     const latRad = latDeg  * D2R;
     const haRad  = hourAngleDeg * D2R;
     const decRad = declinDeg * D2R;
@@ -469,7 +713,6 @@ export class SceneManager {
     const zenithDeg = R2D * Math.acos(THREE.MathUtils.clamp(cosZenith, -1, 1));
     const elevDeg   = 90 - zenithDeg;
 
-    // ── Atmospheric refraction correction (degrees) ────────────
     let refraction = 0;
     if (elevDeg > -0.575) {
       if (elevDeg > 85) {
@@ -481,11 +724,10 @@ export class SceneManager {
       } else {
         refraction = 1735 + elevDeg * (-518.2 + elevDeg * (103.4 + elevDeg * (-12.79 + elevDeg * 0.711)));
       }
-      refraction /= 3600; // arcseconds → degrees
+      refraction /= 3600;
     }
     const elevCorrDeg = elevDeg + refraction;
 
-    // ── Azimuth (N=0, E=90, S=180, W=270) ─────────────────────
     let azimuthDeg;
     {
       const sinZ   = Math.sin(zenithDeg * D2R);
@@ -501,7 +743,6 @@ export class SceneManager {
   }
 
   // ── Compute sun world-space direction and push to sky shader ──
-  // Uses NOAA SPA when location is set; falls back to simple sine arc.
   _setSkyPosition(hour) {
     StartCloneUse();
     const t = ((hour % 24) + 24) % 24;
@@ -509,30 +750,23 @@ export class SceneManager {
     let elevDeg, azimuthDeg;
 
     if (this._geoLat !== undefined && this._geoLng !== undefined) {
-      // ── Geographic mode: proper solar position ────────────────
       const pos  = this._solarPosition(t, this._geoLat, this._geoLng, this._geoDate || new Date());
       elevDeg    = pos.elevDeg;
       azimuthDeg = pos.azimuthDeg;
     } else {
-      // ── Fallback: simple sinusoidal arc (original behaviour) ──
       const phase = t / 24;
       const elev  = Math.sin(phase * Math.PI * 2 - Math.PI / 2);
       elevDeg     = elev * 75;
       azimuthDeg  = phase * 360;
     }
 
-    // ── Convert alt-az to Three.js world vector ────────────────
-    // Three.js Sky shader: phi = polar angle from Y-up, theta = azimuthal.
-    // Azimuth 0° = North = -Z in Three.js (right-hand, Y-up).
-    // We rotate so N→-Z, E→+X, S→+Z, W→-X.
     const elevRad = THREE.MathUtils.degToRad(elevDeg);
     const aziRad  = THREE.MathUtils.degToRad(azimuthDeg);
 
-    // World-space sun direction (Y-up, X-east, Z-south)
     const sunPos = new THREE.Vector3(
-       Math.sin(aziRad) * Math.cos(elevRad),   // X = east component
-       Math.sin(elevRad),                        // Y = altitude
-      -Math.cos(aziRad) * Math.cos(elevRad),   // Z = -north component
+       Math.sin(aziRad) * Math.cos(elevRad),
+       Math.sin(elevRad),
+      -Math.cos(aziRad) * Math.cos(elevRad),
     );
     sunPos.normalize();
 
@@ -540,10 +774,8 @@ export class SceneManager {
     this._sunDirection  = CloneVector3(sunPos);
     this._moonDirection = CloneVector3(sunPos).negate();
 
-    // Store for setTimeOfDay to use (avoid recomputing)
     this._lastSolarElevDeg = elevDeg;
 
-    // ── Atmosphere tuning ──────────────────────────────────────
     const elevNorm    = THREE.MathUtils.clamp(elevDeg / 75, -1, 1);
     const dayFactor   = THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.18);
     const isDay       = elevDeg > 0;
@@ -555,23 +787,18 @@ export class SceneManager {
 
     return sunPos;
   }
+
   _getAtmosphereColors(elevDeg) {
-    const daySky   = new THREE.Color(0x4da6ff);  // richer blue
+    const daySky   = new THREE.Color(0x4da6ff);
     const sunset   = new THREE.Color(0xffa060);
     const nightSky = new THREE.Color(0x050816);
   
     const sky = new THREE.Color();
   
-    // ── 1. Compute golden factor DIRECTLY from elevation ──
-    // Peak golden at horizon (0°), fade out above ~20°
     const goldenFactor = 1.0 - THREE.MathUtils.smoothstep(0, 20, elevDeg);
-  
-    // Optional: include below-horizon glow slightly
     const twilightBoost = THREE.MathUtils.smoothstep(-6, 2, elevDeg);
-  
     const finalGolden = goldenFactor * twilightBoost;
   
-    // ── 2. Blend sky colors ──
     if (elevDeg > -6) {
       sky.lerpColors(daySky, sunset, finalGolden);
     } else {
@@ -583,11 +810,11 @@ export class SceneManager {
       fog: elevDeg > -6 ? sky.clone() : nightSky.clone()
     };
   }
+
   // ── Day lights ────────────────────────────────────────────────
   _addLights() {
     StartCloneUse();
     const dist = 1000;
-    // Placeholder direction; _setSkyPosition updates it
     const dir  = new THREE.Vector3(0.5, 0.7, -0.3).normalize();
 
     this.sun = new THREE.DirectionalLight(0xfff5e0, 3.0);
@@ -614,39 +841,27 @@ export class SceneManager {
   // ── Night layer ───────────────────────────────────────────────
   _initNightLayer() {
     StartCloneUse();
-    // Moon sits opposite the sun, 50° above horizon
     const moonPhi   = THREE.MathUtils.degToRad(90 - 50);
     const moonTheta = THREE.MathUtils.degToRad(135 + 180);
     const moonDir   = new THREE.Vector3();
     moonDir.setFromSphericalCoords(1, moonPhi, moonTheta);
     this._moonDirection = CloneVector3(moonDir);
 
-    // Moon directional light — blue-white, starts at 0 intensity
     this._moonLight = new THREE.DirectionalLight(0xc8d8ff, 0);
     this._moonLight.position.copy(CloneVector3(moonDir).multiplyScalar(1000));
-    this._moonLight.castShadow = false; // soft moonlight, no hard shadows
+    this._moonLight.castShadow = false;
     this.scene.add(this._moonLight);
 
-    // Night ambient — deep indigo, starts at 0
     this._nightAmbient = new THREE.AmbientLight(0x0a1835, 0);
     this.scene.add(this._nightAmbient);
 
-    // ── Moon mesh — emissive sphere, always self-lit ───────────
-    // A Sprite with AdditiveBlending is invisible against a dark sky.
-    // Using MeshBasicMaterial (unlit, ignores scene lights) with a
-    // canvas texture means the moon is always its own colour regardless
-    // of scene lighting, and NormalBlending composites it cleanly.
     const moonTex = new THREE.CanvasTexture(this._makeMoonCanvas(512));
     const moonGeo = new THREE.SphereGeometry(MOON_SIZE * 0.5, 32, 32);
-    //const moonGeo = new THREE.PlaneGeometry(MOON_SIZE, MOON_SIZE);
     const moonMat = new THREE.MeshBasicMaterial({
-      //map: moonTex,
       transparent: true,
       opacity: 0,
-      //alphaTest: 0.2,
       depthWrite: false,
       depthTest: true,
-      //blending: THREE.NormalBlending,
     });
     this._moonMesh = new THREE.Mesh(moonGeo, moonMat);
     
@@ -655,15 +870,12 @@ export class SceneManager {
     this._moonMesh.material.blending = THREE.AdditiveBlending;
     this._moonMesh.material.fog = false;
 
-    this._moonMesh.renderOrder    = 0;  // same as geometry; depthTest:false means it paints over sky bg
-    this._moonMesh.frustumCulled  = false; // always render — repositioned each frame
+    this._moonMesh.renderOrder    = 0;
+    this._moonMesh.frustumCulled  = false;
 
-    // Position updated each frame in _tickNight (camera-relative)
     this._moonMesh.position.set(0, MOON_DIST * 0.3, -MOON_DIST * 0.4);
-    //this._moonMesh.position.set(0,0, 0);
     this.scene.add(this._moonMesh);
 
-    // Atmospheric glow halo around moon (separate plane, additive)
     const haloSize = MOON_SIZE * 2.2;
     const haloGeo  = new THREE.PlaneGeometry(haloSize, haloSize);
     const haloTex  = new THREE.CanvasTexture(this._makeMoonHaloCanvas(128));
@@ -676,21 +888,18 @@ export class SceneManager {
       blending:   THREE.AdditiveBlending,
     });
     this._moonHalo = new THREE.Mesh(haloGeo, haloMat);
-    this._moonHalo.renderOrder   = -1; // draws before geometry (stars also at -1, both are sky bg)
-    this._moonHalo.frustumCulled = false; // always render
-    // Position updated each frame in _tickNight (synced to moon)
+    this._moonHalo.renderOrder   = -1;
+    this._moonHalo.frustumCulled = false;
     this._moonHalo.position.set(0, MOON_DIST * 0.3, -MOON_DIST * 0.4);
     this._moonHalo.material.fog = false;
-    //this._moonHalo.position.set(0, 0, 0);
     this.scene.add(this._moonHalo);
 
-    // ── Stars ─────────────────────────────────────────────────
     this._starPoints = this._makeStars();
-    this._starPoints.frustumCulled = false; // always render — bounding sphere is huge
+    this._starPoints.frustumCulled = false;
     this.scene.add(this._starPoints);
   }
 
-  // ── Moon halo canvas (soft glow ring) ────────────────────────
+  // ── Moon halo canvas ──────────────────────────────────────────
   _makeMoonHaloCanvas(size) {
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = size;
@@ -754,23 +963,18 @@ export class SceneManager {
     const v = new THREE.Vector3();
     for (let i = 0; i < STAR_COUNT; i++) {
       const theta = Math.random() * Math.PI * 2;
-      //const phi   = Math.acos(1 - Math.random() * 1.65);
       const phi = Math.acos(2 * Math.random() - 1);
       v.setFromSphericalCoords(STAR_SPHERE_R, phi, theta);
       positions[i * 3]     = v.x;
       let y = v.y;
-      // compress slightly but don't clamp
       y = y * 0.9;
-
-      // optional: allow deeper negative values occasionally
       if (Math.random() < 0.15) {
         y -= STAR_SPHERE_R * 0.2 * Math.random();
       }
-      positions[i * 3 + 1] = y;// Math.max(v.y, STAR_SPHERE_R * 0.06);
+      positions[i * 3 + 1] = y;
       positions[i * 3 + 2] = v.z;
-      sizes[i]  = 1.0 + Math.random() * 2.5; // fixed screen-space px — looks natural
-        //? 2.5 + Math.random() * 1.5 : 0.6 + Math.random() * 1.8;
-      alphas[i] = 1;//0.4 + Math.random() * 0.6;
+      sizes[i]  = 1.0 + Math.random() * 2.5;
+      alphas[i] = 1;
     }
 
     const geo = new THREE.BufferGeometry();
@@ -806,14 +1010,10 @@ export class SceneManager {
         
           vAlpha = aAlpha * uNightPhase * twinkle;
         
-          // 1. FIRST: transform position to view space
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
         
-          // 2. THEN: projection
           gl_Position = projectionMatrix * mvPosition;
         
-          // Stars are a skybox layer — use fixed screen-space size (no depth attenuation).
-          // Depth-attenuating at STAR_SPHERE_R (~8000 units) shrinks points to <1px.
           gl_PointSize = aSize;
         }
       `,
@@ -830,34 +1030,24 @@ export class SceneManager {
     });
 
     const points = new THREE.Points(geo, mat);
-    // renderOrder -1 — stars paint as a skybox background BEFORE all scene geometry.
-    // Buildings and ground use renderOrder 0 (default) with depthTest:true so they
-    // naturally overdraw the stars. depthTest:false on stars means they always paint
-    // on the background pass regardless of depth buffer state — exactly what we want.
     points.material.depthTest = true;
-    points.material.depthWrite = false; // keep this off
+    points.material.depthWrite = false;
     points.renderOrder = -1;
-    //points.material.depthTest  = false;
-    //points.material.depthWrite = false;
     return points;
   }
+
   setTimeOfDay(hour) {
-    // ── 1. Normalize time to cyclic 24h domain ───────────────
     const t = ((hour % 24) + 24) % 24;
     this._currentHour = t;
 
-    // ── 2. Update sun direction via SPA ─────────────────────
-    // _setSkyPosition stores the true solar elevation in _lastSolarElevDeg.
     this._setSkyPosition(t);
 
-    // Use SPA elevation when location is known; fall back to sine arc.
     const elevDeg = (this._lastSolarElevDeg !== undefined)
       ? this._lastSolarElevDeg
       : -20 + 95 * Math.max(0, Math.sin(t / 24 * Math.PI * 2 - Math.PI / 2));
 
     const elevNorm = THREE.MathUtils.clamp(elevDeg / 90, -1, 1);
 
-    // Smooth day/night split driven by true solar elevation
     const sunDayPhase = THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.15);
     const nightPhase = 1 - sunDayPhase;
     this._nightPhase = nightPhase;
@@ -870,13 +1060,9 @@ export class SceneManager {
       this._sunDirection.z * dist
     );
   
-    // ── 4. Sun color (golden hour smoothing stays stable) ────
     const sunColor = new THREE.Color();
-    // Better golden hour factor: strongest near horizon, fades upward
     const horizonFactor = 1.0 - Math.abs(elevDeg) / 75;
     const golden = THREE.MathUtils.clamp(horizonFactor, 0, 1);
-
-    // smooth curve so it "blooms" instead of snapping
     const goldenSoft = Math.pow(golden, 2.2);
   
     if (goldenSoft > 0.01) {
@@ -893,12 +1079,9 @@ export class SceneManager {
     this.sun.intensity = sunDayPhase * 3.0;
   
     const atmos = this._getAtmosphereColors(elevDeg);
-    // Skybox / scene background
     this.scene.background = atmos.sky;
 
-    // Sky shader still used (kept intact)
     if (this._sky) this._sky.visible = true;
-    // Fog now matches atmosphere exactly
     if (sunDayPhase > 0.01) {
       if (!this.scene.fog) {
         this.scene.fog = new THREE.Fog(atmos.fog, 2000, 14000);
@@ -910,7 +1093,7 @@ export class SceneManager {
       }
       this.scene.fog.color.copy(atmos.fog);
     }
-    // ── 5. Ambient & rim light ───────────────────────────────
+
     if (this._dayAmbient) {
       this._dayAmbient.intensity = sunDayPhase * 0.5;
     }
@@ -919,7 +1102,6 @@ export class SceneManager {
       this._rimLight.intensity = sunDayPhase * 0.4;
     }
   
-    // ── 7. Moon light + ambient ──────────────────────────────
     if (this._moonLight) {
       this._moonLight.intensity = nightPhase * 1.2;
       this._moonLight.position.copy(this._moonDirection).multiplyScalar(1000);
@@ -938,12 +1120,10 @@ export class SceneManager {
       this._moonHalo.material.opacity = nightPhase * 0.8;
     }
   
-    // ── 8. Stars ─────────────────────────────────────────────
     if (this._starPoints) {
       this._starPoints.material.uniforms.uNightPhase.value = nightPhase;
     }
   
-    // ── 9. Lamps ─────────────────────────────────────────────
     const lampPhase = THREE.MathUtils.clamp(
       THREE.MathUtils.smoothstep(nightPhase, 0.25, 0.65),
       0,
@@ -960,14 +1140,13 @@ export class SceneManager {
         mat.needsUpdate = true;
       }
     }
-    // ── 11. Tone mapping ─────────────────────────────────────
+
     this.renderer.toneMappingExposure = THREE.MathUtils.lerp(
       0.45,
       0.5,
       sunDayPhase
     );
   
-    // ── 12. Clouds ───────────────────────────────────────────
     if (this._clouds) {
       this._clouds.setDayBrightness(
         THREE.MathUtils.lerp(0.25, 1.0, sunDayPhase)
@@ -983,12 +1162,9 @@ export class SceneManager {
     StartCloneUse();
     if (this._starPoints) {
       this._starTime += dt;
-      // uTwinkle advances slowly and wraps at 1.0 — the vertex shader uses fract()
-      // so no discontinuity. Much cheaper than driving a sin() per vertex per frame.
       this._starPoints.material.uniforms.uTwinkle.value = (this._starTime * 0.08) % 1.0;
     }
 
-    // Move star sphere to follow camera so stars always fill the sky
     if (this._starPoints) {
       this._starPoints.position.copy(this.camera.position);
     }
@@ -1002,7 +1178,7 @@ export class SceneManager {
     
       if (this._moonHalo) {
         this._moonHalo.position.copy(moonPos);
-        this._moonHalo.quaternion.copy(this.camera.quaternion); // billboard only for halo
+        this._moonHalo.quaternion.copy(this.camera.quaternion);
       }
     }
   }
@@ -1086,7 +1262,6 @@ export class SceneManager {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow     = true;
     mesh.userData.isGround = true;
-    //this.scene.add(mesh);
     this.addObject(mesh);
     this._groundMesh = mesh;
     this._fitShadowFrustum(radiusMeters);
@@ -1102,10 +1277,6 @@ export class SceneManager {
     this._groundMesh.material.needsUpdate = true;
   }
 
-  // ── Lamp LOD — hide lamps too far from camera to be visible ──
-  // Runs every 15 frames (~4×/sec at 60fps) to amortise the cost
-  // of iterating _lampMeshes. Y is included because the camera can
-  // be high above the scene during top-down views.
   _tickLampLOD() {
     this._lodFrame++;
     if (this._lodFrame % 15 !== 0) return;
@@ -1124,7 +1295,6 @@ export class SceneManager {
   start() {
     this.init();
 
-    // Roaming camera shares the scene's existing camera + canvas
     this._roamingCam = new RoamingControls(
       this.camera,
       this.scene,
@@ -1140,15 +1310,8 @@ export class SceneManager {
       this._tickBeacon(dt);
       if (this._transitionTick) this._transitionTick(dt);
 
-      // Roaming camera takes over movement when active
       if (this._roamingCam?.isActive) {
-        const charPos = this._roamingCam.tick(dt);
-        // Sync the character mesh to the physics position
-        if (this._characterGroup) {
-          this._characterGroup.position.copy(charPos);
-          // Face the direction the camera is looking (yaw only)
-          this._characterGroup.rotation.y = -this._roamingCam._yaw + Math.PI;
-        }
+        this._roamingCam.tick(dt);
       } else {
         this.controls.update(dt);
       }
@@ -1161,7 +1324,6 @@ export class SceneManager {
   }
 
   clearWorld() {
-    // Reset roaming cam state without destroying it — it is reused across builds.
     if (this._roamingCam) {
       if (this._roamingCam.isActive) this._roamingCam.deactivate();
       this._roamingCam.collidables = [];
@@ -1177,7 +1339,6 @@ export class SceneManager {
       });
     }
     this._objects    = [];
-    //this._pickables  = [];
     this._lampMeshes = [];
 
     if (this._groundMesh) {
@@ -1189,12 +1350,14 @@ export class SceneManager {
       this._groundMesh.material.needsUpdate = true;
     }
   }
+
   registerCollidable(mesh) {
     this._collidables.push(mesh);
     if (this._roamingCam && mesh?.geometry?.boundsTree) {
       this._roamingCam.collidables.push(mesh);
     }
   }
+
   addObject(obj, collidable = true) {
     this.scene.add(obj);
     this._objects.push(obj);
@@ -1202,6 +1365,7 @@ export class SceneManager {
       this._collidables.push(obj);
     }
   }
+
   setRenderMode(mode) {
     this.renderMode = mode;
     this._objects.forEach(group => {
@@ -1222,6 +1386,7 @@ export class SceneManager {
       });
     });
   }
+
   _onResize() {
     const w = this.container.clientWidth, h = this.container.clientHeight;
     this.camera.aspect = w / h;
@@ -1234,7 +1399,6 @@ export class SceneManager {
     this._clouds.setWeather(cloudCover, weatherCode);
   }
 
-  // windSpeed: world-units/sec, windAngleDeg: 0–360°, altitude: metres
   setCloudProperties({ windSpeed, windAngleDeg, altitude } = {}) {
     this._clouds.setProperties({ windSpeed, windAngleDeg, altitude });
   }
@@ -1253,7 +1417,6 @@ export class SceneManager {
   enterSelectionMode() {
     this._selectionMode = true;
     this.controls.enabled = true;
-    // Attach click handler for ground picking
     this._selectionHandler = (e) => this._onSelectionClick(e);
     this.renderer.domElement.addEventListener('click', this._selectionHandler);
   }
@@ -1275,7 +1438,6 @@ export class SceneManager {
 
     this.raycaster.setFromCamera(mouse, this.camera);
 
-    // Pick against ground and all scene objects
     const allMeshes = [];
     this.scene.traverse(child => { if (child.isMesh) allMeshes.push(child); });
     const hits = this.raycaster.intersectObjects(allMeshes, false);
@@ -1287,11 +1449,9 @@ export class SceneManager {
     const pt = hits[0].point;
     this.placeBeacon(pt.x, pt.y, pt.z);
 
-    // Fire callback if set
     if (this._onBeaconPlaced) this._onBeaconPlaced(pt.x, pt.y, pt.z);
   }
 
-  // Called by UIController to be notified when beacon is placed
   onBeaconPlaced(cb) {
     this._onBeaconPlaced = cb;
   }
@@ -1305,7 +1465,6 @@ export class SceneManager {
     this._beaconGroup = new THREE.Group();
     this._beaconGroup.name = 'beacon';
 
-    // Ground ring (flat cylinder)
     const ringGeo = new THREE.CylinderGeometry(3.5, 3.5, 0.25, 48, 1, true);
     const ringMat = new THREE.MeshBasicMaterial({
       color: 0x47d7ff, transparent: true, opacity: 0.85,
@@ -1315,7 +1474,6 @@ export class SceneManager {
     ring.position.set(x, y + 0.15, z);
     this._beaconGroup.add(ring);
 
-    // Filled disc glow under beacon
     const discGeo = new THREE.CircleGeometry(3.5, 48);
     const discMat = new THREE.MeshBasicMaterial({
       color: 0x47d7ff, transparent: true, opacity: 0.18,
@@ -1326,7 +1484,6 @@ export class SceneManager {
     disc.position.set(x, y + 0.1, z);
     this._beaconGroup.add(disc);
 
-    // Vertical beam (thin cylinder, very tall, additive)
     const beamGeo = new THREE.CylinderGeometry(0.22, 1.8, 600, 12, 1, true);
     const beamMat = new THREE.MeshBasicMaterial({
       color: 0x47d7ff, transparent: true, opacity: 0.10,
@@ -1337,7 +1494,6 @@ export class SceneManager {
     beam.position.set(x, y + 300, z);
     this._beaconGroup.add(beam);
 
-    // Diamond marker at eye level
     const diamondGeo = new THREE.OctahedronGeometry(1.4, 0);
     const diamondMat = new THREE.MeshBasicMaterial({
       color: 0x47d7ff, wireframe: false, transparent: true, opacity: 0.92,
@@ -1347,7 +1503,6 @@ export class SceneManager {
     diamond.userData.isBeaconDiamond = true;
     this._beaconGroup.add(diamond);
 
-    // Diamond wireframe outline
     const diamondWF = new THREE.Mesh(diamondGeo.clone(), new THREE.MeshBasicMaterial({
       color: 0xffffff, wireframe: true, transparent: true, opacity: 0.4,
     }));
@@ -1369,13 +1524,11 @@ export class SceneManager {
     this._beaconPos = null;
   }
 
-  // ── Animate beacon ────────────────────────────────────────────
   _tickBeacon(dt) {
     if (!this._beaconGroup) return;
     this._beaconTime = (this._beaconTime || 0) + dt;
     const t = this._beaconTime;
 
-    // Pulse ring opacity
     this._beaconGroup.children.forEach(c => {
       if (c.userData.isBeaconDiamond) {
         c.rotation.y = t * 1.8;
@@ -1388,13 +1541,12 @@ export class SceneManager {
   // CHARACTER
   // ═══════════════════════════════════════════════════════════════
 
-  spawnCharacter(x, y, z) {//TODO spawned character done here, how to reference into roamingControls.js?
+  spawnCharacter(x, y, z) {
     this.removeCharacter();
 
     const group = new THREE.Group();
     group.name = 'character';
 
-    // Body (single capsule)
     const capR   = 0.38;
     const bodyH  = 1.2;
     const totalH = bodyH + capR * 2;
@@ -1402,11 +1554,10 @@ export class SceneManager {
     const bodyGeo = new THREE.CapsuleGeometry(capR, bodyH, 8, 16);
     const bodyMat = new THREE.MeshToonMaterial({ color: 0x3d8eff });
     const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.y = totalH / 2;   // CapsuleGeometry is centred at origin
+    body.position.y = totalH / 2;
     body.castShadow = true;
     group.add(body);
 
-    // Head
     const headGeo = new THREE.SphereGeometry(capR * 0.72, 16, 12);
     const headMat = new THREE.MeshToonMaterial({ color: 0xf5c9a0 });
     const head = new THREE.Mesh(headGeo, headMat);
@@ -1417,7 +1568,6 @@ export class SceneManager {
     group.position.set(x, y, z);
     this._characterGroup = group;
     this._characterPos   = new THREE.Vector3(x, y, z);
-    // Store character height so camera can offset above feet
     this._characterHeight = totalH;
 
     this.scene.add(group);
@@ -1436,44 +1586,39 @@ export class SceneManager {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // CAMERA TRANSITION TO ROAMING
-  // Smoothly animates camera from current orbit position to a
-  // 3rd-person position behind and above the character.
+  // CAMERA TRANSITIONS
   // ═══════════════════════════════════════════════════════════════
 
   transitionToRoaming(onComplete) {
     StartCloneUse();
     if (!this._characterPos) { if (onComplete) onComplete(); return; }
 
-    // Disable orbit controls during transition
     this.controls.enabled = false;
 
     const charPos   = CloneVector3(this._characterPos);
     const charH     = this._characterHeight || 2.0;
 
-    // Target: behind character (positive Z = "south"), slightly elevated
     const targetCamPos = new THREE.Vector3(
       charPos.x,
-      charPos.y + charH + 4.0,   // eye height above character
-      charPos.z + 10.0            // behind character
+      charPos.y + charH + 4.0,
+      charPos.z + 10.0
     );
     const targetLookAt = new THREE.Vector3(
       charPos.x,
-      charPos.y + charH * 0.6,   // look at mid-chest
+      charPos.y + charH * 0.6,
       charPos.z
     );
 
     const startCamPos  = CloneVector3(this.camera.position);
     const startLookAt  = CloneVector3(this.controls.target);
 
-    const duration = 1.2; // seconds
+    const duration = 1.2;
     let   elapsed  = 0;
 
     this._transitionActive = true;
     this._transitionTick = (dt) => {
       elapsed += dt;
       const t = Math.min(1, elapsed / duration);
-      // Smooth ease-in-out
       const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
 
       this.camera.position.lerpVectors(startCamPos, targetCamPos, ease);
@@ -1537,18 +1682,10 @@ export class SceneManager {
     return this._characterPos ? CloneVector3(this._characterPos) : null;
   }
 
-  // NOTE: methods appended by roaming camera integration patch
-
   // ═══════════════════════════════════════════════════════════════
-  // ROAMING CAMERA — public activation interface
+  // ROAMING CAMERA
   // ═══════════════════════════════════════════════════════════════
 
-  /**
-   * Start the third-person roaming camera.
-   * Disables OrbitControls and hands full control to RoamingCamera.
-   * @param {THREE.Vector3} spawnPos  — world position to spawn at
-   * @param {function}      [onExit]  — called when Escape pressed
-   */
   startRoamingCamera(spawnPos, onExit) {
     if (!this._roamingCam) return;
     this.controls.enabled = false;
@@ -1557,10 +1694,9 @@ export class SceneManager {
       this.stopRoamingCamera();
       if (typeof onExit === 'function') onExit();
     };
-    this._roamingCam.activate(spawnPos, 0);
+    this._roamingCam.activate(spawnPos, 0, this._characterGroup ?? null);
   }
 
-  /** Stop the roaming camera and re-enable OrbitControls. */
   stopRoamingCamera() {
     if (!this._roamingCam) return;
     this._roamingCam.deactivate();
@@ -1568,7 +1704,6 @@ export class SceneManager {
     this.controls.update();
   }
 
-  /** True while the roaming camera controls the scene. */
   get roamingActive() {
     return this._roamingCam?.isActive ?? false;
   }

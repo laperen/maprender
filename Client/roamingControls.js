@@ -130,8 +130,6 @@ export class RoamingControls {
     this.camboom.add(this.camvert);
     this.camvert.rotation.set(0,0,0);
 
-    this.sensitivity = 1.5;
-
     this.mousex = 0;
     this.mousey = 0;
     this.mcount = false;
@@ -158,11 +156,12 @@ export class RoamingControls {
   // PUBLIC API
   // ═══════════════════════════════════════════════════════════
 
-  activate(spawnPos, yawDeg = 0) {
+  activate(spawnPos, yawDeg = 0, visualMesh = null) {
     StartCloneUse();
     if (this._active) return;
     this._active    = true;
     this._spawnPos = CloneVector3(spawnPos);
+    player.visualMesh = visualMesh;
     this._spawnPos.y += 5;
     //
     this._bindEvents();
@@ -184,6 +183,7 @@ export class RoamingControls {
     this._active = false;
     this._unbindEvents();
     if (document.pointerLockElement === this._dom) document.exitPointerLock();
+    player.visualMesh = null;
   }
 
   /**
@@ -474,16 +474,14 @@ export class RoamingControls {
     let miscvect = CloneVector3(actor.forwardDir);
     miscvect.cross(actor.targetup).add(this._colliderMesh.position);
     this._colliderMesh.lookAt(miscvect);
-    //TODO how to bring visual here
-    /*
     //set visuals
     if(actor.visualMesh){
         //set up direction
-        actor.visualMesh.up.copy(camboom.up);
-        //set position
-        miscvect.copy(camboom.up).setLength(actor.groundColliderData.radius);
-        actor.visualMesh.position.copy(actor.groundColliderMesh.position).sub(miscvect);
-        //set facing direction
+        actor.visualMesh.up.copy(this.camboom.up);
+        //set position: offset downward from collider centre by capsule radius so feet sit on ground
+        miscvect.copy(this.camboom.up).setLength(CAPSULE_RADIUS);
+        actor.visualMesh.position.copy(this._colliderMesh.position).sub(miscvect);
+        //set facing direction — only update velocityDir when actually moving
         if(actor.accelAccum.lengthSq() > 0.1){
             actor.velocityDir.copy(actor.velocity).setLength(1);
         }
@@ -493,24 +491,15 @@ export class RoamingControls {
         miscvect.copy(actor.visualMesh.position).add(actor.facingDir);
         actor.visualMesh.lookAt(miscvect);
     }
-    */
   }
   playerControls(actor, deltaTime){
     if(this.mcount != this.prevmcount){//detects if mouse has truly been moved
-        this.camYDelta = this.mousex * deltaTime * this.sensitivity;
-        this.camXDelta = this.mousey * deltaTime * this.sensitivity;
+        this.camYDelta = this.mousex * deltaTime * this._mouseSensY;
+        this.camXDelta = this.mousey * deltaTime * this._mouseSensX;
     }else{
         this.camYDelta = 0;
         this.camXDelta = 0;
     }
-    /*
-    camY += camXDelta;
-    if(camY > Math.PI){
-        camY -= Math.PI;
-    } else if(camY < -Math.PI){
-        camY += Math.PI;
-    }
-    */
     this.camX = THREE.MathUtils.clamp(this.camX + this.camXDelta, -rad90, rad90);
     let forward = keyStates[ 'KeyW' ];
     let backward = keyStates[ 'KeyS' ];
@@ -533,7 +522,8 @@ export class RoamingControls {
         actor.accelAccum.z *= reverseDamping;
     }else{
         miscvect.copy(actor.accelAccum).setLength(speedDelta * 0.5);
-        actor.accelAccum.sub(miscvect);
+        actor.accelAccum.copy(this.GetCloseToZero(actor.accelAccum.sub(miscvect)));
+        //actor.accelAccum.sub(miscvect);
     }
     actor.accelAccum.y *= reverseDamping;
     if(actor.jump){

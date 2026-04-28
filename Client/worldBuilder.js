@@ -299,7 +299,7 @@ export class WorldBuilder {
       );
       mesh.receiveShadow = true;
       this.scene.addObject(mesh);
-      this.scene.registerCollidable(mesh);
+      //this.scene.registerCollidable(mesh);
       tris += draped.idx.length / 3;
     }
 
