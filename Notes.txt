@@ -3,8 +3,11 @@ WIP
 character movement
 remaining issues:
 From time to time, while moving, the player's rotation is abruptly switched, will need to doublecheck  if this is still happening with collision fix.
-will need to bring visual mesh from scene into roamingControls to manipulate.
 position reset using _teleportToOrigin should be changed to resetting to last grounded position instead
+
+3d world
+- have lamp halos conform to surface
+- convert lamp globes, lamp halos, and aviation lights, to instanced meshes instead.
 
 settings menu
 - clearing map cache?
