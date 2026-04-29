@@ -612,7 +612,7 @@ export class RoamingControls {
     this._camera.getWorldDirection(miscvect);
     this.camraycaster.ray.direction.copy(miscvect.negate());
     const camhit = this.worldIntersect(this.camraycaster);// this.camraycaster.intersectObject(world.layers[CollisionTags.Environment].collider )[ 0 ];
-    let camdist = camhit?camhit.distance:this.maxCamDist;
+    let camdist = camhit?camhit.distance-0.2:this.maxCamDist;
     this._camera.position.z = camdist;
   }
 

@@ -575,7 +575,7 @@ export class SceneManager {
 
     this.scene = new THREE.Scene();
 
-    this.camera = new THREE.PerspectiveCamera(55, w / h, 1, 30000);
+    this.camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 30000);
     this.camera.position.set(0, 600, 1200);
     this.camera.lookAt(0, 0, 0);
 
@@ -1621,17 +1621,17 @@ export class SceneManager {
     group.name = 'character';
 
     const capR   = 0.38;
-    const bodyH  = 1.2;
+    const bodyH  = 0.8;
     const totalH = bodyH + capR * 2;
 
-    const bodyGeo = new THREE.CapsuleGeometry(capR, bodyH, 8, 16);
+    const bodyGeo = new THREE.CapsuleGeometry(capR, bodyH, 6, 6, 1);
     const bodyMat = new THREE.MeshToonMaterial({ color: 0x3d8eff });
     const body = new THREE.Mesh(bodyGeo, bodyMat);
     body.position.y = totalH / 2;
     body.castShadow = true;
     group.add(body);
 
-    const headGeo = new THREE.SphereGeometry(capR * 0.72, 16, 12);
+    const headGeo = new THREE.SphereGeometry(capR * 0.72, 8, 6);
     const headMat = new THREE.MeshToonMaterial({ color: 0xf5c9a0 });
     const head = new THREE.Mesh(headGeo, headMat);
     head.position.y = totalH + capR * 0.5;

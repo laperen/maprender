@@ -2,8 +2,11 @@ WIP
 
 character movement
 remaining issues:
+character seems to rotate erratically when standing still.
 From time to time, while moving, the player's rotation is abruptly switched, will need to doublecheck  if this is still happening with collision fix.
 position reset using _teleportToOrigin should be changed to resetting to last grounded position instead
+
+any way to reduce the perspective camera distance while keeping the sun moon and sky visible.
 
 settings menu
 - clearing map cache?
