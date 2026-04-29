@@ -159,6 +159,49 @@
         </div>
       </div>
 
+      <!-- Collapsible: Moon Phase -->
+      <div class="collapsible-section">
+        <button class="collapsible-header" id="moon-toggle" aria-expanded="false">
+          <span class="collapsible-title">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            Moon Phase
+          </span>
+          <span class="collapsible-meta" id="moon-meta">🌕 Full</span>
+          <svg class="collapsible-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        <div class="collapsible-body" id="moon-body">
+          <div id="moon-panel-host">
+            <div class="tod-panel">
+              <div class="tod-mode-row">
+                <button class="tod-mode-btn" id="moon-manual-btn" title="Set moon phase manually">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                  </svg>
+                  Manual
+                </button>
+                <button class="tod-mode-btn active" id="moon-auto-btn" title="Use real lunar cycle">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                  </svg>
+                  Real Cycle
+                </button>
+              </div>
+              <div class="tod-arc-wrap">
+                <canvas id="moon-arc" width="240" height="90"></canvas>
+                <div class="tod-time-label" id="moon-label">🌕 Full Moon</div>
+              </div>
+              <div class="tod-slider-wrap" id="moon-manual-wrap" style="opacity:0.35;pointer-events:none;">
+                <label style="font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:2px;display:block;">
+                  Phase <span id="moon-phase-val">Full Moon</span>
+                </label>
+                <input type="range" id="moon-phase-slider" min="0" max="100" step="1" value="50" />
+              </div>
+              <div class="tod-indicators" id="moon-indicators"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </section>
     </div><!-- /#ui-scroll -->
 

@@ -473,6 +473,9 @@ export class UIController {
     this._windAngleDeg   = 13;
     this._cloudAltitude  = 380;
 
+    this._moonAutoMode  = true;   // true = use real lunar cycle
+    this._moonPhaseNorm = 0.5;    // 0=new, 0.5=full, 1=new again
+
     this._appMode = 'map-creation';
 
     this._gameMode       = 'explore';
@@ -503,10 +506,12 @@ export class UIController {
     this._bindElements();
     this._buildTimePanel();
     this._buildCloudPanel();
+    this._buildMoonPanel();
     this._bindEvents();
     this.minimap.update(this.lng, this.lat, this.radius);
     this._applyTimeOfDay(this.timeOfDay);
     this._applyCloudProperties();
+    this._applyMoonPhase();
 
     // Init overlay and left panel
     this._overlay.init();
@@ -555,6 +560,9 @@ export class UIController {
     this.$cloudToggle = document.getElementById('cloud-toggle');
     this.$cloudBody   = document.getElementById('cloud-body');
     this.$cloudMeta   = document.getElementById('cloud-meta');
+    this.$moonToggle  = document.getElementById('moon-toggle');
+    this.$moonBody    = document.getElementById('moon-body');
+    this.$moonMeta    = document.getElementById('moon-meta');
 
     this.$uiPanel        = document.getElementById('ui');
     this.$selectionPanel = document.getElementById('selection-panel');
@@ -597,6 +605,202 @@ export class UIController {
     this.$cloudIndicators   = document.getElementById('cloud-indicators');
     this._drawCloudPreview();
     this._updateCloudPills();
+  }
+
+  _buildMoonPanel() {
+    const host = document.getElementById('moon-panel-host');
+    if (!host) return;
+    this.$moonArc          = document.getElementById('moon-arc');
+    this.$moonLabel        = document.getElementById('moon-label');
+    this.$moonManualWrap   = document.getElementById('moon-manual-wrap');
+    this.$moonManualBtn    = document.getElementById('moon-manual-btn');
+    this.$moonAutoBtn      = document.getElementById('moon-auto-btn');
+    this.$moonPhaseSlider  = document.getElementById('moon-phase-slider');
+    this.$moonPhaseVal     = document.getElementById('moon-phase-val');
+    this.$moonIndicators   = document.getElementById('moon-indicators');
+    // Seed with today's real lunar phase
+    this._moonPhaseNorm = this._realLunarPhase();
+    if (this.$moonPhaseSlider) this.$moonPhaseSlider.value = Math.round(this._moonPhaseNorm * 100);
+    if (this.$moonPhaseVal)    this.$moonPhaseVal.textContent = this._moonPhaseName(this._moonPhaseNorm);
+    this._drawMoonPreview();
+    this._updateMoonPills();
+  }
+
+  // ── Real lunar phase from date (no API needed) ─────────────────
+  // Returns normalised phase 0–1 (0=new, 0.5=full, 1=new again).
+  // Uses J2000 epoch and mean synodic period (29.53058770576 days).
+  _realLunarPhase(date = new Date()) {
+    const SYNODIC = 29.53058770576;
+    // Known new moon: 2000-01-06 18:14 UTC  → Julian date 2451550.259
+    const J2000_NEW_MOON = 2451550.259;
+    const jd = 2440587.5 + date.getTime() / 86400000;
+    const daysSince = jd - J2000_NEW_MOON;
+    const phase = ((daysSince % SYNODIC) + SYNODIC) % SYNODIC;
+    return phase / SYNODIC; // 0–1
+  }
+
+  _moonPhaseName(norm) {
+    const p = norm;
+    if (p < 0.04 || p > 0.96)  return 'New Moon';
+    if (p < 0.21)               return 'Waxing Crescent';
+    if (p < 0.29)               return 'First Quarter';
+    if (p < 0.46)               return 'Waxing Gibbous';
+    if (p < 0.54)               return 'Full Moon';
+    if (p < 0.71)               return 'Waning Gibbous';
+    if (p < 0.79)               return 'Last Quarter';
+    return                             'Waning Crescent';
+  }
+
+  _moonPhaseEmoji(norm) {
+    const idx = Math.round(norm * 7.99) % 8;
+    return ['🌑','🌒','🌓','🌔','🌕','🌖','🌗','🌘'][idx];
+  }
+
+  _drawMoonPreview() {
+    if (!this.$moonArc) return;
+    const canvas = this.$moonArc;
+    const ctx    = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    // Night sky background
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, '#020510');
+    grad.addColorStop(1, '#080c20');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Stars
+    ctx.fillStyle = 'rgba(200,220,255,0.6)';
+    const stars = [[20,12],[55,8],[90,18],[130,6],[165,14],[195,9],[220,16],[40,35],[110,28],[180,32],[70,45],[150,40]];
+    for (const [sx, sy] of stars) {
+      ctx.beginPath();
+      ctx.arc(sx, sy, 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Moon disk
+    const norm = this._moonPhaseNorm;
+    const cx = W / 2, cy = H / 2 - 4, r = 28;
+
+    // Dark side (always drawn as full circle in dark grey)
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(30,35,55,0.92)';
+    ctx.fill();
+
+    // Lit side using a clipping technique:
+    // Phase 0=new(none lit), 0.5=full(all lit)
+    // We draw lit portion as a clipped half-ellipse on the correct side.
+    const litAngle = norm * Math.PI * 2; // 0=new, PI=full, 2PI=new
+    const isFull   = Math.abs(litAngle - Math.PI) < 0.1;
+    const isNew    = litAngle < 0.15 || litAngle > 6.13;
+
+    if (!isNew) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.clip();
+
+      // The lit crescent/gibbous is drawn by compositing two ellipses.
+      // Phase < PI: waxing (lit on right). Phase > PI: waning (lit on left).
+      const waxing = litAngle <= Math.PI;
+      const litFraction = waxing ? litAngle / Math.PI : (Math.PI * 2 - litAngle) / Math.PI;
+      const ellipseRx = Math.abs(Math.cos(litAngle / 1)) * r;
+
+      // Full lit semicircle on one side
+      ctx.beginPath();
+      if (waxing) {
+        ctx.arc(cx, cy, r, -Math.PI / 2, Math.PI / 2);
+      } else {
+        ctx.arc(cx, cy, r, Math.PI / 2, -Math.PI / 2);
+      }
+      ctx.closePath();
+      const moonGrad = ctx.createRadialGradient(cx, cy - r * 0.1, 0, cx, cy, r);
+      moonGrad.addColorStop(0,   'rgba(240,245,255,0.97)');
+      moonGrad.addColorStop(0.7, 'rgba(210,225,255,0.90)');
+      moonGrad.addColorStop(1,   'rgba(180,200,255,0.80)');
+      ctx.fillStyle = moonGrad;
+      ctx.fill();
+
+      // Terminator ellipse overlay
+      if (!isFull) {
+        ctx.beginPath();
+        const terminatorX = cx + (waxing ? -1 : 1) * Math.cos(litAngle) * r;
+        ctx.ellipse(terminatorX, cy, Math.abs(Math.cos(litAngle)) * r, r, 0, -Math.PI / 2, Math.PI / 2, !waxing);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(30,35,55,0.97)';
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+
+    // Moon rim
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(180,200,255,0.18)';
+    ctx.lineWidth   = 1;
+    ctx.stroke();
+
+    // Label strip
+    const groundGrad = ctx.createLinearGradient(0, H - 10, 0, H);
+    groundGrad.addColorStop(0, 'rgba(15,20,40,0.9)');
+    groundGrad.addColorStop(1, 'rgba(5,8,18,0.95)');
+    ctx.fillStyle = groundGrad;
+    ctx.fillRect(0, H - 10, W, 10);
+  }
+
+  _updateMoonPills() {
+    if (!this.$moonIndicators) return;
+    const norm = this._moonPhaseNorm;
+    const name = this._moonPhaseName(norm);
+    const emoji = this._moonPhaseEmoji(norm);
+    const pct  = Math.round(norm * 100);
+
+    // Illumination: 0 at new, 100 at full, 0 at new again
+    const illum = Math.round((1 - Math.abs(norm * 2 - 1)) * 100);
+
+    const pill = (icon, label, active, color) =>
+      `<div class="tod-pill ${active ? 'active' : ''}" style="--pill-color:${color}">
+        <span>${icon}</span><span>${label}</span>
+      </div>`;
+
+    const phaseColor = illum > 80 ? '#c8d8ff' : illum > 40 ? '#a0b8e0' : '#6878a0';
+    const modeColor  = this._moonAutoMode ? '#4fffb0' : '#ffd060';
+
+    this.$moonIndicators.innerHTML =
+      pill(emoji, name.split(' ').pop(), true, phaseColor) +
+      pill('◐', `${illum}% lit`, illum > 0, phaseColor) +
+      pill(this._moonAutoMode ? '◎' : '✎', this._moonAutoMode ? 'Auto' : 'Manual', true, modeColor);
+  }
+
+  _applyMoonPhase() {
+    const norm = this._moonPhaseNorm;
+    this.scene.setMoonPhase(this._moonAutoMode ? null : norm);
+    this._drawMoonPreview();
+    this._updateMoonPills();
+    const emoji = this._moonPhaseEmoji(norm);
+    const name  = this._moonPhaseName(norm);
+    if (this.$moonLabel) this.$moonLabel.textContent = `${emoji} ${name}`;
+    if (this.$moonMeta)  this.$moonMeta.textContent  = `${emoji} ${name.split(' ').pop()}`;
+  }
+
+  _setMoonAutoMode(auto) {
+    this._moonAutoMode = auto;
+    if (this.$moonAutoBtn)   this.$moonAutoBtn.classList.toggle('active', auto);
+    if (this.$moonManualBtn) this.$moonManualBtn.classList.toggle('active', !auto);
+    if (this.$moonManualWrap) {
+      this.$moonManualWrap.style.opacity       = auto ? '0.35' : '1';
+      this.$moonManualWrap.style.pointerEvents = auto ? 'none' : '';
+    }
+    if (auto) {
+      // Compute real lunar phase from today's date
+      this._moonPhaseNorm = this._realLunarPhase();
+      if (this.$moonPhaseSlider) this.$moonPhaseSlider.value = Math.round(this._moonPhaseNorm * 100);
+      if (this.$moonPhaseVal)    this.$moonPhaseVal.textContent = this._moonPhaseName(this._moonPhaseNorm);
+    }
+    this._applyMoonPhase();
   }
 
   _drawCloudPreview() {
@@ -928,6 +1132,7 @@ export class UIController {
 
     if (this.$todToggle)   this.$todToggle.addEventListener('click',   () => this._toggleCollapsible(this.$todToggle, this.$todBody));
     if (this.$cloudToggle) this.$cloudToggle.addEventListener('click', () => this._toggleCollapsible(this.$cloudToggle, this.$cloudBody));
+    if (this.$moonToggle)  this.$moonToggle.addEventListener('click',  () => this._toggleCollapsible(this.$moonToggle, this.$moonBody));
 
     this.$latInput.addEventListener('change', () => {
       this.lat = parseFloat(this.$latInput.value) || this.lat;
@@ -996,6 +1201,17 @@ export class UIController {
         this._cloudAltitude = parseInt(this.$cloudAltitudeSl.value);
         if (this.$cloudAltitudeVal) this.$cloudAltitudeVal.textContent = `${this._cloudAltitude}m`;
         this._applyCloudProperties();
+      });
+    }
+
+    if (this.$moonManualBtn) this.$moonManualBtn.addEventListener('click', () => this._setMoonAutoMode(false));
+    if (this.$moonAutoBtn)   this.$moonAutoBtn.addEventListener('click',   () => this._setMoonAutoMode(true));
+
+    if (this.$moonPhaseSlider) {
+      this.$moonPhaseSlider.addEventListener('input', () => {
+        this._moonPhaseNorm = parseInt(this.$moonPhaseSlider.value) / 100;
+        if (this.$moonPhaseVal) this.$moonPhaseVal.textContent = this._moonPhaseName(this._moonPhaseNorm);
+        this._applyMoonPhase();
       });
     }
 
@@ -1353,6 +1569,7 @@ export class UIController {
       this.scene.setWeather(weather.cloudCover, weather.weatherCode);
       if (this._cloudAutoMode) this._syncWeatherToUI(weather);
       this._applyCloudProperties();
+      this._applyMoonPhase();
 
       this._setStatus('Fetching elevation data and building world…', 'active loading');
       await this._nextFrame();

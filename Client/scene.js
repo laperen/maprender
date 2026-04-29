@@ -841,7 +841,32 @@ export class SceneManager {
   }
 
   // ── Night layer ───────────────────────────────────────────────
+
+  /**
+   * Override the moon phase used by the renderer.
+   * @param {number|null} phaseNorm  0 = new moon, 0.5 = full moon, 1 = new moon again.
+   *                                 Pass null to restore automatic (sun-derived) phase.
+   */
+  setMoonPhase(phaseNorm) {
+    if (phaseNorm === null) {
+      this._moonPhaseOverride = null;
+    } else {
+      // Map phaseNorm 0..1 to angle -PI..PI.
+      // Shader convention: PI = full moon (opposite sun), 0 = new moon.
+      // phaseNorm=0 → -PI (new), phaseNorm=0.5 → 0 (also new, but we want full at 0.5)
+      // So: angle = (phaseNorm * 2 - 1) * PI  →  0→-PI(new), 0.5→0... no.
+      // Simplest: angle = phaseNorm * Math.PI * 2 - Math.PI
+      // phaseNorm=0 → -PI(new), 0.5 → 0(new again), 1 → PI(full).
+      // Better: 0=new(0), 0.5=full(PI), 1=new(2PI≡0):
+      this._moonPhaseOverride = (phaseNorm * Math.PI * 2) - Math.PI;
+    }
+  }
+
   _getMoonPhaseAngle() {
+    // Manual override takes precedence
+    if (this._moonPhaseOverride !== undefined && this._moonPhaseOverride !== null) {
+      return this._moonPhaseOverride;
+    }
     if (!this._sunDirection || !this._moonDirection) return 0;
     // Elongation: angle between sun and moon projected onto the XZ plane.
     // Range 0–2PI; 0 = new moon (sun and moon aligned), PI = full moon (opposite).
@@ -883,7 +908,7 @@ export class SceneManager {
     this._moonMesh  = new THREE.Mesh(moonGeo, moonMat);
     // Flat face of hemisphere points toward +Z by default (thetaLength = PI/2).
     // We rotate it so the dome faces the camera (+Z in local group space).
-    this._moonMesh.rotation.x = Math.PI / 2;
+    this._moonMesh.rotation.z = Math.PI / 2;
     this._moonGroup.add(this._moonMesh);
 
     // ── Moon halo — phase-masked glow quad ───────────────────────
@@ -1206,7 +1231,8 @@ export class SceneManager {
       // Phase: rotate the hemisphere around the billboard's local Y axis.
       // phaseAngle=0 → new moon (dome faces away), PI → full moon (dome faces camera).
       const phaseAngle = this._getMoonPhaseAngle();
-      this._moonMesh.rotation.y = phaseAngle;
+      let moonMeshAngle = phaseAngle+Math.PI/2;
+      this._moonMesh.rotation.y = moonMeshAngle;
 
       if (this._moonMesh.material.opacity !== this._nightPhase) {
         this._moonMesh.material.opacity = this._nightPhase;
@@ -1215,7 +1241,8 @@ export class SceneManager {
       // Drive halo uniforms — phase mask + overall night fade
       if (this._moonHaloMesh) {
         const u = this._moonHaloMesh.material.uniforms;
-        u.uPhase.value      = phaseAngle;
+        let haloAngle = Math.PI - phaseAngle;
+        u.uPhase.value      = haloAngle;
         u.uNightPhase.value = this._nightPhase;
       }
     }
