@@ -841,6 +841,17 @@ export class SceneManager {
   }
 
   // ── Night layer ───────────────────────────────────────────────
+  _getMoonPhaseAngle() {
+    if (!this._sunDirection || !this._moonDirection) return 0;
+    // Elongation: angle between sun and moon projected onto the XZ plane.
+    // Range 0–2PI; 0 = new moon (sun and moon aligned), PI = full moon (opposite).
+    const sx = this._sunDirection.x, sz = this._sunDirection.z;
+    const mx = this._moonDirection.x, mz = this._moonDirection.z;
+    const dot   = sx * mx + sz * mz;
+    const cross = sx * mz - sz * mx;
+    // atan2 gives signed angle from sun to moon; shift so 0 = new, PI = full.
+    return Math.atan2(cross, dot);
+  }
   _initNightLayer() {
     StartCloneUse();
     const moonPhi   = THREE.MathUtils.degToRad(90 - 50);
@@ -856,107 +867,32 @@ export class SceneManager {
 
     this._nightAmbient = new THREE.AmbientLight(0x0a1835, 0);
     this.scene.add(this._nightAmbient);
-
-    const moonTex = new THREE.CanvasTexture(this._makeMoonCanvas(512));
-    const moonGeo = new THREE.SphereGeometry(MOON_SIZE * 0.5, 32, 32);
+   // Hemisphere: phiStart=0, phiLength=PI gives the front-facing dome only.
+    // Back-face culling (FrontSide default) hides it when rotated away — phase effect.
+    const moonGeo = new THREE.SphereGeometry(MOON_SIZE * 0.5, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
     const moonMat = new THREE.MeshBasicMaterial({
+      color:       0xf0f4ff,
       transparent: true,
-      opacity: 0,
-      depthWrite: false,
-      depthTest: true,
+      opacity:     0,
+      depthWrite:  false,
+      depthTest:   true,
+      blending:    THREE.AdditiveBlending,
+      fog:         false,
     });
-    this._moonMesh = new THREE.Mesh(moonGeo, moonMat);
+    this._moonGroup = new THREE.Group();
+    this._moonMesh  = new THREE.Mesh(moonGeo, moonMat);
+    // Flat face of hemisphere points toward +Z by default (thetaLength = PI/2).
+    // We rotate it so the dome faces the camera (+Z in local group space).
+    this._moonMesh.rotation.x = Math.PI / 2;
+    this._moonGroup.add(this._moonMesh);
+    this._moonGroup.frustumCulled = false;
+    this._moonGroup.position.set(0, MOON_DIST * 0.3, -MOON_DIST * 0.4);
+    this.scene.add(this._moonGroup);
     
-    this._moonMesh.material.map = null;
-    this._moonMesh.material.color.set(0xffffff);
-    this._moonMesh.material.blending = THREE.AdditiveBlending;
-    this._moonMesh.material.fog = false;
-
-    this._moonMesh.renderOrder    = 0;
-    this._moonMesh.frustumCulled  = false;
-
-    this._moonMesh.position.set(0, MOON_DIST * 0.3, -MOON_DIST * 0.4);
-    this.scene.add(this._moonMesh);
-
-    const haloSize = MOON_SIZE * 2.2;
-    const haloGeo  = new THREE.PlaneGeometry(haloSize, haloSize);
-    const haloTex  = new THREE.CanvasTexture(this._makeMoonHaloCanvas(128));
-    const haloMat  = new THREE.MeshBasicMaterial({
-      map:        haloTex,
-      transparent: true,
-      opacity:    0,
-      depthWrite: false,
-      depthTest:  true,
-      blending:   THREE.AdditiveBlending,
-    });
-    this._moonHalo = new THREE.Mesh(haloGeo, haloMat);
-    this._moonHalo.renderOrder   = -1;
-    this._moonHalo.frustumCulled = false;
-    this._moonHalo.position.set(0, MOON_DIST * 0.3, -MOON_DIST * 0.4);
-    this._moonHalo.material.fog = false;
-    this.scene.add(this._moonHalo);
-
     this._starPoints = this._makeStars();
     this._starPoints.frustumCulled = false;
     this.scene.add(this._starPoints);
   }
-
-  // ── Moon halo canvas ──────────────────────────────────────────
-  _makeMoonHaloCanvas(size) {
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    const cx = size / 2, cy = size / 2;
-    const grd = ctx.createRadialGradient(cx, cy, size * 0.12, cx, cy, size * 0.5);
-    grd.addColorStop(0,   'rgba(180,210,255,0.35)');
-    grd.addColorStop(0.4, 'rgba(160,200,255,0.12)');
-    grd.addColorStop(1,   'rgba(140,180,255,0.0)');
-    ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, size, size);
-    return canvas;
-  }
-
-  // ── Moon canvas ───────────────────────────────────────────────
-  _makeMoonCanvas(size) {
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    const cx = size / 2, cy = size / 2, r = size * 0.38;
-
-    const glow = ctx.createRadialGradient(cx, cy, r * 0.5, cx, cy, r * 2.0);
-    glow.addColorStop(0, 'rgba(200,220,255,0.15)');
-    glow.addColorStop(1, 'rgba(200,220,255,0.0)');
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, size, size);
-
-    const disc = ctx.createRadialGradient(cx - r * 0.18, cy - r * 0.18, r * 0.05, cx, cy, r);
-    disc.addColorStop(0,    '#ffffff');
-    disc.addColorStop(0.55, '#dde8ff');
-    disc.addColorStop(1,    '#a8bce8');
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = disc;
-    ctx.fill();
-
-    const craters = [
-      { x: 0.30, y: 0.25, r: 0.09 }, { x: 0.62, y: 0.52, r: 0.06 },
-      { x: 0.42, y: 0.66, r: 0.045 }, { x: 0.66, y: 0.30, r: 0.055 },
-      { x: 0.52, y: 0.38, r: 0.035 },
-    ];
-    for (const c of craters) {
-      const ox = cx + (c.x - 0.5) * 2 * r, oy = cy + (c.y - 0.5) * 2 * r;
-      const cr = c.r * r;
-      const cg = ctx.createRadialGradient(ox, oy, 0, ox, oy, cr);
-      cg.addColorStop(0, 'rgba(150,170,210,0.25)');
-      cg.addColorStop(1, 'rgba(150,170,210,0.0)');
-      ctx.beginPath();
-      ctx.arc(ox, oy, cr, 0, Math.PI * 2);
-      ctx.fillStyle = cg;
-      ctx.fill();
-    }
-    return canvas;
-  }
-
   // ── Stars ─────────────────────────────────────────────────────
   _makeStars() {
     const positions = new Float32Array(STAR_COUNT * 3);
@@ -1114,14 +1050,6 @@ export class SceneManager {
       this._nightAmbient.intensity = nightPhase * 0.8;
     }
   
-    if (this._moonMesh) {
-      this._moonMesh.material.opacity = nightPhase;
-    }
-  
-    if (this._moonHalo) {
-      this._moonHalo.material.opacity = nightPhase * 0.8;
-    }
-  
     if (this._starPoints) {
       this._starPoints.material.uniforms.uNightPhase.value = nightPhase;
     }
@@ -1186,6 +1114,7 @@ export class SceneManager {
     if (this._starPoints) {
       this._starPoints.position.copy(this.camera.position);
     }
+    /*
     if (this._moonMesh || this._moonHalo) {
       const moonPos = CloneVector3(this.camera.position)
         .addScaledVector(this._moonDirection, MOON_DIST);
@@ -1197,6 +1126,24 @@ export class SceneManager {
       if (this._moonHalo) {
         this._moonHalo.position.copy(moonPos);
         this._moonHalo.quaternion.copy(this.camera.quaternion);
+      }
+    }
+      */
+     if (this._moonGroup) {
+      const moonPos = CloneVector3(this.camera.position)
+        .addScaledVector(this._moonDirection, MOON_DIST);
+      this._moonGroup.position.copy(moonPos);
+
+      // Billboard: align group so its +Z faces the camera.
+      this._moonGroup.quaternion.copy(this.camera.quaternion);
+
+      // Phase: rotate the hemisphere around the billboard's local Y axis.
+      // phaseAngle=0 → new moon (dome faces away), PI → full moon (dome faces camera).
+      const phaseAngle = this._getMoonPhaseAngle();
+      this._moonMesh.rotation.y = phaseAngle;
+
+      if (this._moonMesh.material.opacity !== this._nightPhase) {
+        this._moonMesh.material.opacity = this._nightPhase;
       }
     }
   }

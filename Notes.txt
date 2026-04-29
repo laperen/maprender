@@ -8,5 +8,9 @@ position reset using _teleportToOrigin should be changed to resetting to last gr
 settings menu
 - clearing map cache?
 
+moon phases
+p:
+With moon phases, is there a way include a halo based glow for the moon?
+
 linux server command:
 node /home/oem/Projects/Web/ATSim/maprender/Server/proxy.js
