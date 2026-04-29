@@ -885,6 +885,72 @@ export class SceneManager {
     // We rotate it so the dome faces the camera (+Z in local group space).
     this._moonMesh.rotation.x = Math.PI / 2;
     this._moonGroup.add(this._moonMesh);
+
+    // ── Moon halo — phase-masked glow quad ───────────────────────
+    // A flat quad (PlaneGeometry) sitting just behind the moon disk in
+    // local group space (+Z = toward camera since group is billboarded).
+    // A ShaderMaterial computes a radial glow then masks it to the lit side
+    // using uPhase so crescents only glow on the illuminated limb.
+    const haloSize  = MOON_SIZE * 3.2;
+    const haloGeo   = new THREE.PlaneGeometry(haloSize, haloSize);
+    const haloMat   = new THREE.ShaderMaterial({
+      uniforms: {
+        uPhase:      { value: 0.0 },   // phaseAngle: -PI..PI (PI = full moon)
+        uNightPhase: { value: 0.0 },   // 0 = day, 1 = full night
+      },
+      vertexShader: /* glsl */`
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        uniform float uPhase;
+        uniform float uNightPhase;
+        varying vec2 vUv;
+
+        void main() {
+          // Map UV (0..1) to centred coords (-1..1)
+          vec2 uvc = vUv * 2.0 - 1.0;
+          float dist = length(uvc);
+
+          // Soft radial glow — tight inner corona, wide diffuse outer
+          float inner = smoothstep(0.55, 0.28, dist);
+          float outer = smoothstep(1.0,  0.30, dist) * 0.45;
+          float glow  = inner + outer;
+
+          // Phase mask: lit-side direction in billboard local XY.
+          // phaseAngle drives the hemisphere rotation (Y-axis); the lit
+          // normal projected onto the quad plane is (sin(phase), 0).
+          // We fade the glow toward zero on the dark side.
+          float litX    = sin(uPhase);         // +1 = right lit, -1 = left lit
+          float litDot  = uvc.x * litX;        // >0 on lit side
+          // At full moon (|phase|~PI) litX≈0 so litDot≈0 → full halo.
+          // At crescent litX is large → strong asymmetry.
+          float fullness = 1.0 - abs(cos(uPhase * 0.5)); // 0=new, 1=full
+          float mask = mix(
+            smoothstep(-0.15, 0.45, litDot),   // crescent: lit-side only
+            1.0,                                // full moon: omnidirectional
+            fullness
+          );
+
+          float alpha = glow * mask * uNightPhase * 0.72;
+          gl_FragColor = vec4(0.82, 0.90, 1.0, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite:  false,
+      depthTest:   true,
+      blending:    THREE.AdditiveBlending,
+      fog:         false,
+      side:        THREE.FrontSide,
+    });
+    this._moonHaloMesh = new THREE.Mesh(haloGeo, haloMat);
+    // Place slightly behind the moon disk in local Z so it renders beneath it
+    this._moonHaloMesh.position.z = -2;
+    this._moonGroup.add(this._moonHaloMesh);
+
     this._moonGroup.frustumCulled = false;
     this._moonGroup.position.set(0, MOON_DIST * 0.3, -MOON_DIST * 0.4);
     this.scene.add(this._moonGroup);
@@ -1144,6 +1210,13 @@ export class SceneManager {
 
       if (this._moonMesh.material.opacity !== this._nightPhase) {
         this._moonMesh.material.opacity = this._nightPhase;
+      }
+
+      // Drive halo uniforms — phase mask + overall night fade
+      if (this._moonHaloMesh) {
+        const u = this._moonHaloMesh.material.uniforms;
+        u.uPhase.value      = phaseAngle;
+        u.uNightPhase.value = this._nightPhase;
       }
     }
   }
