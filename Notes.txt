@@ -5,9 +5,6 @@ remaining issues:
 From time to time, while moving, the player's rotation is abruptly switched, will need to doublecheck  if this is still happening with collision fix.
 position reset using _teleportToOrigin should be changed to resetting to last grounded position instead
 
-3d world
-- have lamp halos conform to surface
-
 settings menu
 - clearing map cache?
 

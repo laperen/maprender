@@ -489,14 +489,16 @@ export class WorldBuilder {
       }
 
       // ── Bake halo quad into merged geometry ─────────────────────
-      const haloY   = baseY + 0.08;
+      const HALO_BIAS = 0.5;//0.18;
       const hvBase  = i * HALO_VERTS;
       const hv3     = hvBase * 3;
       const huv2    = hvBase * 2;
       for (let v = 0; v < HALO_VERTS; v++) {
-        haloPos[hv3 + v * 3]     = lx + HLX[v];
-        haloPos[hv3 + v * 3 + 1] = haloY;
-        haloPos[hv3 + v * 3 + 2] = lz + HLZ[v];
+        const cornerX = lx + HLX[v];
+        const cornerZ = lz + HLZ[v];
+        haloPos[hv3 + v * 3]     = cornerX;
+        haloPos[hv3 + v * 3 + 1] = this._snapY(cornerX, cornerZ, elev, terrainMesh, HALO_BIAS);
+        haloPos[hv3 + v * 3 + 2] = cornerZ;
         haloUV [huv2 + v * 2]    = HUU[v];
         haloUV [huv2 + v * 2 + 1]= HUV[v];
       }
