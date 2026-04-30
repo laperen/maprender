@@ -510,7 +510,7 @@ class OrbitControlsImpl {
 const STAR_COUNT    = 3000;
 const STAR_SPHERE_R = 8000;
 const MOON_DIST     = 7500;
-const MOON_SIZE     = 320;
+const MOON_SIZE     = 160;
 
 export class SceneManager {
   constructor(container) {
@@ -1190,10 +1190,10 @@ export class SceneManager {
     this._lampEntries.push({ globeInstanced, haloMesh, positions, type });
   }
 
-  /** @deprecated — kept for backward-compat; prefer registerLampInstanced */
-  registerLampMeshes(meshes) {
+  // @deprecated — kept for backward-compat; prefer registerLampInstanced
+  //registerLampMeshes(meshes) {
     // no-op: old per-mesh path no longer used
-  }
+  //}
 
   _tickNight(dt) {
     StartCloneUse();
@@ -1205,28 +1205,13 @@ export class SceneManager {
     if (this._starPoints) {
       this._starPoints.position.copy(this.camera.position);
     }
-    /*
-    if (this._moonMesh || this._moonHalo) {
-      const moonPos = CloneVector3(this.camera.position)
-        .addScaledVector(this._moonDirection, MOON_DIST);
-    
-      if (this._moonMesh) {
-        this._moonMesh.position.copy(moonPos);
-      }
-    
-      if (this._moonHalo) {
-        this._moonHalo.position.copy(moonPos);
-        this._moonHalo.quaternion.copy(this.camera.quaternion);
-      }
-    }
-      */
-     if (this._moonGroup) {
+    if (this._moonGroup) {
       const moonPos = CloneVector3(this.camera.position)
         .addScaledVector(this._moonDirection, MOON_DIST);
       this._moonGroup.position.copy(moonPos);
 
       // Billboard: align group so its +Z faces the camera.
-      this._moonGroup.quaternion.copy(this.camera.quaternion);
+      this._moonGroup.lookAt(this.camera.position);
 
       // Phase: rotate the hemisphere around the billboard's local Y axis.
       // phaseAngle=0 → new moon (dome faces away), PI → full moon (dome faces camera).
@@ -1241,9 +1226,9 @@ export class SceneManager {
       // Drive halo uniforms — phase mask + overall night fade
       if (this._moonHaloMesh) {
         const u = this._moonHaloMesh.material.uniforms;
-        let haloAngle = Math.PI - phaseAngle;
+        let haloAngle = phaseAngle == 0?Math.PI:Math.sign(phaseAngle) * (Math.PI - Math.abs(phaseAngle));
         u.uPhase.value      = haloAngle;
-        u.uNightPhase.value = this._nightPhase;
+        u.uNightPhase.value = this._nightPhase/2;// * Math.abs(haloAngle/6);
       }
     }
   }
