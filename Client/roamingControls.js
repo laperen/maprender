@@ -475,8 +475,8 @@ export class RoamingControls {
     this._colliderMesh.up.copy(actor.targetup);
     //slope
     if(actor.majorAxisChange){
-        actor.forwardDir.applyAxisAngle(actor.axisOfChange, actor.angleOfChange);
-        actor.majorAxisChange = false;
+      actor.forwardDir.applyAxisAngle(actor.axisOfChange, actor.angleOfChange);
+      actor.majorAxisChange = false;
     }
     //facing direction
     let miscvect = CloneVector3(actor.forwardDir);
@@ -485,20 +485,21 @@ export class RoamingControls {
     
     //set visuals
     if(actor.visualMesh){
-        //set up direction
-        actor.visualMesh.up.copy(this.camboom.up);
-        //set position: offset downward from collider centre by capsule radius so feet sit on ground
-        miscvect.copy(this.camboom.up).setLength(CAPSULE_RADIUS);
-        actor.visualMesh.position.copy(this._colliderMesh.position).sub(miscvect);
-        //set facing direction — only update velocityDir when actually moving
-        if(actor.accelAccum.lengthSq() > 0.1){
-             actor.velocityDir.copy(actor.velocity).setLength(1);
-        }
+      //set up direction
+      actor.visualMesh.up.copy(this.camboom.up);
+      //set position: offset downward from collider centre by capsule radius so feet sit on ground
+      miscvect.copy(this.camboom.up).setLength(CAPSULE_RADIUS);
+      actor.visualMesh.position.copy(this._colliderMesh.position).sub(miscvect);
+      //set facing direction — only update velocityDir when actually moving
+      if(actor.accelAccum.lengthSq() > 0.2){
+        actor.velocityDir.copy(actor.velocity).setLength(1);
+        
         actor.facingDir.copy(actor.velocityDir);
         actor.facingDir.cross(actor.targetup).cross(actor.visualMesh.up);
         //apply facing direction
         miscvect.copy(actor.visualMesh.position).add(actor.facingDir);
         actor.visualMesh.lookAt(miscvect);
+      }
     }
   }
   playerControls(actor, deltaTime){
