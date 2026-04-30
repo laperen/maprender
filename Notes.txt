@@ -3,25 +3,13 @@ WIP
 character movement
 remaining issues:
 character seems to rotate erratically when standing still.
-From time to time, while moving, the player's rotation is abruptly switched, will need to doublecheck  if this is still happening with collision fix.
-position reset using _teleportToOrigin should be changed to resetting to last grounded position instead
+at a specific angle, when riding off a wall surface from the side, player facing angle is abruptly turned 90 degrees toward the "foot" of the player.
 
 any way to reduce the perspective camera distance while keeping the sun moon and sky visible.
 
 settings menu
 - clearing map cache?
 
-moon phases
-p:
-add a moon phase slider, controlling the moon phase in scene.js, in an appropriate part of the world generation UI. This slider will only come into play when the user opts to manually set the moon phase, otherwise it will take from real world information, similar to what is being done with time and clouds.
-
 linux server command:
 node /home/oem/Projects/Web/ATSim/maprender/Server/proxy.js
 
-
-
-
-
-
-
-add a moon phase slider, controlling the moon phase in scene.js, in an appropriate part of the world generation UI. This slider will only come into play when the user opts to manually set the moon phase, otherwise it will take from real world information, similar to what is being done with time and clouds. proceed with implementation. present the files for download.

@@ -150,6 +150,7 @@ export class RoamingControls {
     this.slopelimit = Math.PI/4;
     this.charraycaster = new THREE.Raycaster();
     this.charraycaster.firstHitOnly = true;
+    this.lastGroundPos = new THREE.Vector3();
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -213,7 +214,8 @@ export class RoamingControls {
       actor.airNudgeAccum.set(0,0,0);
       actor.gravityAccum = 0;
       actor.targetup.copy(upVector);
-      this._colliderMesh.position.copy(this._spawnPos);//.set(this.spawnPos.x,this.spawnPos.y,this.spawnPos.z);
+      console.log(this.lastGroundPos);
+      this._colliderMesh.position.copy(this.lastGroundPos);//.set(this.spawnPos.x,this.spawnPos.y,this.spawnPos.z);
     }
   }
   // ═══════════════════════════════════════════════════════════
@@ -449,6 +451,10 @@ export class RoamingControls {
           actor.inertiacurr = THREE.MathUtils.clamp(actor.inertiacurr + (actor.inertiamax * 0.1), 0, actor.inertiamax); 
           actor.currRefresh = actor.inertiaRefeshTime;
         }
+      }else{
+        if(this.surfacehit){
+          this.lastGroundPos.copy(this._colliderMesh.position);
+        }
       }
       if(this.surfacehit){
           if(worldCollisionResult.intersects){
@@ -467,13 +473,16 @@ export class RoamingControls {
     //set collider
     StartCloneUse();
     this._colliderMesh.up.copy(actor.targetup);
+    //slope
     if(actor.majorAxisChange){
         actor.forwardDir.applyAxisAngle(actor.axisOfChange, actor.angleOfChange);
         actor.majorAxisChange = false;
     }
+    //facing direction
     let miscvect = CloneVector3(actor.forwardDir);
     miscvect.cross(actor.targetup).add(this._colliderMesh.position);
     this._colliderMesh.lookAt(miscvect);
+    
     //set visuals
     if(actor.visualMesh){
         //set up direction
@@ -483,7 +492,7 @@ export class RoamingControls {
         actor.visualMesh.position.copy(this._colliderMesh.position).sub(miscvect);
         //set facing direction — only update velocityDir when actually moving
         if(actor.accelAccum.lengthSq() > 0.1){
-            actor.velocityDir.copy(actor.velocity).setLength(1);
+             actor.velocityDir.copy(actor.velocity).setLength(1);
         }
         actor.facingDir.copy(actor.velocityDir);
         actor.facingDir.cross(actor.targetup).cross(actor.visualMesh.up);
@@ -554,8 +563,12 @@ export class RoamingControls {
         actor.airNudgeAccum.multiplyScalar(reverseDamping);
     }
     if(actor.jump){
-        //mid air jump
-        actor.targetup.copy(upVector);
+      //mid air jump
+      actor.majorAxisChange = true;
+      actor.angleOfChange = actor.targetup.angleTo(upVector);
+      actor.axisOfChange.copy(actor.targetup).cross(upVector);
+
+      actor.targetup.copy(upVector);
     }
   }
   ApplyControls(actor, deltaTime){
