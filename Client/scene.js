@@ -1246,7 +1246,7 @@ export class SceneManager {
     const el = document.createElement('div');
     el.id = 'fps-counter';
     Object.assign(el.style, {
-      position: 'fixed', top: '0', right: '0',
+      position: 'fixed', top: '0', right: '60px',
       background: 'rgba(8,9,12,0.75)', color: '#4fffb0',
       fontFamily: "'Space Mono', monospace", fontSize: '12px',
       fontWeight: '700', padding: '4px 10px', borderRadius: '4px',
@@ -1256,6 +1256,20 @@ export class SceneManager {
     el.textContent = '-- fps';
     document.body.appendChild(el);
     this._fpsEl = el;
+
+    const el2 = document.createElement('div');
+    el2.id = 'draw-counter';
+    Object.assign(el2.style, {
+      position: 'fixed', top: '26px', right: '60px',
+      background: 'rgba(8,9,12,0.75)', color: '#4fffb0',
+      fontFamily: "'Space Mono', monospace", fontSize: '12px',
+      fontWeight: '700', padding: '4px 10px', borderRadius: '4px',
+      border: '1px solid #1e2130', zIndex: '100',
+      pointerEvents: 'none', letterSpacing: '0.05em',
+    });
+    el2.textContent = '-- draws';
+    document.body.appendChild(el2);
+    this._drawCallEl = el2;
   }
 
   _updateFPS() {
@@ -1266,6 +1280,12 @@ export class SceneManager {
       this._fpsEl.style.color =
         fps >= 50 ? '#4fffb0' : fps >= 30 ? '#ffd060' : '#ff4f6b';
       this._fpsEl.textContent  = `${fps} fps`;
+
+      const draws = this.renderer.info.render.calls;
+      this._drawCallEl.style.color =
+        draws <= 100 ? '#4fffb0' : draws <= 300 ? '#ffd060' : '#ff4f6b';
+      this._drawCallEl.textContent = `${draws} draws`;
+
       this._fpsFrames   = 0;
       this._fpsLastTime = now;
     }
