@@ -1,7 +1,7 @@
 // roamingControls.js — Third-person boom-arm camera + capsule-collision physics.
 
 import * as THREE from 'three';
-import {StartCloneUse,GetMiscVect,CloneVector3,CheckVector3Equals} from './mrUtils.js';
+import {StartCloneUse,GetMiscVect,CloneVector3,CheckVector3Equals,upVector} from './mrUtils.js';
 
 let player = {
   //rendering settings
@@ -77,7 +77,6 @@ const KEYS = {
 
 // ── Scratch objects (module-level — no allocation per frame) ──
 const rad90 = Math.PI/2;
-const upVector = new THREE.Vector3( 0, 1, 0 );
 
 // ─────────────────────────────────────────────────────────────
 export class RoamingControls {
@@ -209,7 +208,7 @@ export class RoamingControls {
 
   get isActive() { return this._active; }
   _teleportOOB(actor) {
-    if (this._colliderMesh.position.y <= - 25 ) {
+    if (this._colliderMesh.position.y <= -100 ) {
       actor.accelAccum.set(0,0,0);
       actor.airNudgeAccum.set(0,0,0);
       actor.gravityAccum = 0;

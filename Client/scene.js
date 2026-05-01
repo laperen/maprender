@@ -3,8 +3,9 @@
 // CloudLayer is inlined here (was clouds.js).
 import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
+import { CSM } from 'three/addons/csm/CSM.js';
 import { RoamingControls }     from './roamingControls.js';
-import {StartCloneUse,CloneVector3} from './mrUtils.js';
+import {StartCloneUse,CloneVector3,upVector} from './mrUtils.js';
 
 // ═══════════════════════════════════════════════════════════════
 // CLOUD LAYER  (inlined from clouds.js)
@@ -525,13 +526,16 @@ export class SceneManager {
     this._sky         = null;
     this._skyUniforms = null;
 
+    // CSM — single cascaded shadow light shared between sun and moon
+    this._csm          = null;   // CSM instance
+    this._csmMaxFar    = 500;    // current coverage radius
+
     // Day lights
-    this.sun         = null;       // DirectionalLight (sun)
+    this.sun         = null;       // kept as a non-shadow DirectionalLight for compat
     this._dayAmbient = null;       // AmbientLight (sky bounce)
     this._rimLight   = null;       // DirectionalLight (fill)
 
     // Night-layer references
-    this._moonLight    = null;
     this._moonSprite   = null;
     this._starPoints   = null;
     this._nightAmbient = null;
@@ -588,6 +592,7 @@ export class SceneManager {
 
     this._initSky();
     this._addLights();
+    this._initCSM();
     this._initNightLayer();
 
     // Flat placeholder ground
@@ -598,6 +603,7 @@ export class SceneManager {
     this._groundMesh.receiveShadow    = true;
     this._groundMesh.userData.isGround = true;
     this.scene.add(this._groundMesh);
+    if (this._csm) this._csm.setupMaterial(groundMat);
 
     this._createFPSCounter();
 
@@ -812,32 +818,53 @@ export class SceneManager {
       fog: elevDeg > -6 ? sky.clone() : nightSky.clone()
     };
   }
-
-  // ── Day lights ────────────────────────────────────────────────
+  // ── Day/fill lights (no shadow — CSM owns all shadow casting) ──
   _addLights() {
-    StartCloneUse();
-    const dist = 1000;
-    const dir  = new THREE.Vector3(0.5, 0.7, -0.3).normalize();
-
-    this.sun = new THREE.DirectionalLight(0xfff5e0, 3.0);
-    this.sun.position.set(dir.x * dist, dir.y * dist, dir.z * dist);
-    this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(1024, 1024);
-    this.sun.shadow.camera.near   = 10;
-    this.sun.shadow.camera.far    = 3000;
-    this.sun.shadow.camera.left   = -800;
-    this.sun.shadow.camera.right  =  800;
-    this.sun.shadow.camera.top    =  800;
-    this.sun.shadow.camera.bottom = -800;
-    this.sun.shadow.bias = -0.0003;
-    this.scene.add(this.sun);
-
     this._dayAmbient = new THREE.AmbientLight(0x90b0d8, 0.5);
     this.scene.add(this._dayAmbient);
 
     this._rimLight = new THREE.DirectionalLight(0x4878c0, 0.4);
+    this._rimLight.castShadow = false;
     this._rimLight.position.set(-400, 300, -500);
     this.scene.add(this._rimLight);
+  }
+
+  // ── CSM — cascaded shadow maps for sun + moon ─────────────────
+  _initCSM() {
+    // Default light direction: noon-ish sun pointing down and slightly south
+    const defaultDir = new THREE.Vector3(0.5, 0.7, -0.3).normalize().negate();
+
+    this._csm = new CSM({
+      mode:          'practical',
+      cascades:       3,
+      maxFar:         this._csmMaxFar,
+      shadowMapSize:  2048,
+      shadowBias:    -0.0003,
+      lightNear:      0.1,
+      lightFar:       3000,
+      lightDirection: defaultDir,
+      lightIntensity: 3.0,
+      parent:         this.scene,
+      camera:         this.camera,
+    });
+
+    // Apply bias, normalBias, and initial color to every cascade light
+    for (const light of this._csm.lights) {
+      light.shadow.normalBias = 0.02;
+      light.shadow.bias       = -0.0003;
+      light.color.set(0xfff5e0);
+    }
+
+    // Keep a sun reference for backward-compat (sky shader still reads sun.position indirectly)
+    this.sun = this._csm.lights[0];
+  }
+
+  // ── Update CSM coverage radius and rebuild frusta ────────────
+  _setCsmMaxFar(meters) {
+    this._csmMaxFar = meters;
+    if (!this._csm) return;
+    this._csm.maxFar = meters;
+    this._csm.updateFrustums();
   }
 
   // ── Night layer ───────────────────────────────────────────────
@@ -884,11 +911,6 @@ export class SceneManager {
     const moonDir   = new THREE.Vector3();
     moonDir.setFromSphericalCoords(1, moonPhi, moonTheta);
     this._moonDirection = CloneVector3(moonDir);
-
-    this._moonLight = new THREE.DirectionalLight(0xc8d8ff, 0);
-    this._moonLight.position.copy(CloneVector3(moonDir).multiplyScalar(1000));
-    this._moonLight.castShadow = false;
-    this.scene.add(this._moonLight);
 
     this._nightAmbient = new THREE.AmbientLight(0x0a1835, 0);
     this.scene.add(this._nightAmbient);
@@ -1066,6 +1088,7 @@ export class SceneManager {
   }
 
   setTimeOfDay(hour) {
+    StartCloneUse();
     const t = ((hour % 24) + 24) % 24;
     this._currentHour = t;
 
@@ -1078,35 +1101,42 @@ export class SceneManager {
     const elevNorm = THREE.MathUtils.clamp(elevDeg / 90, -1, 1);
 
     const sunDayPhase = THREE.MathUtils.smoothstep(elevNorm, -0.05, 0.15);
-    const nightPhase = 1 - sunDayPhase;
-    this._nightPhase = nightPhase;
-  
-    const dist = 1000;
-  
-    this.sun.position.set(
-      this._sunDirection.x * dist,
-      this._sunDirection.y * dist,
-      this._sunDirection.z * dist
-    );
-  
-    const sunColor = new THREE.Color();
-    const horizonFactor = 1.0 - Math.abs(elevDeg) / 75;
-    const golden = THREE.MathUtils.clamp(horizonFactor, 0, 1);
-    const goldenSoft = Math.pow(golden, 2.2);
-  
-    if (goldenSoft > 0.01) {
-      sunColor.lerpColors(
-        new THREE.Color(0xff8830),
-        new THREE.Color(0xfff5e0),
-        THREE.MathUtils.clamp(elevDeg / 22, 0, 1)
-      );
-    } else {
-      sunColor.set(0xfff5e0);
+    const nightPhase  = 1 - sunDayPhase;
+    this._nightPhase  = nightPhase;
+
+    // ── CSM light direction — lerp sun→moon across twilight ──────
+    if (this._csm && this._sunDirection && this._moonDirection) {
+      const blendedDir = CloneVector3(this._sunDirection)
+        .lerp(this._moonDirection, nightPhase)
+        .normalize()
+        .negate(); // CSM lightDirection points *toward* the light source (scene → light)
+      this._csm.lightDirection.copy(blendedDir);
+
+      // Sun colour (warm during day, cool at night)
+      const sunColor = new THREE.Color();
+      const horizonFactor = 1.0 - Math.abs(elevDeg) / 75;
+      const golden     = THREE.MathUtils.clamp(horizonFactor, 0, 1);
+      const goldenSoft = Math.pow(golden, 2.2);
+      if (goldenSoft > 0.01) {
+        sunColor.lerpColors(
+          new THREE.Color(0xff8830),
+          new THREE.Color(0xfff5e0),
+          THREE.MathUtils.clamp(elevDeg / 22, 0, 1)
+        );
+      } else {
+        sunColor.set(0xfff5e0);
+      }
+
+      const moonColor    = new THREE.Color(0xc8d8ff);
+      const blendedColor = new THREE.Color().lerpColors(sunColor, moonColor, nightPhase);
+      const blendedIntensity = sunDayPhase * 3.0 + nightPhase * 1.2;
+
+      for (const light of this._csm.lights) {
+        light.color.copy(blendedColor);
+        light.intensity = blendedIntensity;
+      }
     }
-  
-    this.sun.color.copy(sunColor);
-    this.sun.intensity = sunDayPhase * 3.0;
-  
+
     const atmos = this._getAtmosphereColors(elevDeg);
     this.scene.background = atmos.sky;
 
@@ -1126,37 +1156,30 @@ export class SceneManager {
     if (this._dayAmbient) {
       this._dayAmbient.intensity = sunDayPhase * 0.5;
     }
-  
+
     if (this._rimLight) {
       this._rimLight.intensity = sunDayPhase * 0.4;
     }
-  
-    if (this._moonLight) {
-      this._moonLight.intensity = nightPhase * 1.2;
-      this._moonLight.position.copy(this._moonDirection).multiplyScalar(1000);
-    }
-  
+
     if (this._nightAmbient) {
       this._nightAmbient.color.set(0x1a3a6a);
       this._nightAmbient.intensity = nightPhase * 0.8;
     }
-  
+
     if (this._starPoints) {
       this._starPoints.material.uniforms.uNightPhase.value = nightPhase;
     }
-  
+
     const lampPhase = THREE.MathUtils.clamp(
       THREE.MathUtils.smoothstep(nightPhase, 0.25, 0.65),
       0,
       1
     );
-  
+
     for (const entry of this._lampEntries) {
-      // Globe InstancedMesh — one material.emissiveIntensity affects all instances
       if (entry.globeInstanced) {
         entry.globeInstanced.material.emissiveIntensity = lampPhase;
       }
-      // Merged halo mesh — single material opacity
       if (entry.haloMesh) {
         entry.haloMesh.material.opacity = lampPhase * 0.85;
         entry.haloMesh.material.needsUpdate = true;
@@ -1168,7 +1191,7 @@ export class SceneManager {
       0.5,
       sunDayPhase
     );
-  
+
     if (this._clouds) {
       this._clouds.setDayBrightness(
         THREE.MathUtils.lerp(0.25, 1.0, sunDayPhase)
@@ -1233,15 +1256,6 @@ export class SceneManager {
     }
   }
 
-  _fitShadowFrustum(radiusMeters) {
-    const r = Math.min(radiusMeters * 1.2, 2000);
-    this.sun.shadow.camera.left   = -r;
-    this.sun.shadow.camera.right  =  r;
-    this.sun.shadow.camera.top    =  r;
-    this.sun.shadow.camera.bottom = -r;
-    this.sun.shadow.camera.updateProjectionMatrix();
-  }
-
   _createFPSCounter() {
     const el = document.createElement('div');
     el.id = 'fps-counter';
@@ -1302,7 +1316,7 @@ export class SceneManager {
     }
     return inside;
   }
-
+  
   buildElevationGround(elevFn, gridSize, radiusMeters, buildingFootprints = []) {
     if (this._groundMesh) {
       this.scene.remove(this._groundMesh);
@@ -1332,9 +1346,11 @@ export class SceneManager {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow     = true;
     mesh.userData.isGround = true;
+    if (this._csm) this._csm.setupMaterial(mat);
     this.addObject(mesh);
     this._groundMesh = mesh;
-    this._fitShadowFrustum(radiusMeters);
+    this.lightRadius = radiusMeters;
+    this._setCsmMaxFar(2000);
   }
 
   getTerrainMesh() { return this._groundMesh; }
@@ -1421,6 +1437,7 @@ export class SceneManager {
         this.controls.update(dt);
       }
 
+      if (this._csm) this._csm.update();
       this._clouds.tick(dt, this.camera.position);
       this.renderer.render(this.scene, this.camera);
       this._updateFPS();
@@ -1468,6 +1485,17 @@ export class SceneManager {
     this._objects.push(obj);
     if (collidable) {
       this._collidables.push(obj);
+    }
+    // Register materials with CSM so they receive cascaded shadows
+    if (this._csm) {
+      const mats = [];
+      obj.traverse(child => {
+        if (!child.isMesh) return;
+        const m = child.material;
+        if (Array.isArray(m)) mats.push(...m);
+        else if (m) mats.push(m);
+      });
+      if (mats.length) mats.forEach(m => this._csm.setupMaterial(m));
     }
   }
 
@@ -1662,6 +1690,7 @@ export class SceneManager {
     body.position.y = totalH / 2;
     body.castShadow = true;
     group.add(body);
+    this._csm.setupMaterial(bodyMat);
 
     const headGeo = new THREE.SphereGeometry(capR * 0.72, 8, 6);
     const headMat = new THREE.MeshToonMaterial({ color: 0xf5c9a0 });
@@ -1669,6 +1698,7 @@ export class SceneManager {
     head.position.y = totalH + capR * 0.5;
     head.castShadow = true;
     group.add(head);
+    this._csm.setupMaterial(headMat);
 
     group.position.set(x, y, z);
     this._characterGroup = group;
@@ -1800,6 +1830,7 @@ export class SceneManager {
       if (typeof onExit === 'function') onExit();
     };
     this._roamingCam.activate(spawnPos, 0, this._characterGroup ?? null);
+    this._setCsmMaxFar(200);
   }
 
   stopRoamingCamera() {
@@ -1807,6 +1838,7 @@ export class SceneManager {
     this._roamingCam.deactivate();
     this.controls.enabled = true;
     this.controls.update();
+    this._setCsmMaxFar(2000);
   }
 
   get roamingActive() {

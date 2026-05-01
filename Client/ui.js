@@ -1286,6 +1286,28 @@ export class UIController {
       this._startGameModeSession(spawnVec);
     });
   }
+  _exitRoamingMode() {
+    this._endGameModeSession();
+    this._appMode = 'location-selection';
+    this._overlay.setAppMode(this._appMode);
+    this._leftPanel.setAppMode(this._appMode);
+    this.$selectionPanel.classList.remove('panel-hidden');
+    this.$uiPanel.classList.add('ui-hidden');
+    const crosshair = document.getElementById('roam-crosshair');
+    if (crosshair) crosshair.classList.add('hidden');
+    document.body.classList.remove('roaming-active');
+    this.scene.stopRoamingCamera();
+    if (this.$enterWorldBtn) this.$enterWorldBtn.disabled = true;
+    if (this.$enterWorldBtn) this.$enterWorldBtn.classList.remove('beacon-ready');
+    if (this.$selectionHint) this.$selectionHint.textContent = '🎯 Click anywhere on the map to set your spawn point';
+    this.scene.removeCharacter();
+    this.scene.transitionToOrbit(0, 0, this.radius);
+    this._beaconX = null;
+    this._beaconY = null;
+    this._beaconZ = null;
+    document.body.classList.add('selection-active');
+    this.scene.enterSelectionMode();
+  }
 
   // ── Game Mode ─────────────────────────────────────────────────
 
@@ -1372,28 +1394,6 @@ export class UIController {
     if (this._overlay) this._overlay.requestAutoPlay(cat);
   }
 
-  _exitRoamingMode() {
-    this._endGameModeSession();
-    this._appMode = 'location-selection';
-    this._overlay.setAppMode(this._appMode);
-    this._leftPanel.setAppMode(this._appMode);
-    this.$selectionPanel.classList.remove('panel-hidden');
-    this.$uiPanel.classList.add('ui-hidden');
-    const crosshair = document.getElementById('roam-crosshair');
-    if (crosshair) crosshair.classList.add('hidden');
-    document.body.classList.remove('roaming-active');
-    this.scene.stopRoamingCamera();
-    if (this.$enterWorldBtn) this.$enterWorldBtn.disabled = true;
-    if (this.$enterWorldBtn) this.$enterWorldBtn.classList.remove('beacon-ready');
-    if (this.$selectionHint) this.$selectionHint.textContent = '🎯 Click anywhere on the map to set your spawn point';
-    this.scene.removeCharacter();
-    this.scene.transitionToOrbit(0, 0, this.radius);
-    this._beaconX = null;
-    this._beaconY = null;
-    this._beaconZ = null;
-    document.body.classList.add('selection-active');
-    this.scene.enterSelectionMode();
-  }
 
   // ── Local time mode ───────────────────────────────────────────
 
