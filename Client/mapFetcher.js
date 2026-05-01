@@ -10,7 +10,7 @@
 
 // ── Proxy base URL ────────────────────────────────────────────
 // Change this one constant when you deploy the proxy.
-const PROXY_BASE = 'http://localhost:3001';
+const PROXY_BASE = 'https://maprender.onrender.com';// 'http://localhost:3001';
 
 export class MapFetcher {
   constructor() {
