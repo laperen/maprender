@@ -1,14 +1,531 @@
 // js/worldBuilder.js — Converts parsed OSM ways into Three.js meshes
+// Includes inlined earcut polygon triangulator (ISC Licence, mapbox/earcut)
+// Includes inlined textureFactory (satellite textures, building colours)
 import * as THREE from 'three';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
-import { earcut } from './earcut.js';
-import {
-  makeToonGradient,
-  fetchSatelliteTexture,
-  fetchElevationGrid,
-  buildingPalette,
-  roofColour,
-} from './textureFactory.js';
+
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
+
+// ═══════════════════════════════════════════════════════════════
+// EARCUT — polygon triangulator (ported from mapbox/earcut)
+// ═══════════════════════════════════════════════════════════════
+
+function earcut(data, holeIndices, dim) {
+  dim = dim || 2;
+  var hasHoles = holeIndices && holeIndices.length,
+    outerLen = hasHoles ? holeIndices[0] * dim : data.length,
+    outerNode = linkedList(data, 0, outerLen, dim, true),
+    triangles = [];
+  if (!outerNode || outerNode.next === outerNode.prev) return triangles;
+  var minX, minY, maxX, maxY, x, y, invSize;
+  if (hasHoles) outerNode = eliminateHoles(data, holeIndices, outerNode, dim);
+  if (data.length > 80 * dim) {
+    minX = maxX = data[0]; minY = maxY = data[1];
+    for (var i = dim; i < outerLen; i += dim) {
+      x = data[i]; y = data[i + 1];
+      if (x < minX) minX = x; if (y < minY) minY = y;
+      if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+    }
+    invSize = Math.max(maxX - minX, maxY - minY);
+    invSize = invSize !== 0 ? 1 / invSize : 0;
+  }
+  earcutLinked(outerNode, triangles, dim, minX, minY, invSize);
+  return triangles;
+}
+function linkedList(data, start, end, dim, clockwise) {
+  var i, last;
+  if (clockwise === (signedArea(data, start, end, dim) > 0)) {
+    for (i = start; i < end; i += dim) last = insertNode(i, data[i], data[i + 1], last);
+  } else {
+    for (i = end - dim; i >= start; i -= dim) last = insertNode(i, data[i], data[i + 1], last);
+  }
+  if (last && equals(last, last.next)) { removeNode(last); last = last.next; }
+  return last;
+}
+function filterPoints(start, end) {
+  if (!start) return start;
+  if (!end) end = start;
+  var p = start, again;
+  do {
+    again = false;
+    if (!p.steiner && (equals(p, p.next) || area(p.prev, p, p.next) === 0)) {
+      removeNode(p); p = end = p.prev; if (p === p.next) break; again = true;
+    } else p = p.next;
+  } while (again || p !== end);
+  return end;
+}
+function earcutLinked(ear, triangles, dim, minX, minY, invSize, pass) {
+  if (!ear) return;
+  if (!pass && invSize) indexCurve(ear, minX, minY, invSize);
+  var stop = ear, prev, next;
+  while (ear.prev !== ear.next) {
+    prev = ear.prev; next = ear.next;
+    if (invSize ? isEarHashed(ear, minX, minY, invSize) : isEar(ear)) {
+      triangles.push(prev.i / dim, ear.i / dim, next.i / dim);
+      removeNode(ear);
+      ear = stop = next.next;
+      continue;
+    }
+    ear = next;
+    if (ear === stop) {
+      if (!pass) { earcutLinked(filterPoints(ear), triangles, dim, minX, minY, invSize, 1); }
+      else if (pass === 1) {
+        ear = cureLocalIntersections(filterPoints(ear), triangles, dim);
+        earcutLinked(ear, triangles, dim, minX, minY, invSize, 2);
+      } else if (pass === 2) { splitEarcut(ear, triangles, dim, minX, minY, invSize); }
+      break;
+    }
+  }
+}
+function isEar(ear) {
+  var a = ear.prev, b = ear, c = ear.next;
+  if (area(a, b, c) >= 0) return false;
+  var p = ear.next.next;
+  while (p !== ear.prev) {
+    if (pointInTriangle(a.x, a.y, b.x, b.y, c.x, c.y, p.x, p.y) && area(p.prev, p, p.next) >= 0) return false;
+    p = p.next;
+  }
+  return true;
+}
+function isEarHashed(ear, minX, minY, invSize) {
+  var a = ear.prev, b = ear, c = ear.next;
+  if (area(a, b, c) >= 0) return false;
+  var minTX = a.x < b.x ? (a.x < c.x ? a.x : c.x) : (b.x < c.x ? b.x : c.x),
+    minTY = a.y < b.y ? (a.y < c.y ? a.y : c.y) : (b.y < c.y ? b.y : c.y),
+    maxTX = a.x > b.x ? (a.x > c.x ? a.x : c.x) : (b.x > c.x ? b.x : c.x),
+    maxTY = a.y > b.y ? (a.y > c.y ? a.y : c.y) : (b.y > c.y ? b.y : c.y),
+    minZ = zOrder(minTX, minTY, minX, minY, invSize),
+    maxZ = zOrder(maxTX, maxTY, minX, minY, invSize);
+  var p = ear.prevZ, n = ear.nextZ;
+  while (p && p.z >= minZ && n && n.z <= maxZ) {
+    if (p !== ear.prev && p !== ear.next && pointInTriangle(a.x, a.y, b.x, b.y, c.x, c.y, p.x, p.y) && area(p.prev, p, p.next) >= 0) return false;
+    p = p.prevZ;
+    if (n !== ear.prev && n !== ear.next && pointInTriangle(a.x, a.y, b.x, b.y, c.x, c.y, n.x, n.y) && area(n.prev, n, n.next) >= 0) return false;
+    n = n.nextZ;
+  }
+  while (p && p.z >= minZ) {
+    if (p !== ear.prev && p !== ear.next && pointInTriangle(a.x, a.y, b.x, b.y, c.x, c.y, p.x, p.y) && area(p.prev, p, p.next) >= 0) return false;
+    p = p.prevZ;
+  }
+  while (n && n.z <= maxZ) {
+    if (n !== ear.prev && n !== ear.next && pointInTriangle(a.x, a.y, b.x, b.y, c.x, c.y, n.x, n.y) && area(n.prev, n, n.next) >= 0) return false;
+    n = n.nextZ;
+  }
+  return true;
+}
+function cureLocalIntersections(start, triangles, dim) {
+  var p = start;
+  do {
+    var a = p.prev, b = p.next.next;
+    if (!equals(a, b) && intersects(a, p, p.next, b) && locallyInside(a, b) && locallyInside(b, a)) {
+      triangles.push(a.i / dim, p.i / dim, b.i / dim);
+      removeNode(p); removeNode(p.next);
+      p = start = b;
+    }
+    p = p.next;
+  } while (p !== start);
+  return filterPoints(p);
+}
+function splitEarcut(start, triangles, dim, minX, minY, invSize) {
+  var a = start;
+  do {
+    var b = a.next.next;
+    while (b !== a.prev) {
+      if (a.i !== b.i && isValidDiagonal(a, b)) {
+        var c = splitPolygon(a, b);
+        a = filterPoints(a, a.next);
+        c = filterPoints(c, c.next);
+        earcutLinked(a, triangles, dim, minX, minY, invSize);
+        earcutLinked(c, triangles, dim, minX, minY, invSize);
+        return;
+      }
+      b = b.next;
+    }
+    a = a.next;
+  } while (a !== start);
+}
+function eliminateHoles(data, holeIndices, outerNode, dim) {
+  var queue = [], i, len, start, end, list;
+  for (i = 0, len = holeIndices.length; i < len; i++) {
+    start = holeIndices[i] * dim; end = i < len - 1 ? holeIndices[i + 1] * dim : data.length;
+    list = linkedList(data, start, end, dim, false);
+    if (list === list.next) list.steiner = true;
+    queue.push(getLeftmost(list));
+  }
+  queue.sort(compareX);
+  for (i = 0; i < queue.length; i++) { eliminateHole(queue[i], outerNode); outerNode = filterPoints(outerNode, outerNode.next); }
+  return outerNode;
+}
+function compareX(a, b) { return a.x - b.x; }
+function eliminateHole(hole, outerNode) {
+  outerNode = findHoleBridge(hole, outerNode);
+  if (outerNode) { var b = splitPolygon(outerNode, hole); filterPoints(outerNode, outerNode.next); filterPoints(b, b.next); }
+}
+function findHoleBridge(hole, outerNode) {
+  var p = outerNode, hx = hole.x, hy = hole.y, qx = -Infinity, m;
+  do {
+    if (hy <= p.y && hy >= p.next.y && p.next.y !== p.y) {
+      var x = p.x + (hy - p.y) * (p.next.x - p.x) / (p.next.y - p.y);
+      if (x <= hx && x > qx) { qx = x; m = p.x < p.next.x ? p : p.next; if (x === hx) return m; }
+    }
+    p = p.next;
+  } while (p !== outerNode);
+  if (!m) return null;
+  var stop = m, mx = m.x, my = m.y, tanMin = Infinity, tan;
+  p = m;
+  do {
+    if (hx >= p.x && p.x >= mx && hx !== p.x && pointInTriangle(hy < my ? hx : qx, hy, mx, my, hy < my ? qx : hx, hy, p.x, p.y)) {
+      tan = Math.abs(hy - p.y) / (hx - p.x);
+      if (locallyInside(p, hole) && (tan < tanMin || (tan === tanMin && (p.x > m.x || (p.x === m.x && sectorContainsSector(m, p)))))) { m = p; tanMin = tan; }
+    }
+    p = p.next;
+  } while (p !== stop);
+  return m;
+}
+function sectorContainsSector(m, p) { return area(m.prev, m, p.prev) < 0 && area(p.next, m, m.next) < 0; }
+function indexCurve(start, minX, minY, invSize) {
+  var p = start;
+  do { if (p.z === null) p.z = zOrder(p.x, p.y, minX, minY, invSize); p.prevZ = p.prev; p.nextZ = p.next; p = p.next; } while (p !== start);
+  p.prevZ.nextZ = null; p.prevZ = null; sortLinked(p);
+}
+function sortLinked(list) {
+  var i, p, q, e, tail, numMerges, pSize, qSize, inSize = 1;
+  do {
+    p = list; list = null; tail = null; numMerges = 0;
+    while (p) {
+      numMerges++; q = p; pSize = 0;
+      for (i = 0; i < inSize; i++) { pSize++; q = q.nextZ; if (!q) break; }
+      qSize = inSize;
+      while (pSize > 0 || (qSize > 0 && q)) {
+        if (pSize !== 0 && (qSize === 0 || !q || p.z <= q.z)) { e = p; p = p.nextZ; pSize--; }
+        else { e = q; q = q.nextZ; qSize--; }
+        if (tail) tail.nextZ = e; else list = e;
+        e.prevZ = tail; tail = e;
+      }
+      p = q;
+    }
+    tail.nextZ = null; inSize *= 2;
+  } while (numMerges > 1);
+  return list;
+}
+function zOrder(x, y, minX, minY, invSize) {
+  x = 32767 * (x - minX) * invSize; y = 32767 * (y - minY) * invSize;
+  x = (x | (x << 8)) & 0x00FF00FF; x = (x | (x << 4)) & 0x0F0F0F0F; x = (x | (x << 2)) & 0x33333333; x = (x | (x << 1)) & 0x55555555;
+  y = (y | (y << 8)) & 0x00FF00FF; y = (y | (y << 4)) & 0x0F0F0F0F; y = (y | (y << 2)) & 0x33333333; y = (y | (y << 1)) & 0x55555555;
+  return x | (y << 1);
+}
+function getLeftmost(start) {
+  var p = start, leftmost = start;
+  do { if (p.x < leftmost.x || (p.x === leftmost.x && p.y < leftmost.y)) leftmost = p; p = p.next; } while (p !== start);
+  return leftmost;
+}
+function pointInTriangle(ax, ay, bx, by, cx, cy, px, py) {
+  return (cx - px) * (ay - py) >= (ax - px) * (cy - py) && (ax - px) * (by - py) >= (bx - px) * (ay - py) && (bx - px) * (cy - py) >= (cx - px) * (by - py);
+}
+function isValidDiagonal(a, b) {
+  return a.next.i !== b.i && a.prev.i !== b.i && !intersectsPolygon(a, b) && (locallyInside(a, b) && locallyInside(b, a) && middleInside(a, b) && (area(a.prev, a, b.prev) || area(a, b.prev, b)) || equals(a, b) && area(a.prev, a, a.next) > 0 && area(b.prev, b, b.next) > 0);
+}
+function area(p, q, r) { return (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y); }
+function equals(p1, p2) { return p1.x === p2.x && p1.y === p2.y; }
+function intersects(p1, q1, p2, q2) {
+  var o1 = sign(area(p1, q1, p2)), o2 = sign(area(p1, q1, q2)), o3 = sign(area(p2, q2, p1)), o4 = sign(area(p2, q2, q1));
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && onSegment(p1, p2, q1)) return true; if (o2 === 0 && onSegment(p1, q2, q1)) return true;
+  if (o3 === 0 && onSegment(p2, p1, q2)) return true; if (o4 === 0 && onSegment(p2, q1, q2)) return true;
+  return false;
+}
+function onSegment(p, q, r) { return q.x <= Math.max(p.x, r.x) && q.x >= Math.min(p.x, r.x) && q.y <= Math.max(p.y, r.y) && q.y >= Math.min(p.y, r.y); }
+function sign(num) { return num > 0 ? 1 : num < 0 ? -1 : 0; }
+function intersectsPolygon(a, b) {
+  var p = a;
+  do { if (p.i !== a.i && p.next.i !== a.i && p.i !== b.i && p.next.i !== b.i && intersects(p, p.next, a, b)) return true; p = p.next; } while (p !== a);
+  return false;
+}
+function locallyInside(a, b) { return area(a.prev, a, a.next) < 0 ? area(a, b, a.next) >= 0 && area(a, a.prev, b) >= 0 : area(a, b, a.prev) < 0 || area(a, a.next, b) < 0; }
+function middleInside(a, b) {
+  var p = a, inside = false, px = (a.x + b.x) / 2, py = (a.y + b.y) / 2;
+  do {
+    if (((p.y > py) !== (p.next.y > py)) && p.next.y !== p.y && (px < (p.next.x - p.x) * (py - p.y) / (p.next.y - p.y) + p.x)) inside = !inside;
+    p = p.next;
+  } while (p !== a);
+  return inside;
+}
+function splitPolygon(a, b) {
+  var a2 = new Node(a.i, a.x, a.y), b2 = new Node(b.i, b.x, b.y), an = a.next, bp = b.prev;
+  a.next = b; b.prev = a; a2.next = an; an.prev = a2; b2.next = a2; a2.prev = b2; bp.next = b2; b2.prev = bp;
+  return b2;
+}
+function insertNode(i, x, y, last) {
+  var p = new Node(i, x, y);
+  if (!last) { p.prev = p; p.next = p; }
+  else { p.next = last.next; p.prev = last; last.next.prev = p; last.next = p; }
+  return p;
+}
+function removeNode(p) { p.next.prev = p.prev; p.prev.next = p.next; if (p.prevZ) p.prevZ.nextZ = p.nextZ; if (p.nextZ) p.nextZ.prevZ = p.prevZ; }
+function Node(i, x, y) { this.i = i; this.x = x; this.y = y; this.prev = null; this.next = null; this.z = null; this.prevZ = null; this.nextZ = null; this.steiner = false; }
+function signedArea(data, start, end, dim) {
+  var sum = 0;
+  for (var i = start, j = end - dim; i < end; i += dim) { sum += (data[j] - data[i]) * (data[i + 1] + data[j + 1]); j = i; }
+  return sum;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TEXTURE FACTORY — satellite tiles, elevation, building colours
+// ═══════════════════════════════════════════════════════════════
+
+// ── CSS colour name → hex ─────────────────────────────────────
+const CSS_COLOURS = {
+  white: '#f5f5f0', ivory: '#fffff0', cream: '#fffdd0',
+  beige: '#e8dcc8', tan: '#c8a882', khaki: '#c8b870',
+  yellow: '#e8d060', gold: '#d4a830', orange: '#d07030',
+  red: '#c03020', crimson: '#9a1020', brown: '#7a4828',
+  maroon: '#5a2018', pink: '#e890a0', salmon: '#d87860',
+  coral: '#d06048', green: '#507840', olive: '#607830',
+  teal: '#307068', cyan: '#408898', aqua: '#408898',
+  blue: '#3860a0', navy: '#1a2860', indigo: '#384090',
+  violet: '#6848a0', purple: '#583878', magenta: '#903878',
+  grey: '#888888', gray: '#888888', silver: '#c0c0c0',
+  black: '#222222',
+};
+
+function resolveColour(raw) {
+  if (!raw) return null;
+  const s = raw.trim().toLowerCase();
+  if (s.startsWith('#')) return s;
+  return CSS_COLOURS[s] || null;
+}
+
+function makeToonGradient() {
+  const w = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = 1;
+  const ctx = canvas.getContext('2d');
+  const grd = ctx.createLinearGradient(0, 0, w, 0);
+  grd.addColorStop(0.00, '#2a2a3a');
+  grd.addColorStop(0.28, '#3a3a50');
+  grd.addColorStop(0.29, '#606888');
+  grd.addColorStop(0.60, '#8090b8');
+  grd.addColorStop(0.61, '#c0cce8');
+  grd.addColorStop(1.00, '#e8eeff');
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, w, 1);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  return tex;
+}
+
+async function fetchSatelliteTexture(lat, lng, radiusMeters) {
+  const zoom       = _zoomForRadius(radiusMeters);
+  const tileSize   = 256;
+
+  const R    = 6378137;
+  const dLat = radiusMeters / R * (180 / Math.PI);
+  const dLng = radiusMeters / (R * Math.cos(lat * Math.PI / 180)) * (180 / Math.PI);
+
+  const latN = lat + dLat, latS = lat - dLat;
+  const lngW = lng - dLng, lngE = lng + dLng;
+
+  const { tx: txW, ty: tyN } = _latLngToTile(latN, lngW, zoom);
+  const { tx: txE, ty: tyS } = _latLngToTile(latS, lngE, zoom);
+
+  const tileCountX = Math.min(txE - txW + 1, 6);
+  const tileCountY = Math.min(tyS - tyN + 1, 6);
+
+  const compW  = tileCountX * tileSize;
+  const compH  = tileCountY * tileSize;
+  const canvas = document.createElement('canvas');
+  canvas.width  = compW;
+  canvas.height = compH;
+  const ctx = canvas.getContext('2d');
+
+  const fetches = [];
+  for (let dy = 0; dy < tileCountY; dy++) {
+    for (let dx = 0; dx < tileCountX; dx++) {
+      const tileX = txW + dx;
+      const tileY = tyN + dy;
+      const url   = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${tileY}/${tileX}`;
+      fetches.push(
+        _fetchTileImage(url).then(img => ({ img, dx, dy }))
+      );
+    }
+  }
+
+  const results = await Promise.allSettled(fetches);
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      const { img, dx, dy } = r.value;
+      ctx.drawImage(img, dx * tileSize, dy * tileSize, tileSize, tileSize);
+    }
+  }
+
+  const compLngW = _tileToLng(txW,              zoom);
+  const compLngE = _tileToLng(txW + tileCountX, zoom);
+  const compLatN = _tileToLat(tyN,              zoom);
+  const compLatS = _tileToLat(tyN + tileCountY, zoom);
+
+  const cropX = Math.round((lngW - compLngW) / (compLngE - compLngW) * compW);
+  const cropY = Math.round((compLatN - latN)  / (compLatN - compLatS) * compH);
+  const cropW = Math.round((lngE - lngW)      / (compLngE - compLngW) * compW);
+  const cropH = Math.round((latN - latS)      / (compLatN - compLatS) * compH);
+
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width  = Math.max(1, cropW);
+  cropCanvas.height = Math.max(1, cropH);
+  const cropCtx = cropCanvas.getContext('2d');
+
+  cropCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  cropCtx.globalCompositeOperation = 'multiply';
+  cropCtx.fillStyle = 'rgba(190,210,255,0.10)';
+  cropCtx.fillRect(0, 0, cropW, cropH);
+  cropCtx.globalCompositeOperation = 'source-over';
+
+  const tex = new THREE.CanvasTexture(cropCanvas);
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
+async function fetchElevationGrid(lat, lng, radiusMeters, gridSize = 64) {
+  const zoom       = Math.max(10, Math.min(14, _zoomForRadius(radiusMeters) - 1));
+  const { tx, ty } = _latLngToTile(lat, lng, zoom);
+
+  const tileSize = 256;
+  const grid     = 2;
+  const canvas   = document.createElement('canvas');
+  canvas.width    = tileSize * grid;
+  canvas.height   = tileSize * grid;
+  const ctx      = canvas.getContext('2d');
+
+  const fetches = [];
+  for (let dy = 0; dy < grid; dy++) {
+    for (let dx = 0; dx < grid; dx++) {
+      fetches.push(
+        _fetchTileImage(
+          `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${zoom}/${tx + dx}/${ty + dy}.png`
+        ).then(img => ({ img, dx, dy }))
+      );
+    }
+  }
+
+  const results = await Promise.allSettled(fetches);
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      const { img, dx, dy } = r.value;
+      ctx.drawImage(img, dx * tileSize, dy * tileSize, tileSize, tileSize);
+    }
+  }
+
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels    = imageData.data;
+
+  const blockW    = canvas.width;
+  const blockH    = canvas.height;
+  const blockLng0 = _tileToLng(tx,        zoom);
+  const blockLng1 = _tileToLng(tx + grid, zoom);
+  const blockLat0 = _tileToLat(ty,        zoom);
+  const blockLat1 = _tileToLat(ty + grid, zoom);
+
+  const R    = 6378137;
+  const dLat = radiusMeters / R * (180 / Math.PI);
+  const dLng = radiusMeters / (R * Math.cos(lat * Math.PI / 180)) * (180 / Math.PI);
+
+  const elevations = new Float32Array(gridSize * gridSize);
+
+  for (let row = 0; row < gridSize; row++) {
+    for (let col = 0; col < gridSize; col++) {
+      const sampleLat = lat + dLat - (row / (gridSize - 1)) * dLat * 2;
+      const sampleLng = lng - dLng + (col / (gridSize - 1)) * dLng * 2;
+
+      const px = Math.floor(((sampleLng - blockLng0) / (blockLng1 - blockLng0)) * blockW);
+      const py = Math.floor(((blockLat0 - sampleLat) / (blockLat0 - blockLat1)) * blockH);
+
+      const clampedPx = Math.max(0, Math.min(blockW - 1, px));
+      const clampedPy = Math.max(0, Math.min(blockH - 1, py));
+      const idx       = (clampedPy * blockW + clampedPx) * 4;
+
+      const r = pixels[idx], g = pixels[idx + 1], b = pixels[idx + 2];
+      elevations[row * gridSize + col] = r * 256 + g + b / 256 - 32768;
+    }
+  }
+
+  return elevations;
+}
+
+function buildingPalette(tags) {
+  const explicitWall = resolveColour(tags['building:colour'] || tags['building:color']);
+  if (explicitWall) return explicitWall;
+
+  const mat = (tags['building:material'] || '').toLowerCase();
+  const matColours = {
+    brick: '#c8906a', stone: '#b0a890', concrete: '#b0b0b0',
+    glass: '#90b8d0', metal: '#a0a8b0', wood: '#a07848',
+    plaster: '#d8cdb0', render: '#d0c8b0', sandstone: '#d0b878',
+    limestone: '#d8d0b0',
+  };
+  for (const [key, col] of Object.entries(matColours)) {
+    if (mat.includes(key)) return col;
+  }
+
+  const t = tags.building || 'yes';
+  const typeColours = {
+    house: '#d4c0a0', detached: '#d0bca0', semidetached: '#ccb89c',
+    terrace: '#c8b498', apartments: '#b8c0c8', residential: '#c8bca8',
+    office: '#9ab0c0', commercial: '#c0b8a0', retail: '#c8b898',
+    skyscraper: '#8090a8', industrial: '#a0a098', warehouse: '#9c9888',
+    church: '#d8d0b8', cathedral: '#d4cdb0', school: '#d0c090',
+    hospital: '#e0dcd4', hotel: '#c8b890', university: '#c8b878',
+    train_station: '#b0b8c0', transportation: '#b0b8c0',
+  };
+  return typeColours[t] ?? '#c0bdb0';
+}
+
+function roofColour(tags) {
+  const explicit = resolveColour(tags['roof:colour'] || tags['roof:color']);
+  if (explicit) return explicit;
+  const wall = new THREE.Color(buildingPalette(tags));
+  wall.multiplyScalar(0.75);
+  wall.b = Math.min(1, wall.b + 0.05);
+  return '#' + wall.getHexString();
+}
+
+// ── Shared tile helpers ───────────────────────────────────────
+function _fetchTileImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload  = () => resolve(img);
+    img.onerror = () => reject(new Error(`Tile failed: ${url}`));
+    img.src = url;
+  });
+}
+
+function _latLngToTile(lat, lng, zoom) {
+  const n  = Math.pow(2, zoom);
+  const tx = Math.floor((lng + 180) / 360 * n);
+  const ty = Math.floor(
+    (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n
+  );
+  return { tx, ty };
+}
+
+function _tileToLng(tx, zoom) {
+  return tx / Math.pow(2, zoom) * 360 - 180;
+}
+
+function _tileToLat(ty, zoom) {
+  const n = Math.PI - (2 * Math.PI * ty) / Math.pow(2, zoom);
+  return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+
+function _zoomForRadius(r) {
+  return Math.max(12, Math.min(18, Math.round(Math.log2(40075016 / (r * 2)))));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WORLD BUILDER
+// ═══════════════════════════════════════════════════════════════
+
 
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
