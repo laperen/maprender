@@ -383,90 +383,87 @@ export class RoamingControls {
     return this.worldIntersect(this.charraycaster);
   }
   SurfaceDetection(actor, deltaTime){
-      StartCloneUse();
-      let miscvect = CloneVector3(actor.velocity);
-      miscvect.multiplyScalar( deltaTime );
-      let prevpos = CloneVector3(this._colliderMesh.position);
-      this._colliderMesh.position.add( miscvect );
-      let worldCollisionResult = this.WorldCollision(miscvect);//each collision check will be done this way
-      this._colliderMesh.position.add( worldCollisionResult.delta );
-      let tempUp = CloneVector3(actor.targetup);
-      let truespeed = prevpos.sub(this._colliderMesh.position).lengthSq()/(deltaTime * deltaTime);
-      //set gravity
-      if(worldCollisionResult.intersects){
-          if(actor.intersects != worldCollisionResult.intersects && actor.accelAccum.y > 2){
-              actor.accelAccum.y = 0;
-          }
-          let gp = this.GetFlatestTriPoint(worldCollisionResult.groundtripoints);
-          if(gp){
-              tempUp.set(gp.x, gp.y, gp.z);
-              actor.wallriding = false;
-          } else {
-              let wp = this.GetFlatestTriPoint(worldCollisionResult.notgroundpoints);
-              if(wp && truespeed > actor.wallRideThresholdSqr && actor.accelAccum.lengthSq() > actor.wallRideThresholdSqr){
-                  actor.wallriding = actor.wallrideangle >= this.slopelimit;
-                  tempUp.set(wp.x, wp.y, wp.z);
-              }
-          }
+    StartCloneUse();
+    let miscvect = CloneVector3(actor.velocity);
+    miscvect.multiplyScalar( deltaTime );
+    let prevpos = CloneVector3(this._colliderMesh.position);
+    this._colliderMesh.position.add( miscvect );
+    let worldCollisionResult = this.WorldCollision(miscvect);//each collision check will be done this way
+    this._colliderMesh.position.add( worldCollisionResult.delta );
+    let tempUp = CloneVector3(actor.targetup);
+    let truespeed = prevpos.sub(this._colliderMesh.position).lengthSq()/(deltaTime * deltaTime);
+    //set gravity
+    if(worldCollisionResult.intersects){
+      if(actor.intersects != worldCollisionResult.intersects && actor.accelAccum.y > 2){
+        actor.accelAccum.y = 0;
       }
-      actor.gravityAccum += deltaTime * actor.gravity;
-      let anglediff = actor.targetup.angleTo(tempUp);
-      if(anglediff > this.slopelimit){
-          actor.majorAxisChange = true;
-          actor.axisOfChange.copy(actor.targetup).cross(tempUp);
-          actor.angleOfChange = anglediff;
-      }
-      actor.inertiacurr = THREE.MathUtils.clamp(actor.inertiacurr - deltaTime, 0, actor.inertiamax); 
-      if(actor.wallriding){
-          //reduce inertia resource
-          /*
-          if(isplayer){ 
-              inertiaback.style.display = "block";
-              inertiabar.style.width = `${actor.inertiacurr/actor.inertiamax * 100}%`;
-          }
-              */
-          if(actor.inertiacurr <= 0){
-              tempUp.copy(upVector);
-              actor.wallriding = false;
-          }
-      }else{
-          if(this.surfacehit){
-              actor.inertiamax = 0;
-          }
-          if(actor.inertiamax <= 0 && anglediff > this.slopelimit){//mainly for transitioning from ground to wall
-            let vlength = actor.accelAccum.length() * 0.8 * actor.gravityAccum>0?2:1;
-            actor.inertiamax = vlength;
-            actor.inertiacurr = vlength;
-          }
-          /*
-          if(isplayer){ 
-              inertiaback.style.display = "none";
-          }
-              */
-      }
-      this.surfacehit = this.checkOnSurface(actor, tempUp);
-      if(actor.wallriding){
-        actor.currRefresh = THREE.MathUtils.clamp(actor.currRefresh - deltaTime, 0, actor.inertiaRefeshTime);
-        if(actor.currRefresh <= 0 && this.surfacehit && !CheckVector3Equals(actor.targetup, this.surfacehit.normal)){
-          actor.inertiacurr = THREE.MathUtils.clamp(actor.inertiacurr + (actor.inertiamax * 0.1), 0, actor.inertiamax); 
-          actor.currRefresh = actor.inertiaRefeshTime;
-        }
-      }else{
-        if(this.surfacehit){
-          this.lastGroundPos.copy(this._colliderMesh.position);
+      let gp = this.GetFlatestTriPoint(worldCollisionResult.groundtripoints);
+      if(gp){
+        tempUp.set(gp.x, gp.y, gp.z);
+        actor.wallriding = false;
+      } else {
+        let wp = this.GetFlatestTriPoint(worldCollisionResult.notgroundpoints);
+        if(wp && truespeed > actor.wallRideThresholdSqr && actor.accelAccum.lengthSq() > actor.wallRideThresholdSqr){
+          actor.wallriding = actor.wallrideangle >= this.slopelimit;
+          tempUp.set(wp.x, wp.y, wp.z);
         }
       }
+    }
+    actor.gravityAccum += deltaTime * actor.gravity;
+    let anglediff = actor.targetup.angleTo(tempUp);
+    if(anglediff > this.slopelimit){
+      actor.majorAxisChange = true;
+      actor.axisOfChange.copy(actor.targetup).cross(tempUp);
+      actor.angleOfChange = anglediff;
+    }
+    actor.inertiacurr = THREE.MathUtils.clamp(actor.inertiacurr - deltaTime, 0, actor.inertiamax); 
+    if(actor.wallriding){
+        //reduce inertia resource
+        /*
+        if(isplayer){ 
+            inertiaback.style.display = "block";
+            inertiabar.style.width = `${actor.inertiacurr/actor.inertiamax * 100}%`;
+        }
+            */
+      if(actor.inertiacurr <= 0){
+          tempUp.copy(upVector);
+          actor.wallriding = false;
+      }
+    }else{
       if(this.surfacehit){
-          if(worldCollisionResult.intersects){
-              actor.airNudgeAccum.set(0,0,0);
-              if(!actor.wallriding || (actor.wallriding && actor.inertiamax > 0 && actor.inertiacurr > 0)){
-                  actor.gravityAccum = 0;//deltaTime * actor.gravity;
-              }
-          }
-          actor.targetup.copy(this.surfacehit.normal);
+          actor.inertiamax = 0;
       }
-      actor.wallrideangle = actor.targetup.angleTo(upVector);
-      actor.intersects = worldCollisionResult.intersects;
+      if(actor.inertiamax <= 0 && anglediff > this.slopelimit){//mainly for transitioning from ground to wall
+        let vlength = actor.accelAccum.length() * 0.8 * actor.gravityAccum>0?2:1;
+        actor.inertiamax = vlength;
+        actor.inertiacurr = vlength;
+      }
+        /*
+        if(isplayer){ 
+            inertiaback.style.display = "none";
+        }
+            */
+    }
+    this.surfacehit = this.checkOnSurface(actor, tempUp);
+    if(actor.wallriding){
+      actor.currRefresh = THREE.MathUtils.clamp(actor.currRefresh - deltaTime, 0, actor.inertiaRefeshTime);
+      if(actor.currRefresh <= 0 && this.surfacehit && !CheckVector3Equals(actor.targetup, this.surfacehit.normal)){
+        actor.inertiacurr = THREE.MathUtils.clamp(actor.inertiacurr + (actor.inertiamax * 0.1), 0, actor.inertiamax); 
+        actor.currRefresh = actor.inertiaRefeshTime;
+      }
+    }
+    if(this.surfacehit){
+      if(worldCollisionResult.intersects){
+        actor.airNudgeAccum.set(0,0,0);
+        if(!actor.wallriding || (actor.wallriding && actor.inertiamax > 0 && actor.inertiacurr > 0)){
+          actor.gravityAccum = 0;//deltaTime * actor.gravity;
+        }
+        this.lastGroundPos.copy(this._colliderMesh.position);
+      }
+      actor.targetup.copy(this.surfacehit.normal);
+    }
+    actor.wallrideangle = actor.targetup.angleTo(upVector);
+    actor.intersects = worldCollisionResult.intersects;
   }
 
   SetFacings(actor){
