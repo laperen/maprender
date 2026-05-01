@@ -520,7 +520,6 @@ export class RoamingControls {
     actor.forwardDir.set(1,0,0).transformDirection(this._colliderMesh.matrixWorld).applyAxisAngle(actor.targetup, this.camYDelta);
     this.prevmcount = this.mcount;
   }
-  //TODO player falls through the buildings and ground eventually, even when standing still.
   GroundMovement(actor, deltaTime, reverseDamping){
     StartCloneUse();
     let miscvect = GetMiscVect();
@@ -530,11 +529,15 @@ export class RoamingControls {
         actor.accelAccum.add(miscvect);
         actor.accelAccum.x *= reverseDamping;
         actor.accelAccum.z *= reverseDamping;
-    }else{
-        miscvect.copy(actor.accelAccum).setLength(speedDelta * 0.5);
-        actor.accelAccum.copy(this.GetCloseToZero(actor.accelAccum.sub(miscvect)));
-        //actor.accelAccum.sub(miscvect);
-    }
+    } else {
+      const len = actor.accelAccum.length();
+      if (len > speedDelta * 0.5) {
+          miscvect.copy(actor.accelAccum).setLength(speedDelta * 0.5);
+          actor.accelAccum.sub(miscvect);
+      } else {
+          actor.accelAccum.set(0, 0, 0);
+      }
+  }
     actor.accelAccum.y *= reverseDamping;
     if(actor.jump){
         let wallpercent = actor.wallrideangle/rad90;

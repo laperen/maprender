@@ -2,7 +2,6 @@ WIP
 
 character movement
 remaining issues:
-character seems to rotate erratically when standing still.
 at a specific angle, when riding off a wall surface from the side, player facing angle is abruptly turned 90 degrees toward the "foot" of the player.
 
 any way to reduce the perspective camera distance while keeping the sun moon and sky visible.
