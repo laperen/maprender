@@ -838,7 +838,7 @@ export class SceneManager {
       mode:          'practical',
       cascades:       3,
       maxFar:         this._csmMaxFar,
-      shadowMapSize:  2048,
+      shadowMapSize:  1024,//2048
       shadowBias:    -0.0003,
       lightNear:      0.1,
       lightFar:       3000,
