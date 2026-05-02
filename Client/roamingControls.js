@@ -94,6 +94,7 @@ export class RoamingControls {
     // Set externally by WorldBuilder / SceneManager after each world build.
     // Each entry is a THREE.Mesh whose geometry already has a boundsTree (BVH).
     this.collidables = [];
+    this.rayExcludes = [];
     // ── Character physics state ───────────────────────────────
     // Feet position (bottom of capsule)
     this._charPos     = new THREE.Vector3();
@@ -213,7 +214,6 @@ export class RoamingControls {
       actor.airNudgeAccum.set(0,0,0);
       actor.gravityAccum = 0;
       actor.targetup.copy(upVector);
-      console.log(this.lastGroundPos);
       this._colliderMesh.position.copy(this.lastGroundPos);//.set(this.spawnPos.x,this.spawnPos.y,this.spawnPos.z);
     }
   }
@@ -584,9 +584,12 @@ export class RoamingControls {
         this.AirMovement(actor, deltaTime, reverseDamping);
       }
   }
-  worldIntersect(raycaster){
+  worldIntersect(raycaster, excludes = false){
     let camhit = null;
     for(let i = 0, max = this.collidables.length; i < max; i++){
+      if(excludes && this.rayExcludes.includes(i)){
+        continue;
+      }
       let mesh = this.collidables[i];
       let newhit = raycaster.intersectObject(mesh)[0];
       if((!camhit && newhit) || (camhit && newhit && (newhit.distance < camhit.distance))){
@@ -624,7 +627,7 @@ export class RoamingControls {
     this.camraycaster.ray.origin.copy(this._colliderMesh.position).add(miscvect);
     this._camera.getWorldDirection(miscvect);
     this.camraycaster.ray.direction.copy(miscvect.negate());
-    const camhit = this.worldIntersect(this.camraycaster);// this.camraycaster.intersectObject(world.layers[CollisionTags.Environment].collider )[ 0 ];
+    const camhit = this.worldIntersect(this.camraycaster, true);// this.camraycaster.intersectObject(world.layers[CollisionTags.Environment].collider )[ 0 ];
     let camdist = camhit?camhit.distance-0.2:this.maxCamDist;
     this._camera.position.z = camdist;
   }

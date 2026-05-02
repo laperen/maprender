@@ -675,6 +675,7 @@ export class WorldBuilder {
     const rawRoadTris = [];
     const roadWays = [];
     const tallBuildings = [];
+    const railWays = [];
   
     const placedFootprints = [];
   
@@ -755,6 +756,10 @@ export class WorldBuilder {
             water++;
           }
         }
+
+        else if (way.kind === 'rail') {
+          railWays.push(way);
+        }
   
       } catch (_) {}
     }
@@ -830,7 +835,7 @@ export class WorldBuilder {
         const { group, globeInstanced, haloMesh, positions } = lampResult;
 
         // Add whole group to scene (non-collidable at group level)
-        this.scene.addObject(group, false);
+        this.scene.addObject(group);
 
         // Register merged post collidable
         group.traverse(c => {
@@ -854,7 +859,7 @@ export class WorldBuilder {
       const aviatResult = this._buildAviationLights(tallBuildings);
       if (aviatResult) {
         const { group, aviatInstanced } = aviatResult;
-        this.scene.addObject(group, false);
+        this.scene.addObject(group);
         this.scene.registerLampInstanced({
           globeInstanced: aviatInstanced,
           haloMesh:       null,
@@ -864,6 +869,20 @@ export class WorldBuilder {
       }
     }
   
+    // 🚧 rails — processed after terrainMesh exists so _snapY works correctly
+    for (const way of railWays) {
+      try {
+        const railResult = this._buildRailMesh(way, elev, terrainMesh);
+        if (railResult) {
+          this.scene.addObject(railResult);
+          this.scene.registerCollidable(railResult, true);
+          tris += railResult.geometry.index
+            ? railResult.geometry.index.count / 3
+            : 0;
+        }
+      } catch (_) {}
+    }
+
     fetchSatelliteTexture(lat, lng, radiusMeters)
       .then(tex => this.scene.setGroundTexture(tex))
       .catch(() => {});
@@ -1586,6 +1605,172 @@ export class WorldBuilder {
 
     group.add(aviatInstanced);
     return { group, aviatInstanced };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // RAIL MESH — continuous tube with diamond cross-section
+  // Handles railing / handrail / guardrail OSM ways.
+  // Cross-section: 4-vertex diamond (square rotated 45°) in the
+  // plane perpendicular to the rail direction at each station.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildRailMesh(way, elev, terrainMesh) {
+    console.log("build rail mesh");
+    const coords = way.coords;
+    if (!coords || coords.length < 2) return null;
+
+    // Resolve height: OSM height tag → fallback 1 m above terrain
+    const tagHeight = way.tags?.height ? parseFloat(way.tags.height) : NaN;
+    const railHeight = Number.isFinite(tagHeight) && tagHeight > 0 ? tagHeight : 1.0;
+
+    // Diamond cross-section half-extents (in metres)
+    const HALF_W = 0.06;  // left/right
+    const HALF_H = 0.06;  // up/down
+
+    // Subdivide polyline so the tube follows terrain curvature
+    const centreline = this._subdividePolyline(coords, 2.0);
+    if (centreline.length < 2) return null;
+
+    // Sample Y for every station
+    const stations = centreline.map(p => {
+      const groundY = this._snapY(p.x, p.z, elev, terrainMesh, 0);
+      return { x: p.x, y: groundY + railHeight, z: p.z };
+    });
+
+    const n = stations.length;
+    // Diamond local offsets: top, right, bottom, left  (CCW from front)
+    // We'll build a frame at each station and emit quads between adjacent frames.
+    // Frame axes: tangent (T), arbitrary up-ish (U), right (R)
+    // Diamond verts in local frame: top=(0,+H,0), right=(+W,0,0), bot=(0,-H,0), left=(-W,0,0)
+
+    const pos = [];
+    const nrm = [];
+    const idx = [];
+
+    // Compute per-station frames
+    const tangents = [];
+    for (let i = 0; i < n; i++) {
+      const prev = stations[Math.max(0, i - 1)];
+      const next = stations[Math.min(n - 1, i + 1)];
+      const tx = next.x - prev.x;
+      const ty = next.y - prev.y;
+      const tz = next.z - prev.z;
+      const len = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
+      tangents.push({ x: tx / len, y: ty / len, z: tz / len });
+    }
+
+    // Build 4 verts per station (diamond cross-section)
+    // right-axis = tangent × worldUp, then re-orthogonalise up
+    const worldUp = { x: 0, y: 1, z: 0 };
+
+    const cross = (a, b) => ({
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x,
+    });
+    const norm3 = v => {
+      const l = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z) || 1;
+      return { x: v.x / l, y: v.y / l, z: v.z / l };
+    };
+
+    // rings[i] = array of 4 {x,y,z} world positions for diamond corners
+    const rings = [];
+    for (let i = 0; i < n; i++) {
+      const T = tangents[i];
+      const s = stations[i];
+
+      // right = T × worldUp; fall back to T × (1,0,0) if nearly parallel
+      let R = norm3(cross(T, worldUp));
+      if (R.x * R.x + R.y * R.y + R.z * R.z < 0.01) {
+        R = norm3(cross(T, { x: 1, y: 0, z: 0 }));
+      }
+      // local up = R × T (ensures orthonormal frame)
+      const U = norm3(cross(R, T));
+
+      rings.push([
+        // top
+        { x: s.x + U.x * HALF_H,  y: s.y + U.y * HALF_H,  z: s.z + U.z * HALF_H  },
+        // right
+        { x: s.x + R.x * HALF_W,  y: s.y + R.y * HALF_W,  z: s.z + R.z * HALF_W  },
+        // bottom
+        { x: s.x - U.x * HALF_H,  y: s.y - U.y * HALF_H,  z: s.z - U.z * HALF_H  },
+        // left
+        { x: s.x - R.x * HALF_W,  y: s.y - R.y * HALF_W,  z: s.z - R.z * HALF_W  },
+      ]);
+    }
+
+    // Emit quads between adjacent rings.
+    // Each pair of adjacent ring-verts (a, b) forms one side face: a quad = 2 triangles.
+    // Ring order: 0=top, 1=right, 2=bottom, 3=left
+    const SIDES = 4;
+
+    for (let i = 0; i < n - 1; i++) {
+      const ringA = rings[i];
+      const ringB = rings[i + 1];
+
+      for (let s = 0; s < SIDES; s++) {
+        const sNext = (s + 1) % SIDES;
+        // quad corners (CCW from outside)
+        const v0 = ringA[s];
+        const v1 = ringA[sNext];
+        const v2 = ringB[sNext];
+        const v3 = ringB[s];
+
+        // Face normal: average of the two vertex side directions
+        // (good enough for a thin tube)
+        const midA = { x: (v0.x + v1.x) * 0.5, y: (v0.y + v1.y) * 0.5, z: (v0.z + v1.z) * 0.5 };
+        const midS = { x: (ringA[0].x + ringA[2].x) * 0.5, y: (ringA[0].y + ringA[2].y) * 0.5, z: (ringA[0].z + ringA[2].z) * 0.5 };
+        const fn   = norm3({ x: midA.x - midS.x, y: midA.y - midS.y, z: midA.z - midS.z });
+
+        const base = pos.length / 3;
+        pos.push(v0.x, v0.y, v0.z);
+        pos.push(v1.x, v1.y, v1.z);
+        pos.push(v2.x, v2.y, v2.z);
+        pos.push(v3.x, v3.y, v3.z);
+        for (let k = 0; k < 4; k++) nrm.push(fn.x, fn.y, fn.z);
+
+        idx.push(base, base + 1, base + 2);
+        idx.push(base, base + 2, base + 3);
+      }
+    }
+
+    // End caps (optional — fill first and last ring as 4-triangle fans)
+    const capRing = (ring, inward) => {
+      const cx = (ring[0].x + ring[2].x) * 0.5;
+      const cy = (ring[0].y + ring[2].y) * 0.5;
+      const cz = (ring[0].z + ring[2].z) * 0.5;
+      const base = pos.length / 3;
+      pos.push(cx, cy, cz);
+      nrm.push(0, inward ? -1 : 1, 0);
+      for (let k = 0; k < SIDES; k++) {
+        const v = ring[k];
+        pos.push(v.x, v.y, v.z);
+        nrm.push(0, inward ? -1 : 1, 0);
+      }
+      for (let k = 0; k < SIDES; k++) {
+        const a = base + 1 + k;
+        const b = base + 1 + (k + 1) % SIDES;
+        if (inward) idx.push(base, b, a);
+        else        idx.push(base, a, b);
+      }
+    };
+    capRing(rings[0],     true);
+    capRing(rings[n - 1], false);
+
+    if (pos.length === 0 || idx.length === 0) return null;
+
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geom.setAttribute('normal',   new THREE.Float32BufferAttribute(nrm, 3));
+    geom.setIndex(idx);
+    try{geom.boundsTree = new MeshBVH(geom);}catch(_){}
+    // Dark iron/steel colour for all rail types
+    const mat = new THREE.MeshLambertMaterial({ color: 0x505560 });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.castShadow    = true;
+    mesh.receiveShadow = true;
+    mesh.userData.kind = 'rail';
+    return mesh;
   }
 
   _roadHalfWidth(highway) {

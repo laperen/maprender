@@ -544,8 +544,11 @@ export class SceneManager {
     // _lampEntries: array of { globeInstanced, haloMesh, positions, type }
     // positions is Float32Array [x,y,z per globe] used for distance-based LOD.
     this._lampEntries  = [];
-    this._collidables = [];
-    if (this._roamingCam) this._roamingCam.collidables = [];
+    //this._collidables = [];
+    if (this._roamingCam){
+      this._roamingCam.collidables = [];
+      this._roamingCam.rayExcludes = [];
+    };
 
     // Current hour (0–24) cached for re-use
     this._currentHour  = 12;
@@ -555,7 +558,7 @@ export class SceneManager {
     this._clouds = new CloudLayer();
     this._roamingCam = null; // initialised in start() after renderer exists
     this.$enterWorldBtn  = document.getElementById('enter-world-btn');
-    this._collidables = [];
+    //this._collidables = [];
 
     // Default geographic location for SPA solar algorithm (Tokyo)
     // Overridden by setLocation() when user geocodes or generates a world.
@@ -1473,19 +1476,25 @@ export class SceneManager {
     }
   }
 
-  registerCollidable(mesh) {
+  registerCollidable(mesh, excludeForCamRay = false) {
     this._collidables.push(mesh);
     if (this._roamingCam && mesh?.geometry?.boundsTree) {
       this._roamingCam.collidables.push(mesh);
+      if(excludeForCamRay){
+        this._roamingCam.rayExcludes.push(this._roamingCam.collidables.length-1);
+      }
     }
+    
   }
 
-  addObject(obj, collidable = true) {
+  addObject(obj/*, collidable = true*/) {
     this.scene.add(obj);
     this._objects.push(obj);
+    /*
     if (collidable) {
       this._collidables.push(obj);
     }
+    */
     // Register materials with CSM so they receive cascaded shadows
     if (this._csm) {
       const mats = [];
