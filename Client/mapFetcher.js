@@ -230,10 +230,13 @@ export class MapFetcher {
 (
   way["building"](around:${r},${lat},${lng});
   way["highway"](around:${r},${lat},${lng});
+  way["highway"="steps"](around:${r},${lat},${lng});
+  way["highway"]["bridge"="yes"](around:${r},${lat},${lng});
   way["waterway"](around:${r},${lat},${lng});
   way["natural"="water"](around:${r},${lat},${lng});
   way["leisure"="park"](around:${r},${lat},${lng});
   way["landuse"="grass"](around:${r},${lat},${lng});
+  way["landuse"="construction"](around:${r},${lat},${lng});
 );
 out body;
 >;
@@ -305,10 +308,15 @@ out skel qt;
 
   _classify(tags) {
     if (tags.building)                                return 'building';
+    // footbridge: any highway way tagged bridge=yes (footway, path, cycleway, etc.)
+    if (tags.highway && tags.bridge === 'yes')        return 'footbridge';
+    // steps: explicit staircase ways
+    if (tags.highway === 'steps')                     return 'steps';
     if (tags.highway)                                 return 'road';
     if (tags.waterway || tags['natural'] === 'water') return 'water';
     if (tags.leisure === 'park')                      return 'park';
     if (tags.landuse === 'grass')                     return 'park';
+    if (tags.landuse === 'construction')              return 'construction';
     return null;
   }
 

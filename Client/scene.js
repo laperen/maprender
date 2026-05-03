@@ -544,6 +544,10 @@ export class SceneManager {
     // _lampEntries: array of { globeInstanced, haloMesh, positions, type }
     // positions is Float32Array [x,y,z per globe] used for distance-based LOD.
     this._lampEntries  = [];
+    // _railPaths: array of THREE.Vector3[] — one entry per rail centreline.
+    // Populated by WorldBuilder during build(); cleared in clearWorld().
+    // Used by the future rail-grinding system to find grindable surfaces.
+    this._railPaths    = [];
     //this._collidables = [];
     if (this._roamingCam){
       this._roamingCam.collidables = [];
@@ -1465,6 +1469,7 @@ export class SceneManager {
     }
     this._objects      = [];
     this._lampEntries  = [];
+    this._railPaths    = [];
 
     if (this._groundMesh) {
       if (this._groundMesh.material.map) {

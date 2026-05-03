@@ -489,6 +489,28 @@ function roofColour(tags) {
   return '#' + wall.getHexString();
 }
 
+// ── Structure palette — for stairs, bridges, rails, construction ──
+// Reads material/colour tags; falls back to concrete grey (#909090).
+function structurePalette(tags) {
+  const explicit = resolveColour(
+    tags['colour'] || tags['color'] ||
+    tags['building:colour'] || tags['building:color']
+  );
+  if (explicit) return explicit;
+
+  const mat = (tags['material'] || tags['building:material'] || '').toLowerCase();
+  const matColours = {
+    brick: '#c8906a', stone: '#b0a890', concrete: '#a8a8a8',
+    glass: '#90b8d0', metal: '#909898', steel: '#888e98',
+    wood: '#a07848', plaster: '#c8c0b0', render: '#c0b8a8',
+    sandstone: '#c8b070', limestone: '#c8c0a8', iron: '#787e88',
+  };
+  for (const [key, col] of Object.entries(matColours)) {
+    if (mat.includes(key)) return col;
+  }
+  return '#909090'; // default concrete grey
+}
+
 // ── Shared tile helpers ───────────────────────────────────────
 function _fetchTileImage(url) {
   return new Promise((resolve, reject) => {
@@ -676,6 +698,8 @@ export class WorldBuilder {
     const roadWays = [];
     const tallBuildings = [];
     const railWays = [];
+    const stepsWays = [];
+    const footbridgeWays = [];
   
     const placedFootprints = [];
   
@@ -760,6 +784,18 @@ export class WorldBuilder {
         else if (way.kind === 'rail') {
           railWays.push(way);
         }
+
+        else if (way.kind === 'steps') {
+          stepsWays.push(way);
+        }
+
+        else if (way.kind === 'footbridge') {
+          footbridgeWays.push(way);
+        }
+
+        // 'construction' and 'park' classified ways are currently
+        // recognised but intentionally produce no geometry — they are
+        // reserved for future visual treatment (e.g. gravel fill, barriers).
   
       } catch (_) {}
     }
@@ -778,8 +814,49 @@ export class WorldBuilder {
         this.scene.registerCollidable(terrainMesh);
       } catch (e) {}
     }
+
+    // ── All rail buffers accumulated here before the single merged flush ──
+    const allRailBuffers = [];
+
+    // 🚧 rails — processed after terrainMesh exists so _snapY works correctly
+    for (const way of railWays) {
+      try {
+        const rb = this._buildRailMesh(way, elev, terrainMesh);
+        if (rb) allRailBuffers.push(rb);
+      } catch (_) {}
+    }
+
+    // 🪜 stairs — deferred: need terrain + buildings buffer still open
+    for (const way of stepsWays) {
+      try {
+        const result = this._buildStaircaseMesh(way, elev, terrainMesh);
+        if (!result) continue;
+        // Append solid geometry into shared buildings buffer
+        for (const v of result.pos) pos.push(v);
+        for (const v of result.nrm) nrm.push(v);
+        for (const v of result.col) col.push(v);
+        for (const i of result.idx) idx.push(i + indexOffset);
+        indexOffset += result.pos.length / 3;
+        // Collect handrail buffers
+        for (const rb of result.railBuffers) allRailBuffers.push(rb);
+      } catch (_) {}
+    }
+
+    // 🌉 footbridges — deferred: need terrain + allWays for deck height
+    for (const way of footbridgeWays) {
+      try {
+        const result = this._buildFootbridgeMesh(way, elev, terrainMesh, ways);
+        if (!result) continue;
+        for (const v of result.pos) pos.push(v);
+        for (const v of result.nrm) nrm.push(v);
+        for (const v of result.col) col.push(v);
+        for (const i of result.idx) idx.push(i + indexOffset);
+        indexOffset += result.pos.length / 3;
+        for (const rb of result.railBuffers) allRailBuffers.push(rb);
+      } catch (_) {}
+    }
   
-    // 🏢 BUILDING MESH (SINGLE)
+    // 🏢 BUILDING MESH (SINGLE) — now includes stairs and bridge geometry
     if (idx.length) {
       const geom = new THREE.BufferGeometry();
       geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -809,9 +886,7 @@ export class WorldBuilder {
       const draped = this._drapeTriangles(rawRoadTris, terrainMesh, bvh, elev, DRAPE_BIAS);
       const roadGeom = this._buildGeom(draped.pos, draped.idx, draped.nrm);
 
-      // ✅ BVH so the player can walk on road surfaces
-      try { roadGeom.boundsTree = new MeshBVH(roadGeom); } catch (_) {}
-
+      // Roads are decorative only — no collision
       const mesh = new THREE.Mesh(
         roadGeom,
         new THREE.MeshLambertMaterial({
@@ -823,7 +898,6 @@ export class WorldBuilder {
       );
       mesh.receiveShadow = true;
       this.scene.addObject(mesh);
-      //this.scene.registerCollidable(mesh);
       tris += draped.idx.length / 3;
     }
 
@@ -868,20 +942,10 @@ export class WorldBuilder {
         });
       }
     }
-  
-    // 🚧 rails — processed after terrainMesh exists so _snapY works correctly
-    for (const way of railWays) {
-      try {
-        const railResult = this._buildRailMesh(way, elev, terrainMesh);
-        if (railResult) {
-          this.scene.addObject(railResult);
-          this.scene.registerCollidable(railResult, true);
-          tris += railResult.geometry.index
-            ? railResult.geometry.index.count / 3
-            : 0;
-        }
-      } catch (_) {}
-    }
+
+    // 🛤️ MERGED RAILS — one mesh for OSM rails, staircase handrails, bridge handrails
+    this._flushRailMesh(allRailBuffers);
+    tris += allRailBuffers.reduce((sum, rb) => sum + rb.idx.length / 3, 0);
 
     fetchSatelliteTexture(lat, lng, radiusMeters)
       .then(tex => this.scene.setGroundTexture(tex))
@@ -1608,14 +1672,13 @@ export class WorldBuilder {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // RAIL MESH — continuous tube with diamond cross-section
-  // Handles railing / handrail / guardrail OSM ways.
-  // Cross-section: 4-vertex diamond (square rotated 45°) in the
-  // plane perpendicular to the rail direction at each station.
+  // RAIL BUFFERS — produces raw {pos,nrm,idx,stations} for merging.
+  // Previously returned a THREE.Mesh; now returns raw arrays so all
+  // rails (OSM, staircase handrails, footbridge handrails) can be
+  // flushed as a single merged mesh with one BVH.
   // ═══════════════════════════════════════════════════════════════
 
   _buildRailMesh(way, elev, terrainMesh) {
-    console.log("build rail mesh");
     const coords = way.coords;
     if (!coords || coords.length < 2) return null;
 
@@ -1638,10 +1701,6 @@ export class WorldBuilder {
     });
 
     const n = stations.length;
-    // Diamond local offsets: top, right, bottom, left  (CCW from front)
-    // We'll build a frame at each station and emit quads between adjacent frames.
-    // Frame axes: tangent (T), arbitrary up-ish (U), right (R)
-    // Diamond verts in local frame: top=(0,+H,0), right=(+W,0,0), bot=(0,-H,0), left=(-W,0,0)
 
     const pos = [];
     const nrm = [];
@@ -1659,8 +1718,6 @@ export class WorldBuilder {
       tangents.push({ x: tx / len, y: ty / len, z: tz / len });
     }
 
-    // Build 4 verts per station (diamond cross-section)
-    // right-axis = tangent × worldUp, then re-orthogonalise up
     const worldUp = { x: 0, y: 1, z: 0 };
 
     const cross = (a, b) => ({
@@ -1679,29 +1736,20 @@ export class WorldBuilder {
       const T = tangents[i];
       const s = stations[i];
 
-      // right = T × worldUp; fall back to T × (1,0,0) if nearly parallel
       let R = norm3(cross(T, worldUp));
       if (R.x * R.x + R.y * R.y + R.z * R.z < 0.01) {
         R = norm3(cross(T, { x: 1, y: 0, z: 0 }));
       }
-      // local up = R × T (ensures orthonormal frame)
       const U = norm3(cross(R, T));
 
       rings.push([
-        // top
-        { x: s.x + U.x * HALF_H,  y: s.y + U.y * HALF_H,  z: s.z + U.z * HALF_H  },
-        // right
-        { x: s.x + R.x * HALF_W,  y: s.y + R.y * HALF_W,  z: s.z + R.z * HALF_W  },
-        // bottom
-        { x: s.x - U.x * HALF_H,  y: s.y - U.y * HALF_H,  z: s.z - U.z * HALF_H  },
-        // left
-        { x: s.x - R.x * HALF_W,  y: s.y - R.y * HALF_W,  z: s.z - R.z * HALF_W  },
+        { x: s.x + U.x * HALF_H, y: s.y + U.y * HALF_H, z: s.z + U.z * HALF_H },
+        { x: s.x + R.x * HALF_W, y: s.y + R.y * HALF_W, z: s.z + R.z * HALF_W },
+        { x: s.x - U.x * HALF_H, y: s.y - U.y * HALF_H, z: s.z - U.z * HALF_H },
+        { x: s.x - R.x * HALF_W, y: s.y - R.y * HALF_W, z: s.z - R.z * HALF_W },
       ]);
     }
 
-    // Emit quads between adjacent rings.
-    // Each pair of adjacent ring-verts (a, b) forms one side face: a quad = 2 triangles.
-    // Ring order: 0=top, 1=right, 2=bottom, 3=left
     const SIDES = 4;
 
     for (let i = 0; i < n - 1; i++) {
@@ -1710,14 +1758,11 @@ export class WorldBuilder {
 
       for (let s = 0; s < SIDES; s++) {
         const sNext = (s + 1) % SIDES;
-        // quad corners (CCW from outside)
         const v0 = ringA[s];
         const v1 = ringA[sNext];
         const v2 = ringB[sNext];
         const v3 = ringB[s];
 
-        // Face normal: average of the two vertex side directions
-        // (good enough for a thin tube)
         const midA = { x: (v0.x + v1.x) * 0.5, y: (v0.y + v1.y) * 0.5, z: (v0.z + v1.z) * 0.5 };
         const midS = { x: (ringA[0].x + ringA[2].x) * 0.5, y: (ringA[0].y + ringA[2].y) * 0.5, z: (ringA[0].z + ringA[2].z) * 0.5 };
         const fn   = norm3({ x: midA.x - midS.x, y: midA.y - midS.y, z: midA.z - midS.z });
@@ -1734,7 +1779,7 @@ export class WorldBuilder {
       }
     }
 
-    // End caps (optional — fill first and last ring as 4-triangle fans)
+    // End caps
     const capRing = (ring, inward) => {
       const cx = (ring[0].x + ring[2].x) * 0.5;
       const cy = (ring[0].y + ring[2].y) * 0.5;
@@ -1759,18 +1804,385 @@ export class WorldBuilder {
 
     if (pos.length === 0 || idx.length === 0) return null;
 
+    // Return raw buffers + station positions for merging + path storage
+    return { pos, nrm, idx, stations };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Flush all accumulated rail buffers into one merged collidable mesh.
+  // Also writes centreline paths to scene._railPaths for the grind system.
+  // ─────────────────────────────────────────────────────────────
+  _flushRailMesh(allRailBuffers) {
+    if (!allRailBuffers.length) return;
+
+    const mergedPos = [];
+    const mergedNrm = [];
+    const mergedIdx = [];
+    let offset = 0;
+
+    for (const { pos, nrm, idx, stations } of allRailBuffers) {
+      for (const v of pos) mergedPos.push(v);
+      for (const v of nrm) mergedNrm.push(v);
+      for (const i of idx) mergedIdx.push(i + offset);
+      offset += pos.length / 3;
+
+      // Store centreline in scene for the future rail-grind system
+      if (stations && this.scene._railPaths) {
+        const path = stations.map(s => new THREE.Vector3(s.x, s.y, s.z));
+        this.scene._railPaths.push(path);
+      }
+    }
+
     const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geom.setAttribute('normal',   new THREE.Float32BufferAttribute(nrm, 3));
-    geom.setIndex(idx);
-    try{geom.boundsTree = new MeshBVH(geom);}catch(_){}
-    // Dark iron/steel colour for all rail types
-    const mat = new THREE.MeshLambertMaterial({ color: 0x505560 });
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(mergedPos, 3));
+    geom.setAttribute('normal',   new THREE.Float32BufferAttribute(mergedNrm, 3));
+    geom.setIndex(mergedIdx);
+    try { geom.boundsTree = new MeshBVH(geom); } catch (_) {}
+
+    const mat  = new THREE.MeshLambertMaterial({ color: 0x505560 });
     const mesh = new THREE.Mesh(geom, mat);
     mesh.castShadow    = true;
     mesh.receiveShadow = true;
     mesh.userData.kind = 'rail';
-    return mesh;
+    this.scene.addObject(mesh);
+    this.scene.registerCollidable(mesh, true);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // STAIRCASE MESH
+  // Builds a flat ramp (collision + visual), horizontal step overlays,
+  // and two handrail tubes (one on each side).
+  // All solid geometry is returned as raw {pos,nrm,col,idx} arrays
+  // to be appended directly into the shared buildings buffer.
+  // Rail buffers are returned separately for the merged rail mesh.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildStaircaseMesh(way, elev, terrainMesh) {
+    const coords = way.coords;
+    if (!coords || coords.length < 2) return null;
+
+    const width = parseFloat(way.tags?.width) || 2.0; // metres
+    const hw    = width / 2;
+
+    // Subdivide centreline for slope sampling
+    const centreline = this._subdividePolyline(coords, 1.0);
+    if (centreline.length < 2) return null;
+
+    const colour = new THREE.Color(structurePalette(way.tags));
+    // Step overlays slightly lighter
+    const stepColour = new THREE.Color(colour).multiplyScalar(1.15);
+    stepColour.r = Math.min(1, stepColour.r);
+    stepColour.g = Math.min(1, stepColour.g);
+    stepColour.b = Math.min(1, stepColour.b);
+
+    const pos = [], nrm = [], col = [], idx = [];
+    let offset = 0;
+
+    // ── Helper: push a quad (two CCW triangles) ──────────────────
+    const pushQuad = (v0, v1, v2, v3, nx, ny, nz, c) => {
+      const base = offset;
+      for (const v of [v0, v1, v2, v3]) {
+        pos.push(v.x, v.y, v.z);
+        nrm.push(nx, ny, nz);
+        col.push(c.r, c.g, c.b);
+      }
+      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      offset += 4;
+    };
+
+    // ── Build ramp quads between each station pair ───────────────
+    const n = centreline.length;
+    // Precompute per-station lateral normals and snapped Y values
+    const stationData = centreline.map((p, i) => {
+      const prev = centreline[Math.max(0, i - 1)];
+      const next = centreline[Math.min(n - 1, i + 1)];
+      const dx = next.x - prev.x, dz = next.z - prev.z;
+      const len = Math.sqrt(dx * dx + dz * dz) || 1;
+      const nx = -dz / len, nz = dx / len;
+      const groundY = this._snapY(p.x, p.z, elev, terrainMesh, 0);
+      return { x: p.x, z: p.z, y: groundY, nx, nz };
+    });
+
+    const STEP_INTERVAL = 0.4; // one step quad every ~0.4 m along slope
+    let stepAccum = 0;
+
+    for (let i = 0; i < n - 1; i++) {
+      const s0 = stationData[i];
+      const s1 = stationData[i + 1];
+
+      // Ramp surface quad (flat top, walks on terrain)
+      const tl = { x: s0.x + s0.nx * hw, y: s0.y + 0.02, z: s0.z + s0.nz * hw };
+      const tr = { x: s0.x - s0.nx * hw, y: s0.y + 0.02, z: s0.z - s0.nz * hw };
+      const br = { x: s1.x - s1.nx * hw, y: s1.y + 0.02, z: s1.z - s1.nz * hw };
+      const bl = { x: s1.x + s1.nx * hw, y: s1.y + 0.02, z: s1.z + s1.nz * hw };
+      pushQuad(tl, tr, br, bl, 0, 1, 0, colour);
+
+      // Step overlays — thin horizontal quads rising at each step
+      const segLen = Math.sqrt(
+        (s1.x - s0.x) ** 2 + (s1.z - s0.z) ** 2
+      );
+      stepAccum += segLen;
+
+      if (stepAccum >= STEP_INTERVAL) {
+        stepAccum -= STEP_INTERVAL;
+        const NOSING_H = 0.03; // step nosing thickness
+        const midY = (s0.y + s1.y) / 2 + NOSING_H;
+        const mx   = (s0.x + s1.x) / 2;
+        const mz   = (s0.z + s1.z) / 2;
+        const mnx  = (s0.nx + s1.nx) / 2;
+        const mnz  = (s0.nz + s1.nz) / 2;
+
+        const stl = { x: mx + mnx * hw, y: midY + NOSING_H, z: mz + mnz * hw };
+        const str = { x: mx - mnx * hw, y: midY + NOSING_H, z: mz - mnz * hw };
+        const sbr = { x: mx - mnx * hw, y: midY,            z: mz - mnz * hw };
+        const sbl = { x: mx + mnx * hw, y: midY,            z: mz + mnz * hw };
+        pushQuad(stl, str, sbr, sbl, 0, 1, 0, stepColour);
+      }
+    }
+
+    // ── Handrails: synthetic way objects for _buildRailMesh ──────
+    const RAIL_OFFSET = hw + 0.1;
+    const RAIL_HEIGHT = 0.9;
+
+    const makeHandrailWay = (side) => {
+      const railCoords = stationData.map(s => ({
+        x: s.x + s.nx * side * RAIL_OFFSET,
+        z: s.z + s.nz * side * RAIL_OFFSET,
+      }));
+      // Override Y in stations so rails follow ramp + fixed height
+      return {
+        coords: railCoords,
+        tags:   { height: String(RAIL_HEIGHT) },
+      };
+    };
+
+    const railBuffers = [];
+    for (const side of [1, -1]) {
+      const syntheticWay = makeHandrailWay(side);
+      const rb = this._buildRailMesh(syntheticWay, elev, terrainMesh);
+      if (rb) railBuffers.push(rb);
+    }
+
+    return { pos, nrm, col, idx, railBuffers };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // FOOTBRIDGE MESH
+  // Builds a raised deck with low side walls and two handrail tubes.
+  // Deck height is determined by:
+  //   1. The maximum (min terrain Y along way + 4.5m), or
+  //   2. The max Y of any crossing way + 4.5m, whichever is higher.
+  // Returns { pos,nrm,col,idx,railBuffers } for merging.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildFootbridgeMesh(way, elev, terrainMesh, allWays) {
+    const coords = way.coords;
+    if (!coords || coords.length < 2) return null;
+
+    const width    = parseFloat(way.tags?.width) || 3.0;
+    const hw       = width / 2;
+    const wallH    = 0.9;  // side wall height above deck
+    const deckBias = 4.5;  // minimum clearance above terrain
+
+    // Subdivide centreline for sampling
+    const centreline = this._subdividePolyline(coords, 2.0);
+    if (centreline.length < 2) return null;
+    const n = centreline.length;
+
+    // ── Determine deck height ─────────────────────────────────────
+    // Sample terrain Y every 2 m along the centreline
+    let minTerrainY = Infinity;
+    for (const p of centreline) {
+      const ty = this._snapY(p.x, p.z, elev, terrainMesh, 0);
+      if (ty < minTerrainY) minTerrainY = ty;
+    }
+
+    let deckY = minTerrainY + deckBias;
+
+    // Also check if any crossing way pushes the deck higher
+    if (allWays) {
+      for (const other of allWays) {
+        if (other === way || !other.coords || other.coords.length < 2) continue;
+        if (other.kind !== 'road' && other.kind !== 'footbridge') continue;
+        // Check if any coord from the other way falls within the bridge XZ bounding box
+        const minX = Math.min(...centreline.map(p => p.x)) - hw;
+        const maxX = Math.max(...centreline.map(p => p.x)) + hw;
+        const minZ = Math.min(...centreline.map(p => p.z)) - hw;
+        const maxZ = Math.max(...centreline.map(p => p.z)) + hw;
+        const overlaps = other.coords.some(
+          p => p.x >= minX && p.x <= maxX && p.z >= minZ && p.z <= maxZ
+        );
+        if (overlaps) {
+          // Use the terrain Y of the crossing way's midpoint + clearance
+          const mid = other.coords[Math.floor(other.coords.length / 2)];
+          const crossY = this._snapY(mid.x, mid.z, elev, terrainMesh, 0);
+          deckY = Math.max(deckY, crossY + deckBias);
+        }
+      }
+    }
+
+    const colour     = new THREE.Color(structurePalette(way.tags));
+    const wallColour = new THREE.Color(colour).multiplyScalar(0.85);
+
+    const pos = [], nrm = [], col = [], idx = [];
+    let offset = 0;
+
+    // ── Helper: push a quad ──────────────────────────────────────
+    const pushQuad = (v0, v1, v2, v3, nx, ny, nz, c) => {
+      const base = offset;
+      for (const v of [v0, v1, v2, v3]) {
+        pos.push(v.x, v.y, v.z);
+        nrm.push(nx, ny, nz);
+        col.push(c.r, c.g, c.b);
+      }
+      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      offset += 4;
+    };
+
+    // Precompute per-station lateral directions (constant Y = deckY)
+    const stationData = centreline.map((p, i) => {
+      const prev = centreline[Math.max(0, i - 1)];
+      const next = centreline[Math.min(n - 1, i + 1)];
+      const dx = next.x - prev.x, dz = next.z - prev.z;
+      const len = Math.sqrt(dx * dx + dz * dz) || 1;
+      const lx = -dz / len, lz = dx / len; // lateral left
+      return { x: p.x, y: deckY, z: p.z, lx, lz };
+    });
+
+    for (let i = 0; i < n - 1; i++) {
+      const s0 = stationData[i];
+      const s1 = stationData[i + 1];
+
+      // ── Deck surface ─────────────────────────────────────────
+      const dtl = { x: s0.x + s0.lx * hw, y: deckY, z: s0.z + s0.lz * hw };
+      const dtr = { x: s0.x - s0.lx * hw, y: deckY, z: s0.z - s0.lz * hw };
+      const dbr = { x: s1.x - s1.lx * hw, y: deckY, z: s1.z - s1.lz * hw };
+      const dbl = { x: s1.x + s1.lx * hw, y: deckY, z: s1.z + s1.lz * hw };
+      pushQuad(dtl, dtr, dbr, dbl, 0, 1, 0, colour);
+
+      // ── Left side wall (outer face) ──────────────────────────
+      const wl_bl = { x: s0.x + s0.lx * hw, y: deckY,         z: s0.z + s0.lz * hw };
+      const wl_tl = { x: s0.x + s0.lx * hw, y: deckY + wallH, z: s0.z + s0.lz * hw };
+      const wl_tr = { x: s1.x + s1.lx * hw, y: deckY + wallH, z: s1.z + s1.lz * hw };
+      const wl_br = { x: s1.x + s1.lx * hw, y: deckY,         z: s1.z + s1.lz * hw };
+      pushQuad(wl_bl, wl_tl, wl_tr, wl_br, s0.lx, 0, s0.lz, wallColour);
+
+      // ── Right side wall (outer face) ─────────────────────────
+      const wr_bl = { x: s1.x - s1.lx * hw, y: deckY,         z: s1.z - s1.lz * hw };
+      const wr_tl = { x: s1.x - s1.lx * hw, y: deckY + wallH, z: s1.z - s1.lz * hw };
+      const wr_tr = { x: s0.x - s0.lx * hw, y: deckY + wallH, z: s0.z - s0.lz * hw };
+      const wr_br = { x: s0.x - s0.lx * hw, y: deckY,         z: s0.z - s0.lz * hw };
+      pushQuad(wr_bl, wr_tl, wr_tr, wr_br, -s0.lx, 0, -s0.lz, wallColour);
+    }
+
+    // ── Handrails: on top of each side wall at deckY + wallH ────
+    const RAIL_ABOVE_WALL = 0.0; // rail sits exactly at wall top
+
+    const makeHandrailWay = (side) => {
+      // Explicit Y stations — rail sits at fixed deckY + wallH
+      const railCoords = stationData.map(s => ({
+        x: s.x + s.lx * side * hw,
+        z: s.z + s.lz * side * hw,
+      }));
+      return {
+        coords: railCoords,
+        tags:   { height: String(wallH + RAIL_ABOVE_WALL) },
+      };
+    };
+
+    // For footbridge handrails we need a custom _buildRailMesh that
+    // ignores terrain snap and uses a fixed Y instead. We build a
+    // custom variant inline using the stored deckY.
+    const railBuffers = [];
+    const HALF_W = 0.06, HALF_H = 0.06;
+
+    const cross = (a, b) => ({
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x,
+    });
+    const norm3 = v => {
+      const l = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z) || 1;
+      return { x: v.x / l, y: v.y / l, z: v.z / l };
+    };
+    const worldUp = { x: 0, y: 1, z: 0 };
+
+    for (const side of [1, -1]) {
+      // Build fixed-height stations for the rail
+      const railY = deckY + wallH + 0.03; // sit slightly above wall top
+      const rStations = stationData.map(s => ({
+        x: s.x + s.lx * side * hw,
+        y: railY,
+        z: s.z + s.lz * side * hw,
+      }));
+      const rn = rStations.length;
+      if (rn < 2) continue;
+
+      const rPos = [], rNrm = [], rIdx = [];
+
+      const tangents = rStations.map((_, i) => {
+        const prev = rStations[Math.max(0, i - 1)];
+        const next = rStations[Math.min(rn - 1, i + 1)];
+        const tx = next.x - prev.x, ty = next.y - prev.y, tz = next.z - prev.z;
+        const len = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
+        return { x: tx / len, y: ty / len, z: tz / len };
+      });
+
+      const rings = rStations.map((s, i) => {
+        const T = tangents[i];
+        let R = norm3(cross(T, worldUp));
+        if (R.x * R.x + R.y * R.y + R.z * R.z < 0.01)
+          R = norm3(cross(T, { x: 1, y: 0, z: 0 }));
+        const U = norm3(cross(R, T));
+        return [
+          { x: s.x + U.x * HALF_H, y: s.y + U.y * HALF_H, z: s.z + U.z * HALF_H },
+          { x: s.x + R.x * HALF_W, y: s.y + R.y * HALF_W, z: s.z + R.z * HALF_W },
+          { x: s.x - U.x * HALF_H, y: s.y - U.y * HALF_H, z: s.z - U.z * HALF_H },
+          { x: s.x - R.x * HALF_W, y: s.y - R.y * HALF_W, z: s.z - R.z * HALF_W },
+        ];
+      });
+
+      const SIDES = 4;
+      for (let i = 0; i < rn - 1; i++) {
+        const rA = rings[i], rB = rings[i + 1];
+        for (let s = 0; s < SIDES; s++) {
+          const sN  = (s + 1) % SIDES;
+          const v0  = rA[s], v1 = rA[sN], v2 = rB[sN], v3 = rB[s];
+          const midA = { x: (v0.x + v1.x) * 0.5, y: (v0.y + v1.y) * 0.5, z: (v0.z + v1.z) * 0.5 };
+          const midS = { x: (rA[0].x + rA[2].x) * 0.5, y: (rA[0].y + rA[2].y) * 0.5, z: (rA[0].z + rA[2].z) * 0.5 };
+          const fn   = norm3({ x: midA.x - midS.x, y: midA.y - midS.y, z: midA.z - midS.z });
+          const base = rPos.length / 3;
+          rPos.push(v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z);
+          for (let k = 0; k < 4; k++) rNrm.push(fn.x, fn.y, fn.z);
+          rIdx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+        }
+      }
+
+      const capRing = (ring, inward) => {
+        const cx = (ring[0].x + ring[2].x) * 0.5;
+        const cy = (ring[0].y + ring[2].y) * 0.5;
+        const cz = (ring[0].z + ring[2].z) * 0.5;
+        const base = rPos.length / 3;
+        rPos.push(cx, cy, cz);
+        rNrm.push(0, inward ? -1 : 1, 0);
+        for (let k = 0; k < SIDES; k++) {
+          rPos.push(rings[inward ? 0 : rn - 1][k].x, rings[inward ? 0 : rn - 1][k].y, rings[inward ? 0 : rn - 1][k].z);
+          rNrm.push(0, inward ? -1 : 1, 0);
+        }
+        for (let k = 0; k < SIDES; k++) {
+          const a = base + 1 + k, b = base + 1 + (k + 1) % SIDES;
+          if (inward) rIdx.push(base, b, a);
+          else        rIdx.push(base, a, b);
+        }
+      };
+      capRing(rings[0], true);
+      capRing(rings[rn - 1], false);
+
+      if (rPos.length > 0)
+        railBuffers.push({ pos: rPos, nrm: rNrm, idx: rIdx, stations: rStations });
+    }
+
+    return { pos, nrm, col, idx, railBuffers };
   }
 
   _roadHalfWidth(highway) {
