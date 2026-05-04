@@ -1,0 +1,274 @@
+WIP
+
+character movement
+Need to plan gameplay, how stats affect values, mid air jumps, might need to rework wall jumps, rail grinding if possible to get rails from map data.
+
+map
+
+
+settings menu
+- clearing map cache?
+
+misc
+any way to reduce the perspective camera distance while keeping the sun moon and sky visible.
+
+linux server command:
+node /home/oem/Projects/Web/ATSim/maprender/Server/proxy.js
+
+
+
+=============GENERATED AREAS PROMPT==============================
+
+I have a Three.js city builder that places buildings, roads, and parks from OSM data. After placement, I need to procedurally populate two types of areas with street furniture. All generated geometry must be collidable via `scene.registerCollidable(mesh)` after `geometry.boundsTree = new MeshBVH(geometry)` is assigned. Grindable elements are additionally passed to `_buildRailMesh()` as synthetic way objects. Non-grindable collidables are registered normally but not passed to `_buildRailMesh`.
+
+Existing context:
+
+* `elev(x, z)` returns terrain Y relative to map centre
+* `_snapY(x, z, elev, terrainMesh, bias)` raycasts for exact surface Y
+* Buildings use `MeshToonMaterial` with `vertexColors: true`, colours from `buildingPalette(tags)`
+* A `structurePalette(tags)` function reads material tags and falls back to `#909090`
+* Placed building footprints are available as `placedFootprints` array of `{ verts }` polygon arrays in XZ
+* The map is divided into a grid; `radiusMeters` defines the half-extent; `lat`/`lng` are the map centre
+
+Tasks:
+
+1. Write `_findEmptyCells(placedFootprints, roadWays, radiusMeters, cellSize = 40)`. Divide the `radiusMeters × radiusMeters` area into a grid of `cellSize` cells. Mark a cell occupied if any building footprint vertex or road coord falls within it. Return the array of empty cell centres `{ x, z }`.
+2. Write `_buildConstructionSite(cx, cz, elev, terrainMesh, seed)`. Given a cell centre and a numeric seed, use a seeded pseudo-random function (LCG or similar, no external lib) to place: 2–4 concrete barrier blocks (box geometry ~2m×0.8m×0.4m, grey, non-grindable collidable), 1–3 scaffolding tube runs (thin box geometry ~4–8m long, 0.1m diameter, at 0.4m and 1.2m height, grindable), and 1 optional tall scaffolding vertical post (non-grindable). All placed relative to `(cx, cz)` with Y from `_snapY`. Return a `THREE.Group`.
+3. Write `_buildParkFurniture(parkWay, elev, terrainMesh, seed)`. Given a park polygon way, scatter inside it: bench-style ledges (box geometry ~1.8m×0.45m×0.4m, grindable), low walls (box ~3–6m×0.6m×0.3m, grindable), bollard lines (row of 0.15m diameter × 0.9m cylinders spaced 1.2m apart, non-grindable). Return a `THREE.Group`.
+4. Write `_buildSkatepark(cx, cz, angle, elev, terrainMesh, seed)`. Given a centre position, orientation angle, and numeric seed, use the same seeded pseudo-random function to place: a flat concrete pad (earcut-triangulated rectangular polygon at terrain level, toon-material collidable, added to the shared buildings buffer rather than a separate mesh), 1–2 quarter-pipes (parametric swept-arc geometry — a profile of flat base → curved transition → vertical lip extruded along a width, collidable, toon material, concrete grey via `structurePalette`), 1 kicker ramp (two angled quads meeting at a ridge, collidable, same material), and 2–4 grindable rails constructed as synthetic way objects passed to `_buildRailMesh()` (positioned along the pad edges and atop ramp lips). All elements are placed relative to `(cx, cz)` with Y from `_snapY`, and rotated by `angle` around the vertical axis. The method appends solid geometry directly into the caller's `pos/nrm/col/idx` buffer arrays and pushes rail buffers into `allRailBuffers` before `_flushRailMesh` is called, so all skate park geometry shares the single merged collidable mesh with buildings. In `build()`, after `_findEmptyCells` is called, designate a subset of empty cells as skate park locations (e.g. 15% probability, seeded, non-overlapping with construction sites), call `_buildSkatepark` for each, and pass the resulting rail buffers into `allRailBuffers`.
+5. In `build()`, after all ways are processed and terrain is built: call `_findEmptyCells` and for each empty cell within `radiusMeters * 0.8`, with 30% probability (seeded by cell position), generate a construction site; for each park/grass way, generate park furniture. Add all groups via `scene.addObject()`.
+
+
+
+
+===============VISUAL FIDELITY PHASE PROMPTS===========================
+
+
+That’s a smart way to approach it—treat each phase as a focused problem and iterate cleanly.
+
+Below is a **phase-by-phase prompt toolkit** you can reuse with me (or another model) to progressively upgrade your pipeline without breaking what already works.
+
+---
+
+# 🧭 Phase 1 — Semantic Filtering (Fix the “wrong windows” problem)
+
+### Goal
+
+Ensure only valid building surfaces receive façade treatment.
+
+### Prompt
+
+> I have OSM-derived geometry in Three.js. Each object includes OSM tags (e.g. `building=*`, `man_made=*`, etc.).
+>
+> Help me design a filtering system that classifies geometry into:
+>
+> * valid building walls
+> * roofs
+> * non-building structures (towers, statues, monuments)
+>
+> Include:
+>
+> * specific OSM tags to include/exclude
+> * geometry heuristics (normals, footprint size, height)
+> * example pseudo-code for classification
+
+---
+
+# 🧱 Phase 2 — Building Archetypes (Replace per-window logic)
+
+### Goal
+
+Move from “placing windows” → “assigning façade types”
+
+### Prompt
+
+> Based on filtered OSM building data, help me design a system that assigns each building (or face) a façade archetype (e.g. residential, office, industrial, blank, stylized).
+>
+> Requirements:
+>
+> * use OSM tags when available
+> * fall back to heuristics when tags are missing
+> * include randomness for variation (seeded)
+> * avoid repetitive patterns across nearby buildings
+>
+> Provide:
+>
+> * a rule system
+> * data structure for archetypes
+> * example assignment logic
+
+---
+
+# 🎨 Phase 3 — Texture Atlas Design
+
+### Goal
+
+Introduce textures **without increasing draw calls**
+
+### Prompt
+
+> I want to replace vertex colors with a texture atlas while keeping a single merged mesh and material in Three.js.
+>
+> Help me design:
+>
+> * a façade texture atlas (what textures to include and how to organize them)
+> * UV region layout strategy
+> * how to map building archetypes to atlas regions
+>
+> Constraints:
+>
+> * must remain one material / one draw call
+> * should support variation (not repetitive)
+>
+> Include diagrams or clear coordinate examples if possible.
+
+---
+
+# 🧩 Phase 4 — UV Generation for Extruded Geometry
+
+### Goal
+
+Make your merged mesh compatible with textures
+
+### Prompt
+
+> I generate extruded building meshes from OSM footprints.
+>
+> Help me implement UV mapping for:
+>
+> * vertical walls (tileable façades)
+> * roofs (different mapping strategy)
+>
+> Requirements:
+>
+> * works on merged geometry
+> * avoids stretching
+> * supports tiling (repeat textures vertically by height)
+>
+> Provide:
+>
+> * formulas for UV calculation
+> * pseudo-code or JavaScript examples
+> * how to handle different building heights cleanly
+
+---
+
+# ⚡ Phase 5 — Shader Integration (Atlas + Variation)
+
+### Goal
+
+Make textures look less repetitive without more draw calls
+
+### Prompt
+
+> I am using a texture atlas in Three.js with a single material.
+>
+> Help me write a shader (or material setup) that:
+>
+> * selects atlas regions per face or vertex
+> * supports UV offsets/scaling
+> * uses vertex color (or attributes) for variation (tint, brightness, etc.)
+>
+> Include:
+>
+> * GLSL shader snippets or Three.js material setup
+> * how to pass per-face/vertex data into the shader
+
+---
+
+# 🏙️ Phase 6 — Variation & Anti-Repetition
+
+### Goal
+
+Break visual repetition at scale
+
+### Prompt
+
+> My buildings now use a texture atlas, but repetition is noticeable.
+>
+> Help me introduce variation using:
+>
+> * UV offsets / flipping
+> * per-building random seeds
+> * vertex color tinting
+> * multiple atlas variants
+>
+> Constraints:
+>
+> * still one mesh
+> * still one material
+>
+> Provide:
+>
+> * lightweight techniques suitable for real-time performance
+> * examples of how to encode variation in geometry attributes
+
+---
+
+# 🌆 Phase 7 — Optional: 3D Tiles Visual Layer
+
+### Goal
+
+Add background detail without breaking gameplay
+
+### Prompt
+
+> I want to layer Cesium 3D Tiles (e.g. from Cesium ion) into my Three.js scene as a visual-only layer.
+>
+> Help me:
+>
+> * integrate tiles alongside my existing mesh
+> * avoid z-fighting
+> * ensure they don’t interfere with collision
+> * manage performance and LOD
+>
+> Include:
+>
+> * rendering order strategies
+> * depth bias / offset techniques
+> * scene structure recommendations
+
+---
+
+# 🧪 Phase 8 — Performance Validation
+
+### Goal
+
+Make sure nothing regresses
+
+### Prompt
+
+> I upgraded my pipeline from vertex colors to a texture atlas in Three.js.
+>
+> Help me evaluate performance:
+>
+> * draw calls
+> * memory usage
+> * vertex count impact (UVs, attributes)
+>
+> Provide:
+>
+> * benchmarks or expected ranges
+> * profiling strategies
+> * optimization tips if performance drops
+
+---
+
+# 🧭 How to Use This
+
+* Treat each phase as **independent**
+* Don’t move on until:
+
+  * visuals improve
+  * performance holds
+* You can loop back and refine earlier phases
+
+---
+
+## 📌 Final guiding principle
+
+> You’re not trying to reconstruct reality—you’re building a **readable, performant, stylized traversal space**.
+
+---
+
+If you want, I can walk through **Phase 1 with your actual data structures** and turn it into drop-in code—that’s usually where the biggest immediate improvement happens.
