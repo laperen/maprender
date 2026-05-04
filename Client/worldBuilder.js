@@ -755,7 +755,7 @@ export class WorldBuilder {
           indexOffset += positions.length / 3;
   
           buildingFootprints.push({ verts: result.verts, baseY: result.baseY });
-          placedFootprints.push({ verts: result.verts });
+          placedFootprints.push({ verts: result.verts, baseY: result.baseY, topY: result.topY });
   
           if (result.topY - result.baseY >= 30) {
             tallBuildings.push({ verts: result.verts, topY: result.topY });
@@ -943,10 +943,22 @@ export class WorldBuilder {
       }
     }
 
-    // 🛤️ MERGED RAILS — one mesh for OSM rails, staircase handrails, bridge handrails
+    // 🏠 ROOF RAILS — perimeter rails on rooftops of buildings ≥ 3 m tall
+    const roofRailBuffers = this._buildRoofRails(placedFootprints, elev, terrainMesh);
+    for (const rb of roofRailBuffers) allRailBuffers.push(rb);
+
+    // 🌉 ROAD EDGE RAILS — guard rails on bridge road segments with significant drops
+    const roadEdgeRailBuffers = this._buildRoadEdgeRails(roadWays, elev, terrainMesh);
+    for (const rb of roadEdgeRailBuffers) allRailBuffers.push(rb);
+
+    // ✦ INTERSECTION RAILS — short decorative spurs at road intersections
+    const intersectionRailBuffers = this._buildIntersectionRails(roadWays, elev, terrainMesh);
+    for (const rb of intersectionRailBuffers) allRailBuffers.push(rb);
+
+    // 🛤️ MERGED RAILS — one mesh for OSM rails, staircase handrails, bridge handrails,
+    //                    roof rails, road edge rails, and intersection spurs
     this._flushRailMesh(allRailBuffers);
     tris += allRailBuffers.reduce((sum, rb) => sum + rb.idx.length / 3, 0);
-
     fetchSatelliteTexture(lat, lng, radiusMeters)
       .then(tex => this.scene.setGroundTexture(tex))
       .catch(() => {});
@@ -1821,6 +1833,8 @@ export class WorldBuilder {
     let offset = 0;
 
     for (const { pos, nrm, idx, stations } of allRailBuffers) {
+      // Discard any buffer that contains NaN — better to skip than to poison the whole mesh
+      if (pos.some(v => !Number.isFinite(v))) continue;
       for (const v of pos) mergedPos.push(v);
       for (const v of nrm) mergedNrm.push(v);
       for (const i of idx) mergedIdx.push(i + offset);
@@ -2183,6 +2197,351 @@ export class WorldBuilder {
     }
 
     return { pos, nrm, col, idx, railBuffers };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ROOF RAILS — diamond-tube rails along every roof-polygon edge
+  // for buildings taller than 3 m.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildRoofRails(placedFootprints, elev, terrainMesh) {
+    const MIN_EDGE_LEN = 2.0;   // metres — skip shorter edges
+    const RAIL_ABOVE   = 0.05;  // metres above topY
+
+    const buffers = [];
+
+    for (const fp of placedFootprints) {
+      const { verts, baseY, topY } = fp;
+      if (!verts || verts.length < 2) continue;
+      if ((topY - baseY) < 3) continue;
+
+      const railY = topY + RAIL_ABOVE;
+      const n = verts.length;
+
+      for (let i = 0; i < n; i++) {
+        const a = verts[i];
+        const b = verts[(i + 1) % n];
+
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const edgeLen = Math.sqrt(dx * dx + dz * dz);
+        if (edgeLen < MIN_EDGE_LEN) continue;
+
+        const syntheticWay = {
+          coords: [
+            { x: a.x, z: a.z },
+            { x: b.x, z: b.z },
+          ],
+          tags: { height: String(railY) },
+        };
+
+        // Override _buildRailMesh's terrain snap — use fixed railY.
+        // We build a minimal inline buffer for a single-segment rail.
+        const rb = this._buildFixedYRailMesh(syntheticWay.coords, railY);
+        if (rb) buffers.push(rb);
+      }
+    }
+
+    return buffers;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ROAD EDGE RAILS — guard rails on bridge road segments where
+  // terrain drops more than 1.5 m to either side.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildRoadEdgeRails(roadWays, elev, terrainMesh) {
+    const DROP_THRESHOLD = 1.5;  // metres
+    const LATERAL_PROBE  = 0.5;  // metres past road edge to sample drop
+    const RAIL_HEIGHT    = 0.9;  // metres above road surface
+
+    const buffers = [];
+
+    for (const way of roadWays) {
+      if (way.tags?.bridge !== 'yes') continue;
+      const coords = way.coords;
+      if (!coords || coords.length < 2) continue;
+
+      const hw = this._roadHalfWidth(way.tags.highway);
+      const probeDist = hw + LATERAL_PROBE;
+
+      const centreline = this._subdividePolyline(coords, 2.0);
+      if (centreline.length < 2) continue;
+
+      const leftCoords  = [];
+      const rightCoords = [];
+
+      for (let i = 0; i < centreline.length; i++) {
+        const p    = centreline[i];
+        const prev = centreline[Math.max(0, i - 1)];
+        const next = centreline[Math.min(centreline.length - 1, i + 1)];
+        const dx   = next.x - prev.x, dz = next.z - prev.z;
+        const len  = Math.sqrt(dx * dx + dz * dz) || 1;
+        const nx   = -dz / len, nz = dx / len;
+
+        const roadY = this._snapY(p.x, p.z, elev, terrainMesh, 0);
+
+        const lx = p.x + nx * probeDist, lz = p.z + nz * probeDist;
+        const rx = p.x - nx * probeDist, rz = p.z - nz * probeDist;
+
+        const leftGroundY  = this._snapY(lx, lz, elev, terrainMesh, 0);
+        const rightGroundY = this._snapY(rx, rz, elev, terrainMesh, 0);
+
+        const leftDrop  = roadY - leftGroundY;
+        const rightDrop = roadY - rightGroundY;
+
+        if (leftDrop > DROP_THRESHOLD) {
+          leftCoords.push({ x: p.x + nx * hw, z: p.z + nz * hw, railY: roadY + RAIL_HEIGHT });
+        }
+        if (rightDrop > DROP_THRESHOLD) {
+          rightCoords.push({ x: p.x - nx * hw, z: p.z - nz * hw, railY: roadY + RAIL_HEIGHT });
+        }
+      }
+
+      // Build rail segments for each continuous run on left/right
+      const buildEdgeRun = (runCoords) => {
+        if (runCoords.length < 2) return;
+        const railY = runCoords.reduce((s, p) => s + p.railY, 0) / runCoords.length;
+        const coordList = runCoords.map(p => ({ x: p.x, z: p.z }));
+        const rb = this._buildFixedYRailMesh(coordList, railY);
+        if (rb) buffers.push(rb);
+      };
+
+      buildEdgeRun(leftCoords);
+      buildEdgeRun(rightCoords);
+    }
+
+    return buffers;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // INTERSECTION RAILS — short decorative rail spurs radiating from
+  // road intersections (shared endpoints within 1 m).
+  // Placement is seeded deterministically from intersection coords.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildIntersectionRails(roadWays, elev, terrainMesh) {
+    const SNAP_DIST  = 1.0;   // metres — endpoints within this distance merge
+    const SPUR_MIN   = 4.0;   // metres — minimum spur length
+    const SPUR_MAX   = 8.0;   // metres — maximum spur length
+    const RAIL_ABOVE = 0.05;  // metres above terrain
+
+    const buffers = [];
+
+    // ── Collect all way endpoints ─────────────────────────────────
+    const endpoints = []; // { x, z, wayIdx, endIdx (0=start,1=end) }
+    for (let wi = 0; wi < roadWays.length; wi++) {
+      const coords = roadWays[wi].coords;
+      if (!coords || coords.length < 2) continue;
+      endpoints.push({ x: coords[0].x,                       z: coords[0].z,                       wi, end: 0 });
+      endpoints.push({ x: coords[coords.length - 1].x,       z: coords[coords.length - 1].z,       wi, end: 1 });
+    }
+
+    // ── Find clusters of endpoints within SNAP_DIST ───────────────
+    const visited = new Uint8Array(endpoints.length);
+    const intersections = [];
+
+    for (let i = 0; i < endpoints.length; i++) {
+      if (visited[i]) continue;
+      const cluster = [i];
+      visited[i] = 1;
+      for (let j = i + 1; j < endpoints.length; j++) {
+        if (visited[j]) continue;
+        const dx = endpoints[j].x - endpoints[i].x;
+        const dz = endpoints[j].z - endpoints[i].z;
+        if (dx * dx + dz * dz <= SNAP_DIST * SNAP_DIST) {
+          cluster.push(j);
+          visited[j] = 1;
+        }
+      }
+      // Only treat as intersection if 3+ endpoint references (i.e. 2+ distinct ways)
+      const uniqueWays = new Set(cluster.map(k => endpoints[k].wi));
+      if (uniqueWays.size >= 2) {
+        const cx = cluster.reduce((s, k) => s + endpoints[k].x, 0) / cluster.length;
+        const cz = cluster.reduce((s, k) => s + endpoints[k].z, 0) / cluster.length;
+        intersections.push({ cx, cz, cluster });
+      }
+    }
+
+    // ── Deterministic hash from position ─────────────────────────
+    const hash = (x, z) => {
+      let h = (Math.round(x * 100) * 1619 + Math.round(z * 100) * 31337) >>> 0;
+      h ^= h >>> 13;
+      h = (Math.imul(h, 0x3d6b3b59) >>> 0);
+      h ^= h >>> 16;
+      return (h >>> 0) / 0xffffffff;
+    };
+
+    // ── Generate spurs ────────────────────────────────────────────
+    for (const { cx, cz, cluster } of intersections) {
+      const baseY = this._snapY(cx, cz, elev, terrainMesh, RAIL_ABOVE);
+
+      // Collect road directions leaving this intersection
+      const roadDirs = [];
+      for (const k of cluster) {
+        const ep = endpoints[k];
+        const coords = roadWays[ep.wi].coords;
+        if (!coords || coords.length < 2) continue;
+        // Direction outward from this endpoint
+        let dx, dz;
+        if (ep.end === 0) {
+          dx = coords[0].x - coords[1].x;
+          dz = coords[0].z - coords[1].z;
+        } else {
+          const last = coords.length - 1;
+          dx = coords[last].x - coords[last - 1].x;
+          dz = coords[last].z - coords[last - 1].z;
+        }
+        const len = Math.sqrt(dx * dx + dz * dz) || 1;
+        roadDirs.push({ dx: dx / len, dz: dz / len });
+      }
+
+      // 1–3 spurs, deterministically chosen between road directions
+      const h0 = hash(cx, cz);
+      const spurCount = 1 + Math.floor(h0 * 3); // 1, 2, or 3
+      const angleOffsets = [0.52, -0.52, 1.04]; // ~30° and ~60°
+
+      for (let s = 0; s < spurCount && s < roadDirs.length; s++) {
+        const baseDir = roadDirs[s % roadDirs.length];
+        const angleOff = angleOffsets[s % angleOffsets.length];
+        const hs = hash(cx + s * 17.3, cz + s * 13.7);
+        const spurLen = SPUR_MIN + hs * (SPUR_MAX - SPUR_MIN);
+
+        const cosA = Math.cos(angleOff), sinA = Math.sin(angleOff);
+        const dirX = baseDir.dx * cosA - baseDir.dz * sinA;
+        const dirZ = baseDir.dx * sinA + baseDir.dz * cosA;
+
+        const endX = cx + dirX * spurLen;
+        const endZ = cz + dirZ * spurLen;
+        const endY = this._snapY(endX, endZ, elev, terrainMesh, RAIL_ABOVE);
+
+        const avgY = (baseY + endY) / 2;
+        const rb = this._buildFixedYRailMesh(
+          [{ x: cx, z: cz }, { x: endX, z: endZ }],
+          avgY
+        );
+        if (rb) buffers.push(rb);
+      }
+    }
+
+    return buffers;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // FIXED-Y RAIL MESH — like _buildRailMesh but ignores terrain snap;
+  // all stations are placed at the provided fixed Y value.
+  // Used by roof rails, road edge rails, and intersection spurs.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildFixedYRailMesh(coords, fixedY) {
+    if (!coords || coords.length < 2) return null;
+    if (!Number.isFinite(fixedY)) return null;
+
+    const HALF_W = 0.06;
+    const HALF_H = 0.06;
+
+    const centreline = this._subdividePolyline(coords, 2.0);
+    if (centreline.length < 2) return null;
+
+    const n = centreline.length;
+    const stations = centreline.map(p => ({ x: p.x, y: fixedY, z: p.z }));
+
+    const pos = [], nrm = [], idx = [];
+
+    const cross3 = (a, b) => ({
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x,
+    });
+    const lenSq3 = v => v.x * v.x + v.y * v.y + v.z * v.z;
+    const norm3 = v => {
+      const l = Math.sqrt(lenSq3(v)) || 1;
+      return { x: v.x / l, y: v.y / l, z: v.z / l };
+    };
+    const worldUp = { x: 0, y: 1, z: 0 };
+    // Fallback axes for degenerate tangents
+    const FALLBACK_AXES = [
+      { x: 0, y: 1, z: 0 },
+      { x: 1, y: 0, z: 0 },
+      { x: 0, y: 0, z: 1 },
+    ];
+
+    const tangents = stations.map((_, i) => {
+      const prev = stations[Math.max(0, i - 1)];
+      const next = stations[Math.min(n - 1, i + 1)];
+      const tx = next.x - prev.x, ty = next.y - prev.y, tz = next.z - prev.z;
+      const len = Math.sqrt(tx * tx + ty * ty + tz * tz);
+      if (len < 1e-9) return { x: 0, y: 0, z: 1 }; // degenerate — use Z
+      return { x: tx / len, y: ty / len, z: tz / len };
+    });
+
+    const rings = stations.map((s, i) => {
+      const T = tangents[i];
+      // Find a non-degenerate right vector by trying multiple fallback axes
+      let R = { x: 0, y: 0, z: 0 };
+      for (const axis of FALLBACK_AXES) {
+        const candidate = cross3(T, axis);
+        if (lenSq3(candidate) > 1e-6) { R = norm3(candidate); break; }
+      }
+      // If all axes degenerate (should never happen), use (1,0,0)
+      if (lenSq3(R) < 1e-6) R = { x: 1, y: 0, z: 0 };
+      const U = norm3(cross3(R, T));
+      return [
+        { x: s.x + U.x * HALF_H, y: s.y + U.y * HALF_H, z: s.z + U.z * HALF_H },
+        { x: s.x + R.x * HALF_W, y: s.y + R.y * HALF_W, z: s.z + R.z * HALF_W },
+        { x: s.x - U.x * HALF_H, y: s.y - U.y * HALF_H, z: s.z - U.z * HALF_H },
+        { x: s.x - R.x * HALF_W, y: s.y - R.y * HALF_W, z: s.z - R.z * HALF_W },
+      ];
+    });
+
+    const SIDES = 4;
+
+    for (let i = 0; i < n - 1; i++) {
+      const rA = rings[i], rB = rings[i + 1];
+      for (let s = 0; s < SIDES; s++) {
+        const sN  = (s + 1) % SIDES;
+        const v0  = rA[s], v1 = rA[sN], v2 = rB[sN], v3 = rB[s];
+        const midA = { x: (v0.x + v1.x) * 0.5, y: (v0.y + v1.y) * 0.5, z: (v0.z + v1.z) * 0.5 };
+        const midS = { x: (rA[0].x + rA[2].x) * 0.5, y: (rA[0].y + rA[2].y) * 0.5, z: (rA[0].z + rA[2].z) * 0.5 };
+        const diff = { x: midA.x - midS.x, y: midA.y - midS.y, z: midA.z - midS.z };
+        const fn   = lenSq3(diff) > 1e-12 ? norm3(diff) : { x: 0, y: 1, z: 0 };
+        // Validate before pushing — skip any face that produces NaN
+        const allFinite = [v0, v1, v2, v3].every(
+          v => Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)
+        );
+        if (!allFinite) continue;
+        const base = pos.length / 3;
+        pos.push(v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z, v3.x, v3.y, v3.z);
+        for (let k = 0; k < 4; k++) nrm.push(fn.x, fn.y, fn.z);
+        idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      }
+    }
+
+    const capRing = (ring, inward) => {
+      const cx = (ring[0].x + ring[2].x) * 0.5;
+      const cy = (ring[0].y + ring[2].y) * 0.5;
+      const cz = (ring[0].z + ring[2].z) * 0.5;
+      if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz)) return;
+      const base = pos.length / 3;
+      pos.push(cx, cy, cz);
+      nrm.push(0, inward ? -1 : 1, 0);
+      for (let k = 0; k < SIDES; k++) {
+        const v = ring[k];
+        if (!Number.isFinite(v.x) || !Number.isFinite(v.y) || !Number.isFinite(v.z)) return;
+        pos.push(v.x, v.y, v.z);
+        nrm.push(0, inward ? -1 : 1, 0);
+      }
+      for (let k = 0; k < SIDES; k++) {
+        const a = base + 1 + k;
+        const b = base + 1 + (k + 1) % SIDES;
+        if (inward) idx.push(base, b, a);
+        else        idx.push(base, a, b);
+      }
+    };
+    capRing(rings[0],     true);
+    capRing(rings[n - 1], false);
+
+    if (pos.length === 0 || idx.length === 0) return null;
+    return { pos, nrm, idx, stations };
   }
 
   _roadHalfWidth(highway) {
