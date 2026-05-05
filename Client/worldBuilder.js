@@ -511,6 +511,21 @@ function structurePalette(tags) {
   return '#909090'; // default concrete grey
 }
 
+// ── Seeded LCG pseudo-random helpers (no external lib) ────────
+// _lcgSeed(n)    → initial state (integer)
+// _lcgNext(s)    → next state (use / 0xffffffff for [0,1) float)
+function _lcgSeed(n) {
+  // Mix bits to avoid bad seeds like 0
+  let h = (n >>> 0) ^ 0xdeadbeef;
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+  return (h ^ (h >>> 16)) >>> 0 || 1;
+}
+function _lcgNext(s) {
+  // Multiplier from Numerical Recipes; modulus 2^32 via unsigned truncation
+  return (Math.imul(s, 1664525) + 1013904223) >>> 0;
+}
+
 // ── Shared tile helpers ───────────────────────────────────────
 function _fetchTileImage(url) {
   return new Promise((resolve, reject) => {
@@ -700,6 +715,7 @@ export class WorldBuilder {
     const railWays = [];
     const stepsWays = [];
     const footbridgeWays = [];
+    const parkWays = [];
   
     const placedFootprints = [];
   
@@ -793,9 +809,12 @@ export class WorldBuilder {
           footbridgeWays.push(way);
         }
 
-        // 'construction' and 'park' classified ways are currently
-        // recognised but intentionally produce no geometry — they are
-        // reserved for future visual treatment (e.g. gravel fill, barriers).
+        else if ((way.kind === 'park') && way.closed) {
+          parkWays.push(way);
+        }
+
+        // 'construction' classified ways are currently recognised but
+        // intentionally produce no geometry — reserved for future use.
   
       } catch (_) {}
     }
@@ -854,31 +873,6 @@ export class WorldBuilder {
         indexOffset += result.pos.length / 3;
         for (const rb of result.railBuffers) allRailBuffers.push(rb);
       } catch (_) {}
-    }
-  
-    // 🏢 BUILDING MESH (SINGLE) — now includes stairs and bridge geometry
-    if (idx.length) {
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      geom.setAttribute('normal',   new THREE.Float32BufferAttribute(nrm, 3));
-      geom.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
-      geom.setIndex(idx);
-
-      // ✅ BVH for player collision against building walls and roofs
-      try { geom.boundsTree = new MeshBVH(geom); } catch (_) {}
-
-      const mat = new THREE.MeshToonMaterial({
-        vertexColors: true,
-        gradientMap: this._toonGradient,
-      });
-
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      this.scene.addObject(mesh);          // add to scene/objects
-      this.scene.registerCollidable(mesh); // register NOW that BVH exists
-
-      tris += idx.length / 3;
     }
   
     // 🛣 ROADS
@@ -954,6 +948,115 @@ export class WorldBuilder {
     // ✦ INTERSECTION RAILS — short decorative spurs at road intersections
     const intersectionRailBuffers = this._buildIntersectionRails(roadWays, elev, terrainMesh);
     for (const rb of intersectionRailBuffers) allRailBuffers.push(rb);
+
+    // 🏗️ STREET FURNITURE — construction sites, park furniture, skate parks
+    {
+      const emptyCells = this._findEmptyCells(placedFootprints, roadWays, radiusMeters);
+      const innerRadius = radiusMeters * 0.8;
+      const skateparkCells = [];
+      const constrCells    = [];
+
+      for (const cell of emptyCells) {
+        const dist = Math.sqrt(cell.x * cell.x + cell.z * cell.z);
+        if (dist > innerRadius) continue;
+
+        // Seeded probability per cell
+        const cellSeed = _lcgSeed(Math.round(cell.x * 100) ^ Math.round(cell.z * 100));
+        const r1 = _lcgNext(cellSeed) / 0xffffffff;
+        const r2 = _lcgNext(r1 * 0xffffffff | 0) / 0xffffffff;
+
+        if (r1 < 0.15) {
+          skateparkCells.push(cell);
+        } else if (r2 < 0.30) {
+          constrCells.push(cell);
+        }
+      }
+
+      // Remove overlapping skate parks (keep non-overlapping subset, ~40 m separation)
+      const usedSkate = [];
+      for (const cell of skateparkCells) {
+        const tooClose = usedSkate.some(u => {
+          const dx = u.x - cell.x, dz = u.z - cell.z;
+          return Math.sqrt(dx * dx + dz * dz) < 40;
+        });
+        if (!tooClose) usedSkate.push(cell);
+      }
+
+      // 🏗️ Construction sites
+      for (const cell of constrCells) {
+        try {
+          const seed = _lcgSeed(Math.round(cell.x * 37) ^ Math.round(cell.z * 53));
+          const result = this._buildConstructionSite(cell.x, cell.z, elev, terrainMesh, seed);
+          if (result) {
+            for (const v of result.pos) pos.push(v);
+            for (const v of result.nrm) nrm.push(v);
+            for (const v of result.col) col.push(v);
+            for (const i of result.idx) idx.push(i + indexOffset);
+            indexOffset += result.pos.length / 3;
+            for (const rb of result.railBuffers) allRailBuffers.push(rb);
+          }
+        } catch (_) {}
+      }
+
+      // 🌳 Park furniture
+      for (const way of parkWays) {
+        try {
+          const cx = way.coords.reduce((s, p) => s + p.x, 0) / way.coords.length;
+          const cz = way.coords.reduce((s, p) => s + p.z, 0) / way.coords.length;
+          const seed = _lcgSeed(Math.round(cx * 41) ^ Math.round(cz * 67));
+          const result = this._buildParkFurniture(way, elev, terrainMesh, seed);
+          if (result) {
+            for (const v of result.pos) pos.push(v);
+            for (const v of result.nrm) nrm.push(v);
+            for (const v of result.col) col.push(v);
+            for (const i of result.idx) idx.push(i + indexOffset);
+            indexOffset += result.pos.length / 3;
+            for (const rb of result.railBuffers) allRailBuffers.push(rb);
+          }
+        } catch (_) {}
+      }
+
+      // 🛹 Skate parks — appended into shared buildings buffer
+      for (const cell of usedSkate) {
+        try {
+          const seed = _lcgSeed(Math.round(cell.x * 73) ^ Math.round(cell.z * 89));
+          const angle = (_lcgNext(seed) / 0xffffffff) * Math.PI * 2;
+          const result = this._buildSkatepark(
+            cell.x, cell.z, angle, elev, terrainMesh, seed,
+            pos, nrm, col, idx, indexOffset
+          );
+          if (result) {
+            indexOffset = result.newIndexOffset;
+            for (const rb of result.railBuffers) allRailBuffers.push(rb);
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 🏢 BUILDING MESH (SINGLE) — buildings, stairs, bridges, construction, parks, skateparks
+    if (idx.length) {
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      geom.setAttribute('normal',   new THREE.Float32BufferAttribute(nrm, 3));
+      geom.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
+      geom.setIndex(idx);
+
+      // ✅ BVH for player collision against building walls and roofs
+      try { geom.boundsTree = new MeshBVH(geom); } catch (_) {}
+
+      const mat = new THREE.MeshToonMaterial({
+        vertexColors: true,
+        gradientMap: this._toonGradient,
+      });
+
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      this.scene.addObject(mesh);          // add to scene/objects
+      this.scene.registerCollidable(mesh); // register NOW that BVH exists
+
+      tris += idx.length / 3;
+    }
 
     // 🛤️ MERGED RAILS — one mesh for OSM rails, staircase handrails, bridge handrails,
     //                    roof rails, road edge rails, and intersection spurs
@@ -2551,6 +2654,483 @@ export class WorldBuilder {
       footway: 1, path: 0.8, cycleway: 1.2,
     };
     return w[highway] ?? 2;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // EMPTY CELL FINDER
+  // Divides the map area into a grid and marks cells as occupied
+  // if any building footprint vertex or road coord falls within them.
+  // Returns an array of empty cell centres { x, z }.
+  // ═══════════════════════════════════════════════════════════════
+
+  _findEmptyCells(placedFootprints, roadWays, radiusMeters, cellSize = 40) {
+    const half  = radiusMeters;
+    const cols  = Math.ceil((half * 2) / cellSize);
+    const rows  = Math.ceil((half * 2) / cellSize);
+    const occ   = new Uint8Array(cols * rows);
+
+    const markCell = (x, z) => {
+      const ci = Math.floor((x + half) / cellSize);
+      const ri = Math.floor((z + half) / cellSize);
+      if (ci < 0 || ci >= cols || ri < 0 || ri >= rows) return;
+      occ[ri * cols + ci] = 1;
+      // Also mark the 8 neighbours to give a margin
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const nc = ci + dc, nr = ri + dr;
+          if (nc >= 0 && nc < cols && nr >= 0 && nr < rows) occ[nr * cols + nc] = 1;
+        }
+      }
+    };
+
+    for (const fp of placedFootprints) {
+      for (const v of fp.verts) markCell(v.x, v.z);
+    }
+    for (const way of roadWays) {
+      for (const c of way.coords) markCell(c.x, c.z);
+    }
+
+    const result = [];
+    for (let ri = 0; ri < rows; ri++) {
+      for (let ci = 0; ci < cols; ci++) {
+        if (occ[ri * cols + ci]) continue;
+        const cx = -half + (ci + 0.5) * cellSize;
+        const cz = -half + (ri + 0.5) * cellSize;
+        result.push({ x: cx, z: cz });
+      }
+    }
+    return result;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // CONSTRUCTION SITE
+  // Returns a THREE.Group with barrier blocks (collidable, non-grindable)
+  // and scaffolding tube runs (grindable via railBuffers on group.userData).
+  // ═══════════════════════════════════════════════════════════════
+
+  // ═══════════════════════════════════════════════════════════════
+  // BUFFER APPEND HELPER
+  // Extracts vertex/index data from a THREE.BufferGeometry (which may
+  // have a world-space transform baked via a mesh position/rotation)
+  // and appends it into the flat shared buffer arrays.
+  // Returns the new indexOffset.
+  // ═══════════════════════════════════════════════════════════════
+
+  _appendGeoToBuffers(geometry, matrixWorld, color, pos, nrm, col, idx, indexOffset) {
+    const posAttr = geometry.attributes.position;
+    const nrmAttr = geometry.attributes.normal;
+    const idxArr  = geometry.index ? geometry.index.array : null;
+    const vertCount = posAttr.count;
+
+    // Apply the world matrix to each vertex
+    const v3 = new THREE.Vector3();
+    const n3 = new THREE.Vector3();
+    const normalMatrix = new THREE.Matrix3().getNormalMatrix(matrixWorld);
+
+    for (let i = 0; i < vertCount; i++) {
+      v3.fromBufferAttribute(posAttr, i).applyMatrix4(matrixWorld);
+      pos.push(v3.x, v3.y, v3.z);
+      col.push(color.r, color.g, color.b);
+
+      if (nrmAttr) {
+        n3.fromBufferAttribute(nrmAttr, i).applyMatrix3(normalMatrix).normalize();
+        nrm.push(n3.x, n3.y, n3.z);
+      } else {
+        nrm.push(0, 1, 0);
+      }
+    }
+
+    if (idxArr) {
+      for (let i = 0; i < idxArr.length; i++) {
+        idx.push(idxArr[i] + indexOffset);
+      }
+    } else {
+      // Non-indexed: generate sequential indices
+      for (let i = 0; i < vertCount; i++) {
+        idx.push(indexOffset + i);
+      }
+    }
+
+    return indexOffset + vertCount;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // CONSTRUCTION SITE
+  // Returns { pos, nrm, col, idx, railBuffers } for merging into
+  // the shared buildings buffer and the merged rail mesh.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildConstructionSite(cx, cz, elev, terrainMesh, seedState) {
+    let s = seedState;
+    const rand = () => { s = _lcgNext(s); return s / 0xffffffff; };
+
+    const pos = [], nrm = [], col = [], idx = [];
+    let indexOffset = 0;
+    const railBuffers = [];
+
+    const concreteColor = new THREE.Color(structurePalette({}));
+    const barrierColor  = new THREE.Color('#f0c030'); // yellow/orange barriers
+
+    // ── Concrete barrier blocks ──────────────────────────────────
+    const barrierCount = 2 + Math.floor(rand() * 3); // 2–4
+    for (let i = 0; i < barrierCount; i++) {
+      const bx  = cx + (rand() - 0.5) * 16;
+      const bz  = cz + (rand() - 0.5) * 16;
+      const by  = this._snapY(bx, bz, elev, terrainMesh, 0);
+      const rot = rand() * Math.PI * 2;
+
+      const geo = new THREE.BoxGeometry(2.0, 0.8, 0.4);
+      geo.computeVertexNormals();
+      const mat4 = new THREE.Matrix4()
+        .makeRotationY(rot)
+        .setPosition(bx, by + 0.4, bz);
+      indexOffset = this._appendGeoToBuffers(geo, mat4, barrierColor, pos, nrm, col, idx, indexOffset);
+      geo.dispose();
+    }
+
+    // ── Scaffolding tube runs (grindable) ────────────────────────
+    const tubeCount = 1 + Math.floor(rand() * 3); // 1–3
+    for (let i = 0; i < tubeCount; i++) {
+      const tx    = cx + (rand() - 0.5) * 14;
+      const tz    = cz + (rand() - 0.5) * 14;
+      const tLen  = 4 + rand() * 4;         // 4–8 m
+      const angle = rand() * Math.PI * 2;
+      const dx    = Math.cos(angle), dz = Math.sin(angle);
+
+      // Two heights: 0.4 m and 1.2 m
+      for (const height of [0.4, 1.2]) {
+        const baseY = this._snapY(tx, tz, elev, terrainMesh, height);
+        const endY  = this._snapY(tx + dx * tLen, tz + dz * tLen, elev, terrainMesh, height);
+        const rb = this._buildFixedYRailMesh(
+          [{ x: tx, z: tz }, { x: tx + dx * tLen, z: tz + dz * tLen }],
+          (baseY + endY) / 2
+        );
+        if (rb) railBuffers.push(rb);
+      }
+    }
+
+    // ── Optional tall vertical post (non-grindable) ───────────────
+    if (rand() > 0.35) {
+      const px   = cx + (rand() - 0.5) * 12;
+      const pz   = cz + (rand() - 0.5) * 12;
+      const py   = this._snapY(px, pz, elev, terrainMesh, 0);
+      const postH = 4 + rand() * 4;  // 4–8 m
+      const geo = new THREE.CylinderGeometry(0.07, 0.09, postH, 6, 1);
+      geo.computeVertexNormals();
+      const mat4 = new THREE.Matrix4().setPosition(px, py + postH / 2, pz);
+      indexOffset = this._appendGeoToBuffers(geo, mat4, concreteColor, pos, nrm, col, idx, indexOffset);
+      geo.dispose();
+    }
+
+    return { pos, nrm, col, idx, railBuffers };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // PARK FURNITURE
+  // Benches (grindable ledges), low walls (grindable), bollard lines
+  // (non-grindable cylinders).
+  // Returns { pos, nrm, col, idx, railBuffers } for merging.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildParkFurniture(parkWay, elev, terrainMesh, seedState) {
+    let s = seedState;
+    const rand = () => { s = _lcgNext(s); return s / 0xffffffff; };
+
+    const pos = [], nrm = [], col = [], idx = [];
+    let indexOffset = 0;
+    const railBuffers = [];
+
+    const verts = parkWay.coords;
+    if (!verts || verts.length < 3) return { pos, nrm, col, idx, railBuffers };
+
+    // Bounding box of park
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const v of verts) {
+      if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+      if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+    }
+
+    const W = maxX - minX, D = maxZ - minZ;
+    if (W < 4 || D < 4) return { pos, nrm, col, idx, railBuffers };
+
+    const parkColor    = new THREE.Color('#8a7060');
+    const bollardColor = new THREE.Color('#606870');
+
+    // ── Helper: random point inside bounding box (reject outside polygon) ──
+    const sampleInside = (maxTries = 12) => {
+      for (let t = 0; t < maxTries; t++) {
+        const x = minX + rand() * W;
+        const z = minZ + rand() * D;
+        if (this._pointInFootprint(x, z, verts)) return { x, z };
+      }
+      return null;
+    };
+
+    // ── Bench ledges (grindable) ─────────────────────────────────
+    const benchCount = 1 + Math.floor(rand() * 4); // 1–4
+    for (let i = 0; i < benchCount; i++) {
+      const pt = sampleInside();
+      if (!pt) continue;
+      const by  = this._snapY(pt.x, pt.z, elev, terrainMesh, 0);
+      const rot = rand() * Math.PI * 2;
+      const geo = new THREE.BoxGeometry(1.8, 0.45, 0.4);
+      geo.computeVertexNormals();
+      const mat4 = new THREE.Matrix4()
+        .makeRotationY(rot)
+        .setPosition(pt.x, by + 0.45, pt.z);
+      indexOffset = this._appendGeoToBuffers(geo, mat4, parkColor, pos, nrm, col, idx, indexOffset);
+      geo.dispose();
+      // Grind rail along top of bench
+      const dx = Math.cos(rot), dz = -Math.sin(rot);
+      const railY = by + 0.45 + 0.225;
+      const rb = this._buildFixedYRailMesh(
+        [{ x: pt.x - dx * 0.85, z: pt.z - dz * 0.85 },
+         { x: pt.x + dx * 0.85, z: pt.z + dz * 0.85 }],
+        railY
+      );
+      if (rb) railBuffers.push(rb);
+    }
+
+    // ── Low walls (grindable) ────────────────────────────────────
+    const wallCount = 1 + Math.floor(rand() * 3); // 1–3
+    for (let i = 0; i < wallCount; i++) {
+      const pt = sampleInside();
+      if (!pt) continue;
+      const by  = this._snapY(pt.x, pt.z, elev, terrainMesh, 0);
+      const rot = rand() * Math.PI * 2;
+      const wLen = 3 + rand() * 3; // 3–6 m
+      const geo = new THREE.BoxGeometry(wLen, 0.6, 0.3);
+      geo.computeVertexNormals();
+      const mat4 = new THREE.Matrix4()
+        .makeRotationY(rot)
+        .setPosition(pt.x, by + 0.3, pt.z);
+      indexOffset = this._appendGeoToBuffers(geo, mat4, parkColor, pos, nrm, col, idx, indexOffset);
+      geo.dispose();
+      // Grind rail on wall top
+      const dx = Math.cos(rot), dz = -Math.sin(rot);
+      const railY = by + 0.6 + 0.015;
+      const rb = this._buildFixedYRailMesh(
+        [{ x: pt.x - dx * wLen * 0.48, z: pt.z - dz * wLen * 0.48 },
+         { x: pt.x + dx * wLen * 0.48, z: pt.z + dz * wLen * 0.48 }],
+        railY
+      );
+      if (rb) railBuffers.push(rb);
+    }
+
+    // ── Bollard lines (non-grindable) ────────────────────────────
+    const bollardLines = 1 + Math.floor(rand() * 2); // 1–2 lines
+    for (let li = 0; li < bollardLines; li++) {
+      const pt = sampleInside();
+      if (!pt) continue;
+      const rot    = rand() * Math.PI * 2;
+      const lineLen = 2.4 + rand() * 4.8;
+      const count  = Math.max(2, Math.floor(lineLen / 1.2));
+      const dx     = Math.cos(rot), dz = Math.sin(rot);
+      const startX = pt.x - dx * lineLen * 0.5;
+      const startZ = pt.z - dz * lineLen * 0.5;
+      const bGeo   = new THREE.CylinderGeometry(0.075, 0.075, 0.9, 8, 1);
+      bGeo.computeVertexNormals();
+      for (let bi = 0; bi < count; bi++) {
+        const t  = bi / Math.max(1, count - 1);
+        const bx = startX + dx * lineLen * t;
+        const bz = startZ + dz * lineLen * t;
+        const by = this._snapY(bx, bz, elev, terrainMesh, 0);
+        const mat4 = new THREE.Matrix4().setPosition(bx, by + 0.45, bz);
+        indexOffset = this._appendGeoToBuffers(bGeo, mat4, bollardColor, pos, nrm, col, idx, indexOffset);
+      }
+      bGeo.dispose();
+    }
+
+    return { pos, nrm, col, idx, railBuffers };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // SKATE PARK
+  // Appends solid geometry (pad, quarter-pipes, kicker) directly into
+  // the caller's pos/nrm/col/idx buffers and returns rail buffers for
+  // the merged rail mesh.  Returns { newIndexOffset, railBuffers }.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildSkatepark(cx, cz, angle, elev, terrainMesh, seedState,
+                  pos, nrm, col, idx, indexOffset) {
+    let s = seedState;
+    const rand = () => { s = _lcgNext(s); return s / 0xffffffff; };
+
+    const railBuffers = [];
+    const baseY  = this._snapY(cx, cz, elev, terrainMesh, 0);
+    const concColor = new THREE.Color(structurePalette({})); // concrete grey
+
+    // ── Local → world rotation helpers ───────────────────────────
+    const cosA = Math.cos(angle), sinA = Math.sin(angle);
+    const rot2D = (lx, lz) => ({
+      x: cx + lx * cosA - lz * sinA,
+      z: cz + lx * sinA + lz * cosA,
+    });
+    const worldY = (lx, lz, bias = 0) => {
+      const w = rot2D(lx, lz);
+      return this._snapY(w.x, w.z, elev, terrainMesh, bias);
+    };
+
+    // ── Helper: push a quad into shared buffers ───────────────────
+    const pushQuad = (v0, v1, v2, v3, nx, ny, nz) => {
+      const base = indexOffset;
+      for (const v of [v0, v1, v2, v3]) {
+        pos.push(v.x, v.y, v.z);
+        nrm.push(nx, ny, nz);
+        col.push(concColor.r, concColor.g, concColor.b);
+      }
+      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      indexOffset += 4;
+    };
+
+    // ── Helper: convert local XZ + Y to world point ───────────────
+    const wp = (lx, lz, y) => {
+      const w = rot2D(lx, lz);
+      return { x: w.x, y, z: w.z };
+    };
+
+    // ── Pad dimensions ────────────────────────────────────────────
+    const padW = 12 + rand() * 8;   // 12–20 m wide
+    const padD = 10 + rand() * 6;   // 10–16 m deep
+    const hw = padW / 2, hd = padD / 2;
+
+    // ── Flat concrete pad (single quad) ───────────────────────────
+    pushQuad(
+      wp(-hw, -hd, baseY), wp( hw, -hd, baseY),
+      wp( hw,  hd, baseY), wp(-hw,  hd, baseY),
+      0, 1, 0
+    );
+
+    // ── Quarter-pipe(s) ───────────────────────────────────────────
+    // Profile: flat base → curved arc → vertical lip, extruded along width.
+    // Arc uses 8 segments over PI/2 radians.
+    const qpCount  = 1 + Math.floor(rand() * 2); // 1–2
+    const QP_R     = 1.8;   // radius metres
+    const QP_LIP   = 0.3;   // vertical lip above arc top
+    const QP_W     = padW * 0.7; // extrusion width
+    const ARC_SEGS = 8;
+    const qpSides  = rand() > 0.5 ? 1 : -1; // which end of pad
+
+    for (let qi = 0; qi < qpCount; qi++) {
+      const qpZ = qpSides * (hd - 0.1) - (qi === 1 ? qpSides * 2 : 0);
+      const faceDir = qpSides; // +1 = faces -z, -1 = faces +z
+
+      // Build arc profile in local 2D (along X=0, XZ varies along depth)
+      // Profile goes from (0,0) curving up to (QP_R, QP_R) then vertical lip
+      const profilePts = [];
+      for (let ai = 0; ai <= ARC_SEGS; ai++) {
+        const t = ai / ARC_SEGS;
+        const angle2 = t * Math.PI / 2;
+        // Quarter circle: starts horizontal, ends vertical
+        const localDepth = QP_R * (1 - Math.cos(angle2)) * faceDir;
+        const localHeight = QP_R * Math.sin(angle2);
+        profilePts.push({ d: localDepth, h: localHeight });
+      }
+      // Add vertical lip
+      profilePts.push({ d: profilePts[profilePts.length - 1].d, h: QP_R + QP_LIP });
+
+      // Extrude: for each consecutive profile pair, emit a quad across the width
+      const extHW = QP_W / 2;
+      for (let pi = 0; pi < profilePts.length - 1; pi++) {
+        const p0 = profilePts[pi], p1 = profilePts[pi + 1];
+        const z0 = qpZ + p0.d, z1 = qpZ + p1.d;
+        const y0 = baseY + p0.h, y1 = baseY + p1.h;
+
+        // Face normal: perpendicular to the profile segment
+        const dz = z1 - z0, dy = y1 - y0;
+        const nl  = Math.sqrt(dz * dz + dy * dy) || 1;
+        // Inward normal (toward interior of ramp)
+        const fnx = 0, fny = dz / nl * faceDir, fnz = -dy / nl * faceDir;
+
+        const tl = wp(-extHW, z0, y0);
+        const tr = wp( extHW, z0, y0);
+        const br = wp( extHW, z1, y1);
+        const bl = wp(-extHW, z1, y1);
+
+        if (faceDir > 0) {
+          pushQuad(tl, tr, br, bl, fnx, fny, fnz);
+        } else {
+          pushQuad(bl, br, tr, tl, fnx, fny, fnz);
+        }
+      }
+
+      // Rail along the lip top
+      const lipY   = baseY + QP_R + QP_LIP;
+      const lipZ   = qpZ + profilePts[profilePts.length - 1].d;
+      const lipWL  = rot2D(-extHW, lipZ);
+      const lipWR  = rot2D( extHW, lipZ);
+      const rb = this._buildFixedYRailMesh(
+        [{ x: lipWL.x, z: lipWL.z }, { x: lipWR.x, z: lipWR.z }],
+        lipY + 0.04
+      );
+      if (rb) railBuffers.push(rb);
+    }
+
+    // ── Kicker ramp ───────────────────────────────────────────────
+    // Two angled quads meeting at a ridge. Width = padW * 0.35
+    const kW  = padW * 0.35;
+    const kHW = kW / 2;
+    const kH  = 0.6 + rand() * 0.6;  // 0.6–1.2 m high
+    const kD  = kH * 2.5;             // run depth
+    const kOX = (rand() - 0.5) * (padW * 0.4); // lateral offset
+    const kOZ = (rand() - 0.5) * (padD * 0.3); // depth offset
+
+    // Ramp face quad
+    {
+      const rz0  = kOZ - kD * 0.5;
+      const rz1  = kOZ + kD * 0.5;
+      const ry0  = baseY;
+      const ry1  = baseY + kH;
+      const tl   = wp(kOX - kHW, rz0, ry0);
+      const tr   = wp(kOX + kHW, rz0, ry0);
+      const br   = wp(kOX + kHW, rz1, ry1);
+      const bl   = wp(kOX - kHW, rz1, ry1);
+      const dz   = rz1 - rz0, dy = ry1 - ry0;
+      const nl   = Math.sqrt(dz * dz + dy * dy) || 1;
+      pushQuad(tl, tr, br, bl, 0, dz / nl, -dy / nl);
+    }
+    // Top flat face
+    {
+      const tl = wp(kOX - kHW, kOZ + kD * 0.5, baseY + kH);
+      const tr = wp(kOX + kHW, kOZ + kD * 0.5, baseY + kH);
+      const br = wp(kOX + kHW, kOZ + kD * 0.5 + 0.3, baseY + kH);
+      const bl = wp(kOX - kHW, kOZ + kD * 0.5 + 0.3, baseY + kH);
+      pushQuad(tl, tr, br, bl, 0, 1, 0);
+    }
+
+    // Rail along kicker ridge
+    {
+      const ridgeY = baseY + kH + 0.04;
+      const ridgeZ = kOZ + kD * 0.5;
+      const rL = rot2D(kOX - kHW, ridgeZ);
+      const rR = rot2D(kOX + kHW, ridgeZ);
+      const rb = this._buildFixedYRailMesh(
+        [{ x: rL.x, z: rL.z }, { x: rR.x, z: rR.z }],
+        ridgeY
+      );
+      if (rb) railBuffers.push(rb);
+    }
+
+    // ── Pad-edge rails ────────────────────────────────────────────
+    const railCount = 2 + Math.floor(rand() * 3); // 2–4
+    for (let ri = 0; ri < railCount; ri++) {
+      const rOX   = (rand() - 0.5) * padW * 0.8;
+      const rOZ   = (rand() - 0.5) * padD * 0.6;
+      const rLen  = 3 + rand() * 5;
+      const rAng  = rand() * Math.PI;
+      const rdx   = Math.cos(rAng), rdz = Math.sin(rAng);
+      const rY    = baseY + 0.5 + rand() * 0.4;
+
+      const a = rot2D(rOX - rdx * rLen * 0.5, rOZ - rdz * rLen * 0.5);
+      const b = rot2D(rOX + rdx * rLen * 0.5, rOZ + rdz * rLen * 0.5);
+      const rb = this._buildFixedYRailMesh(
+        [{ x: a.x, z: a.z }, { x: b.x, z: b.z }],
+        rY
+      );
+      if (rb) railBuffers.push(rb);
+    }
+
+    return { newIndexOffset: indexOffset, railBuffers };
   }
 
   _triCount(mesh) {
