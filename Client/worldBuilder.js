@@ -838,9 +838,13 @@ export class WorldBuilder {
     const allRailBuffers = [];
 
     // 🚧 rails — processed after terrainMesh exists so _snapY works correctly
+    // OSM railway ways carry no height tag; force height=0.02 so the track
+    // tube (±0.06 m cross-section) sits flush at ground level without
+    // z-fighting against the terrain mesh.
     for (const way of railWays) {
       try {
-        const rb = this._buildRailMesh(way, elev, terrainMesh);
+        const railWay = { ...way, tags: { ...way.tags, height: '0.02' } };
+        const rb = this._buildRailMesh(railWay, elev, terrainMesh);
         if (rb) allRailBuffers.push(rb);
       } catch (_) {}
     }
@@ -940,6 +944,18 @@ export class WorldBuilder {
     // 🏠 ROOF RAILS — perimeter rails on rooftops of buildings ≥ 3 m tall
     const roofRailBuffers = this._buildRoofRails(placedFootprints, elev, terrainMesh);
     for (const rb of roofRailBuffers) allRailBuffers.push(rb);
+
+    // 🏯 ROOF PARAPETS — 1 m solid parapet walls + elevated rails on tall buildings
+    //    (the same set that receives aviation lights, height ≥ 30 m)
+    if (tallBuildings.length) {
+      const parapetResult = this._buildRoofParapets(tallBuildings, elev, terrainMesh);
+      for (const v of parapetResult.pos) pos.push(v);
+      for (const v of parapetResult.nrm) nrm.push(v);
+      for (const v of parapetResult.col) col.push(v);
+      for (const i of parapetResult.idx) idx.push(i + indexOffset);
+      indexOffset += parapetResult.pos.length / 3;
+      for (const rb of parapetResult.railBuffers) allRailBuffers.push(rb);
+    }
 
     // 🌉 ROAD EDGE RAILS — guard rails on bridge road segments with significant drops
     const roadEdgeRailBuffers = this._buildRoadEdgeRails(roadWays, elev, terrainMesh);
@@ -2297,6 +2313,100 @@ export class WorldBuilder {
 
       if (rPos.length > 0)
         railBuffers.push({ pos: rPos, nrm: rNrm, idx: rIdx, stations: rStations });
+    }
+
+    return { pos, nrm, col, idx, railBuffers };
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ROOF PARAPETS — solid 1 m tall perimeter walls along every edge
+  // of tall buildings (those that receive aviation lights, ≥ 30 m).
+  // The matching roof rail is raised to topY + PARAPET_H + RAIL_ABOVE
+  // so it sits on top of the parapet rather than flush with the roof.
+  //
+  // Returns { pos, nrm, col, idx, railBuffers } for direct merging
+  // into the shared buildings buffer and the merged rail mesh.
+  // ═══════════════════════════════════════════════════════════════
+
+  _buildRoofParapets(tallBuildings, elev, terrainMesh) {
+    const PARAPET_H    = 1.0;    // wall height above topY
+    const PARAPET_THK  = 0.25;   // wall thickness (inward from edge)
+    const RAIL_ABOVE   = 0.05;   // rail sits this far above parapet top
+    const MIN_EDGE_LEN = 1.5;    // skip edges shorter than this
+
+    const pos = [], nrm = [], col = [], idx = [];
+    let offset = 0;
+    const railBuffers = [];
+
+    // Concrete-grey parapet colour (same palette as construction/structural elements)
+    const parapetColor = new THREE.Color(structurePalette({}));
+
+    // ── Helper: push a quad (two CCW triangles) ──────────────────
+    const pushQuad = (v0, v1, v2, v3, nx, ny, nz) => {
+      const base = offset;
+      for (const v of [v0, v1, v2, v3]) {
+        pos.push(v.x, v.y, v.z);
+        nrm.push(nx, ny, nz);
+        col.push(parapetColor.r, parapetColor.g, parapetColor.b);
+      }
+      idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      offset += 4;
+    };
+
+    for (const { verts, topY } of tallBuildings) {
+      if (!verts || verts.length < 2) continue;
+
+      // Ensure CCW so inward normals point the right way
+      const ccwVerts = this._ensureCCW(verts);
+      const n = ccwVerts.length;
+
+      const wallTopY    = topY + PARAPET_H;
+      const railY       = wallTopY + RAIL_ABOVE;
+
+      for (let i = 0; i < n; i++) {
+        const a = ccwVerts[i];
+        const b = ccwVerts[(i + 1) % n];
+
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const edgeLen = Math.sqrt(dx * dx + dz * dz);
+        if (edgeLen < MIN_EDGE_LEN) continue;
+
+        // Outward face normal (for CCW polygon the outward normal points right of travel)
+        const onx =  dz / edgeLen;   // outward X
+        const onz = -dx / edgeLen;   // outward Z
+
+        // Inward offset for wall thickness
+        const inx = -onx * PARAPET_THK;
+        const inz = -onz * PARAPET_THK;
+
+        // Four corners of the outer face (outer vertical quad)
+        const obl = { x: a.x,        y: topY,    z: a.z };
+        const obr = { x: b.x,        y: topY,    z: b.z };
+        const otr = { x: b.x,        y: wallTopY, z: b.z };
+        const otl = { x: a.x,        y: wallTopY, z: a.z };
+
+        // Outer face — normal points outward
+        pushQuad(obl, otl, otr, obr, onx, 0, onz);
+
+        // Inner face — offset inward, normal points inward
+        const ibl = { x: a.x + inx, y: topY,    z: a.z + inz };
+        const ibr = { x: b.x + inx, y: topY,    z: b.z + inz };
+        const itr = { x: b.x + inx, y: wallTopY, z: b.z + inz };
+        const itl = { x: a.x + inx, y: wallTopY, z: a.z + inz };
+
+        // Inner face — winding reversed so normal faces inward
+        pushQuad(ibl, ibr, itr, itl, -onx, 0, -onz);
+
+        // Top cap
+        pushQuad(otl, otr, itr, itl, 0, 1, 0);
+
+        // ── Rail along outside top edge ──────────────────────────
+        const rb = this._buildFixedYRailMesh(
+          [{ x: a.x, z: a.z }, { x: b.x, z: b.z }],
+          railY
+        );
+        if (rb) railBuffers.push(rb);
+      }
     }
 
     return { pos, nrm, col, idx, railBuffers };
